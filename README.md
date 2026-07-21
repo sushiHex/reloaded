@@ -6,11 +6,11 @@
 A Windows Terminal launcher for [Claude Code](https://claude.com/claude-code). It
 captures the live arrangement of Claude Code sessions across Windows Terminal
 windows — which repo, which window, tab order, exact screen position — and
-redeploys that arrangement on demand or automatically at logon, unattended.
+redeploys it on demand or unattended at logon.
 
-It is a launcher first, not a recovery tool: the same `up` command you'd run by
-hand is what a scheduled task and a logon entry run when nobody's watching, so
-the unattended path is exercised every day rather than only after a crash.
+It's a launcher first, not a recovery tool: the same `up` command you'd run by
+hand is what the scheduled task and logon entry run when nobody's watching, so
+that path is exercised every day, not just after a crash.
 
 ## Requirements
 
@@ -25,6 +25,10 @@ the unattended path is exercised every day rather than only after a crash.
   preferred and auto-detected; if it isn't installed, Windows PowerShell 5.1
   (present on every supported Windows version) is used automatically
 
+CI runs the unit suite on Windows with OS-facing calls (UI Automation, real
+window placement) mocked out — it verifies the logic, not a live Windows
+Terminal.
+
 ## Install
 
 ```
@@ -35,6 +39,12 @@ This installs `psutil` and `uiautomation` and puts a `reloaded` command on
 PATH. `capture`/`edit` report a clear message (not a traceback) if
 `uiautomation` didn't make it in; session discovery degrades to "0 live
 sessions" if `psutil` is missing.
+
+The scheduled task and logon launcher `install-tasks` registers always run
+against the system-wide `py`/`pyw` launcher, not whatever Python ran the
+install — if you installed into a virtualenv, that Python also needs
+`pip install psutil uiautomation` (a plain `pip install`, no `-e`, is enough)
+or the unattended runs will fail with an import error.
 
 ## Commands
 
@@ -61,18 +71,19 @@ session's custom title. Window grouping and tab order come from UI Automation,
 since Windows Terminal's tabs aren't separate Win32 windows.
 
 **Exact geometry, not "close enough."** Window position and size are captured
-and restored via `ctypes` (`GetWindowPlacement`/`SetWindowPlacement`) rather
-than trusted to `wt`'s own `--size`, which is in character cells, not pixels.
-If the monitor layout changes between capture and restore — a laptop undocked,
-a display renumbered — `clamp_rect` re-anchors and DPI-rescales the saved rect
-into whatever's actually available, instead of placing a window off-screen.
+and restored in real pixels via `ctypes` (`GetWindowPlacement`/
+`SetWindowPlacement`) — `wt`'s own `--size` is in character cells, not pixels,
+so it can't do this alone. If the monitor layout changes between capture and
+restore, the saved rect is re-anchored and DPI-rescaled into whatever's
+actually available rather than placed off-screen.
 
-**The `--continue` resume prompt is suppressed without disabling
-auto-compaction.** Claude Code's "resume from summary or continue as-is?"
-prompt and mid-session auto-compaction are separate subsystems gated by
-different thresholds. Each launched session gets
-`CLAUDE_CODE_RESUME_TOKEN_THRESHOLD` set out of reach for that process only —
-full context loads with no prompt, and normal auto-compaction is untouched.
+**Resume without the prompt.** Claude Code's "resume from summary or continue
+as-is?" prompt and mid-session auto-compaction appear, from observed
+black-box behavior, to be separate subsystems gated by different thresholds —
+not something reloaded can verify against closed-source internals, so treat
+it as current-version behavior rather than a guarantee. Each launched session
+gets `CLAUDE_CODE_RESUME_TOKEN_THRESHOLD` set out of reach for that process
+only — full context loads with no prompt, and auto-compaction is untouched.
 
 **Unattended means actually unattended.** The scheduled reconcile task runs
 via PowerShell's `Register-ScheduledTask`, not `schtasks.exe`, specifically
@@ -84,12 +95,11 @@ never a `.cmd` — because Windows 11 makes Windows Terminal the default console
 host, and a stray console gets adopted as a tab inside whatever WT window is
 already open.
 
-**Crash-safe by construction.** Layout writes are atomic (temp file + rename).
-A transcript whose last line was torn by a hard power-off is detected and
-repaired (the removed bytes are kept alongside, never discarded) before
-`--continue` ever sees it. A reboot-time deploy waits for `wt.exe`, `claude`,
-and the saved monitors to actually be available — bounded, not a fixed guess
-at how long boot takes.
+**Crash-safe by construction.** Layout writes are atomic. A transcript torn by
+a hard power-off is detected and repaired — the removed bytes are kept
+alongside, never discarded — before `--continue` ever sees it. A reboot-time
+deploy waits for `wt.exe`, `claude`, and the saved monitors to actually be
+available, bounded rather than a fixed guess at how long boot takes.
 
 ## License
 
