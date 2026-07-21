@@ -1,3 +1,16 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+
+# packaging / editable-install artifacts
+*.egg-info/
+build/
+dist/
+
+# local environments
+.venv/
+venv/
+
+# editor state
+.vscode/
+.idea/

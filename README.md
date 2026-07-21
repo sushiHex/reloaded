@@ -1,44 +1,40 @@
 # reloaded
 
-A Windows Terminal launcher for Claude Code. It captures the live arrangement of
-Claude Code sessions across Windows Terminal windows — which repo, which window,
-tab order, exact screen position — and can redeploy that arrangement on demand or
-automatically at logon.
+[![CI](https://github.com/sushiHex/reloaded/actions/workflows/ci.yml/badge.svg)](https://github.com/sushiHex/reloaded/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-It is a launcher first: the same `up` command you'd run by hand is what a
-scheduled task and a Startup-folder entry run unattended, so the unattended path
-is exercised every day rather than only after a crash.
+A Windows Terminal launcher for [Claude Code](https://claude.com/claude-code). It
+captures the live arrangement of Claude Code sessions across Windows Terminal
+windows — which repo, which window, tab order, exact screen position — and
+redeploys that arrangement on demand or automatically at logon, unattended.
+
+It is a launcher first, not a recovery tool: the same `up` command you'd run by
+hand is what a scheduled task and a logon entry run when nobody's watching, so
+the unattended path is exercised every day rather than only after a crash.
 
 ## Requirements
 
-- **Windows** (this package uses ctypes/Win32 APIs and Windows Terminal directly —
-  no other platform is supported)
+- **Windows** — this uses ctypes/Win32 APIs and Windows Terminal directly; no
+  other platform is supported
 - **Python 3.9+**
-- `pip install psutil uiautomation` — both are required; `capture`/`edit` fail
-  with a clear message (not a traceback) if `uiautomation` is missing, and
-  session discovery degrades to "0 live sessions" if `psutil` is missing
 - **Windows Terminal**, ideally 1.24.11911.0 or newer — `--pos=x,y` and `-w -1`
   are verified at that version; `reloaded status` warns (does not block) if an
   older version is detected
-- **`claude`** (the Claude Code CLI) on PATH
+- **[`claude`](https://claude.com/claude-code)** on PATH
 - A PowerShell to run session commands in: **PowerShell 7 (`pwsh`)** is
   preferred and auto-detected; if it isn't installed, Windows PowerShell 5.1
-  (`powershell.exe`, present on every supported Windows version) is used
-  automatically — no configuration needed either way
+  (present on every supported Windows version) is used automatically
 
-## Running it
-
-This is not yet installed via `pip install`. Run it from the repo with the
-package directory on `sys.path`:
+## Install
 
 ```
-$env:PYTHONPATH = "C:\path\to\computers\playbooks"
-python -m reloaded <command>
+pip install -e .
 ```
 
-(`reloaded install-tasks` sets this up automatically for the logon/reconcile
-launchers it registers — see below. The `PYTHONPATH` line above is only needed
-for running commands by hand from a plain shell.)
+This installs `psutil` and `uiautomation` and puts a `reloaded` command on
+PATH. `capture`/`edit` report a clear message (not a traceback) if
+`uiautomation` didn't make it in; session discovery degrades to "0 live
+sessions" if `psutil` is missing.
 
 ## Commands
 
@@ -52,14 +48,49 @@ for running commands by hand from a plain shell.)
 | `reloaded install-tasks` | Register the logon launcher and the 5-minute reconcile task |
 | `reloaded uninstall-tasks` | Remove both |
 
-## Notes
+State lives under `~/.reloaded/` — layouts in `layouts/<name>.json`, an
+unattended-run log at `reloaded.log`.
 
-- State lives under `~/.reloaded/` — layouts in `layouts/<name>.json`, an
-  unattended-run log at `reloaded.log`.
-- `install-tasks` requires no elevation: the logon launcher is a `.vbs` in the
-  Startup folder (run via `wscript.exe` → `pyw.exe`, so it never opens a
-  console — Windows 11 makes Windows Terminal the default console host, and a
-  console tab would otherwise get adopted into an existing WT window), and the
-  reconcile task is registered via PowerShell's `Register-ScheduledTask`
-  rather than `schtasks.exe` (needed for `ExecutionTimeLimit` and clearing the
-  default battery-power restrictions — plain `schtasks` cannot set either).
+## How it works
+
+**No cooperation required.** Reloaded asks nothing of the Claude Code sessions
+it manages — no heartbeat, no hook, no plugin. It reads what's already there:
+`psutil` for which sessions are live and their working directory, and Claude
+Code's own transcript files (`~/.claude/projects/*/*.jsonl`) for each
+session's custom title. Window grouping and tab order come from UI Automation,
+since Windows Terminal's tabs aren't separate Win32 windows.
+
+**Exact geometry, not "close enough."** Window position and size are captured
+and restored via `ctypes` (`GetWindowPlacement`/`SetWindowPlacement`) rather
+than trusted to `wt`'s own `--size`, which is in character cells, not pixels.
+If the monitor layout changes between capture and restore — a laptop undocked,
+a display renumbered — `clamp_rect` re-anchors and DPI-rescales the saved rect
+into whatever's actually available, instead of placing a window off-screen.
+
+**The `--continue` resume prompt is suppressed without disabling
+auto-compaction.** Claude Code's "resume from summary or continue as-is?"
+prompt and mid-session auto-compaction are separate subsystems gated by
+different thresholds. Each launched session gets
+`CLAUDE_CODE_RESUME_TOKEN_THRESHOLD` set out of reach for that process only —
+full context loads with no prompt, and normal auto-compaction is untouched.
+
+**Unattended means actually unattended.** The scheduled reconcile task runs
+via PowerShell's `Register-ScheduledTask`, not `schtasks.exe`, specifically
+for two settings the classic tool has no flag for: an `ExecutionTimeLimit`
+(so one hung run can't block reconciliation for days) and clearing the
+default battery-power restrictions (so it still runs on an unplugged laptop).
+The logon launcher is a `.vbs` run through `wscript.exe → pyw.exe` — deliberately
+never a `.cmd` — because Windows 11 makes Windows Terminal the default console
+host, and a stray console gets adopted as a tab inside whatever WT window is
+already open.
+
+**Crash-safe by construction.** Layout writes are atomic (temp file + rename).
+A transcript whose last line was torn by a hard power-off is detected and
+repaired (the removed bytes are kept alongside, never discarded) before
+`--continue` ever sees it. A reboot-time deploy waits for `wt.exe`, `claude`,
+and the saved monitors to actually be available — bounded, not a fixed guess
+at how long boot takes.
+
+## License
+
+[MIT](LICENSE)
