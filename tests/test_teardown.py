@@ -136,6 +136,58 @@ def test_execute_down_closes_a_window_once_all_its_tabs_exit(monkeypatch):
     assert closed_hwnds == [1]
 
 
+def test_execute_down_resends_exit_after_a_partial_wait(monkeypatch):
+    """If a session hasn't exited by EXIT_RETRY_AFTER_SECONDS - the concrete
+    case being Claude Code's own /exit confirmation when background agents
+    are still running, which the first /exit alone does not satisfy -
+    resending it once should give it another chance before the full
+    timeout."""
+    monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 1.0)
+    monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.02)
+    monkeypatch.setattr(teardown_mod, "EXIT_RETRY_AFTER_SECONDS", 0.1)
+
+    select_calls = []
+    monkeypatch.setattr(
+        teardown_mod.tabs, "select_tab", lambda hwnd, item: select_calls.append(1) or True
+    )
+    send_calls = []
+    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda: send_calls.append(1))
+    # Still "running" until the retry (2nd send) has happened.
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: len(send_calls) < 2)
+    monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
+
+    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    result = teardown_mod.execute_down([plan], log=lambda *_: None)
+
+    assert send_calls == [1, 1]  # sent once, then resent once on retry
+    assert select_calls == [1, 1]  # re-foregrounded before resending
+    assert result["exited"] == [("app-a", CWD_A)]
+    assert result["timed_out"] == []
+
+
+def test_execute_down_only_resends_once(monkeypatch):
+    """A session that still hasn't exited after the retry just times out
+    normally - the resend is a single extra attempt, not a repeated poke."""
+    monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.3)
+    monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.02)
+    monkeypatch.setattr(teardown_mod, "EXIT_RETRY_AFTER_SECONDS", 0.05)
+    monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
+    send_calls = []
+    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda: send_calls.append(1))
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)  # never exits
+    monkeypatch.setattr(
+        teardown_mod.win32,
+        "close_window",
+        lambda hwnd: (_ for _ in ()).throw(AssertionError("must not close a holdout window")),
+    )
+
+    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    result = teardown_mod.execute_down([plan], log=lambda *_: None)
+
+    assert send_calls == [1, 1]  # initial + exactly one resend, never more
+    assert result["timed_out"] == [("app-a", CWD_A)]
+
+
 def test_execute_down_leaves_window_open_when_a_tab_times_out(monkeypatch):
     monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)

@@ -137,7 +137,22 @@ def select_tab(hwnd: int, tab_item) -> bool:
 
 
 def send_exit_keystrokes() -> None:
-    """Type '/exit' + Enter into whatever terminal currently has focus."""
+    """Type '/exit' + Enter into whatever terminal currently has focus.
+
+    Sends Escape first to dismiss a transient overlay Claude Code may be
+    showing on refocus - specifically its "away summary" recap, shown after
+    returning to a session that's been idle long enough to trigger one.
+    Without this, the very next keystroke (which is exactly what
+    foregrounding the window here triggers) can get consumed dismissing
+    that overlay instead of reaching the actual prompt, leaving /exit never
+    typed at all - confirmed by a transcript ending in an away_summary
+    system event with no trace of /exit ever being received. Escape is a
+    safe no-op when there is nothing to dismiss.
+    """
+    import time
+
     import uiautomation as auto
 
+    auto.SendKeys("{Esc}")
+    time.sleep(0.1)
     auto.SendKeys("/exit{Enter}")

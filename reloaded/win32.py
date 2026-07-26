@@ -2,9 +2,14 @@
 from __future__ import annotations
 
 import ctypes
+import time
 from ctypes import wintypes
 
 from .layout import Monitor
+
+# How long to let Windows Terminal settle its own layout after creation
+# before reapplying our placement - see set_geometry.
+GEOMETRY_SETTLE_SECONDS = 0.3
 
 _u32 = ctypes.WinDLL("user32", use_last_error=True)
 try:
@@ -224,21 +229,7 @@ def close_window(hwnd: int) -> bool:
     return bool(_u32.PostMessageW(wintypes.HWND(hwnd), WM_CLOSE, 0, 0))
 
 
-def set_geometry(hwnd: int, rect: list[int], state: str = "normal") -> bool:
-    """Place a window at an exact pixel rect, then apply maximized/minimized state.
-
-    Re-checks the window class before touching anything. A destroyed HWND
-    fails `GetWindowPlacement` on its own, but a *reused* one — Windows can
-    hand the same numeric HWND to an unrelated window once the original
-    closes — would pass that call while no longer being a Windows Terminal
-    window at all. The gap between identifying a just-launched window and
-    this call being reached (up to ~2.5s when disambiguating between several
-    candidates in deploy.launch_window) is enough for that to happen in
-    principle, so this must not move/resize whatever the HWND now refers to.
-    """
-    if _class_name(hwnd).upper() != WT_CLASS:
-        return False
-
+def _apply_geometry(hwnd: int, rect: list[int], state: str) -> bool:
     x, y, w, h = rect
     wp = WINDOWPLACEMENT()
     wp.length = ctypes.sizeof(WINDOWPLACEMENT)
@@ -255,3 +246,31 @@ def set_geometry(hwnd: int, rect: list[int], state: str = "normal") -> bool:
     elif ok and state == "minimized":
         _u32.ShowWindow(wintypes.HWND(hwnd), SW_MINIMIZED)
     return ok
+
+
+def set_geometry(hwnd: int, rect: list[int], state: str = "normal") -> bool:
+    """Place a window at an exact pixel rect, then apply maximized/minimized state.
+
+    Re-checks the window class before touching anything. A destroyed HWND
+    fails `GetWindowPlacement` on its own, but a *reused* one — Windows can
+    hand the same numeric HWND to an unrelated window once the original
+    closes — would pass that call while no longer being a Windows Terminal
+    window at all. The gap between identifying a just-launched window and
+    this call being reached (up to ~2.5s when disambiguating between several
+    candidates in deploy.launch_window) is enough for that to happen in
+    principle, so this must not move/resize whatever the HWND now refers to.
+
+    Reapplies once after a brief settle pause: Windows Terminal can still be
+    finishing its own startup layout right when a freshly launched window is
+    first detected, and a placement applied into that window can end up
+    clobbered by WT's own positioning shortly after - observed as a newly
+    relaunched window landing at an arbitrary spot instead of its saved
+    rect. The second call is a no-op when the first one already stuck.
+    """
+    if _class_name(hwnd).upper() != WT_CLASS:
+        return False
+
+    if not _apply_geometry(hwnd, rect, state):
+        return False
+    time.sleep(GEOMETRY_SETTLE_SECONDS)
+    return _apply_geometry(hwnd, rect, state)

@@ -27,6 +27,41 @@ def test_set_geometry_class_check_runs_before_any_placement_call(monkeypatch):
     assert set_geometry(12345, [0, 0, 100, 100], "normal") is False
 
 
+def test_set_geometry_reapplies_once_to_survive_wt_settling(monkeypatch):
+    """WT can still be finishing its own startup layout right when a freshly
+    launched window is first detected, and a placement applied into that
+    window can end up clobbered by WT's own positioning shortly after -
+    reapplying once after a brief pause is what makes the intended rect the
+    one that sticks."""
+    monkeypatch.setattr(win32_mod, "GEOMETRY_SETTLE_SECONDS", 0)
+    monkeypatch.setattr(win32_mod, "_class_name", lambda hwnd: win32_mod.WT_CLASS)
+    calls = []
+    monkeypatch.setattr(
+        win32_mod._u32, "GetWindowPlacement", lambda hwnd, ref: calls.append("get") or True
+    )
+    monkeypatch.setattr(
+        win32_mod._u32, "SetWindowPlacement", lambda hwnd, ref: calls.append("set") or True
+    )
+    assert set_geometry(12345, [0, 0, 100, 100], "normal") is True
+    assert calls == ["get", "set", "get", "set"]
+
+
+def test_set_geometry_does_not_reapply_if_the_first_attempt_fails(monkeypatch):
+    monkeypatch.setattr(win32_mod, "GEOMETRY_SETTLE_SECONDS", 0)
+    monkeypatch.setattr(win32_mod, "_class_name", lambda hwnd: win32_mod.WT_CLASS)
+    calls = []
+    monkeypatch.setattr(
+        win32_mod._u32, "GetWindowPlacement", lambda hwnd, ref: calls.append("get") or False
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("SetWindowPlacement must not run if GetWindowPlacement failed")
+
+    monkeypatch.setattr(win32_mod._u32, "SetWindowPlacement", boom)
+    assert set_geometry(12345, [0, 0, 100, 100], "normal") is False
+    assert calls == ["get"]
+
+
 def test_set_foreground_true_only_when_the_os_actually_moved_focus(monkeypatch):
     """SetForegroundWindow can be silently refused by Windows depending on
     which process last had input focus — the call succeeding is not proof.

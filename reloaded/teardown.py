@@ -19,6 +19,12 @@ from .paths import norm
 
 EXIT_TIMEOUT_SECONDS = 20.0
 EXIT_POLL_SECONDS = 0.5
+# If a session hasn't exited by this far into EXIT_TIMEOUT_SECONDS, resend
+# the exit keystrokes once. Covers Claude Code's own /exit confirmation when
+# background agents are still running for that session - a warning the
+# first /exit alone does not satisfy, verified against the changelog
+# ("Fixed /exit incorrectly warning about running background agents...").
+EXIT_RETRY_AFTER_SECONDS = 6.0
 
 
 @dataclass
@@ -97,12 +103,23 @@ def execute_down(plans: list[WindowPlan], log=print) -> dict:
             import psutil
 
             deadline = time.time() + EXIT_TIMEOUT_SECONDS
+            retry_at = time.time() + EXIT_RETRY_AFTER_SECONDS
+            retried = False
             while psutil.pid_exists(pid):
-                if time.time() >= deadline:
+                now = time.time()
+                if now >= deadline:
                     timed_out.append((title, cwd))
                     log(f"    [warn] {title} did not exit within {EXIT_TIMEOUT_SECONDS:.0f}s")
                     all_exited = False
                     break
+                if not retried and now >= retry_at:
+                    retried = True
+                    if tabs.select_tab(plan.hwnd, item):
+                        tabs.send_exit_keystrokes()
+                        log(
+                            f"    {title} still running after "
+                            f"{EXIT_RETRY_AFTER_SECONDS:.0f}s - resending /exit"
+                        )
                 time.sleep(EXIT_POLL_SECONDS)
             else:
                 exited.append((title, cwd))
