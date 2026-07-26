@@ -32,17 +32,27 @@ Terminal.
 ## Install
 
 ```
-pip install -e .
+pipx install .
 ```
 
-This installs `psutil` and `uiautomation` and puts a `reloaded` command on
-PATH. `capture`/`edit` report a clear message (not a traceback) if
-`uiautomation` didn't make it in; session discovery degrades to "0 live
-sessions" if `psutil` is missing.
+(or, from a clone you intend to keep developing against: `pipx install -e .`)
+
+[`pipx`](https://pipx.pypa.io) installs `reloaded` into its own isolated
+environment and reliably puts the `reloaded` command on PATH — plain
+`pip install -e .` also works, but on Windows it frequently installs the
+console script into a `Scripts` directory that isn't on PATH by default,
+silently leaving you with a package that's installed but not runnable as a
+bare command. If you don't have pipx yet: `pip install --user pipx` then
+`pipx ensurepath` (new terminal needed afterward).
+
+Either way this installs `psutil` and `uiautomation`. `capture`/`edit`
+report a clear message (not a traceback) if `uiautomation` didn't make it
+in; session discovery degrades to "0 live sessions" if `psutil` is missing.
 
 The scheduled task and logon launcher `install-tasks` registers always run
-against the system-wide `py`/`pyw` launcher, not whatever Python ran the
-install — if you installed into a virtualenv, that Python also needs
+against the system-wide `py`/`pyw` launcher, not whatever Python `reloaded`
+itself runs under — since both pipx and a virtualenv install into an
+isolated environment, that system-wide Python also needs
 `pip install psutil uiautomation` (a plain `pip install`, no `-e`, is enough)
 or the unattended runs will fail with an import error.
 
