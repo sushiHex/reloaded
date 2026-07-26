@@ -55,6 +55,7 @@ SW_MAXIMIZED = 3
 _STATE_FROM_SHOWCMD = {SW_NORMAL: "normal", SW_MINIMIZED: "minimized", SW_MAXIMIZED: "maximized"}
 
 MONITOR_DEFAULTTONEAREST = 2
+WM_CLOSE = 0x0010
 
 
 class POINT(ctypes.Structure):
@@ -178,6 +179,49 @@ def get_geometry(hwnd: int) -> tuple[list[int], str, str, int]:
     if _u32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
         device = mi.szDevice
     return rect, state, device, _dpi_for_monitor(hmon)
+
+
+_u32.GetForegroundWindow.restype = wintypes.HWND
+
+
+def set_foreground(hwnd: int) -> bool:
+    """Bring a window to the foreground and verify it actually happened.
+
+    Re-checks the window class first, the same HWND-reuse guard
+    set_geometry already applies: teardown's per-tab loop can take up to
+    EXIT_TIMEOUT_SECONDS per holdout, real time for a just-closed window's
+    HWND to be handed to an unrelated app - foregrounding, let alone typing
+    into, that window would be wrong no matter what GetForegroundWindow
+    reports.
+
+    SetForegroundWindow can also be silently refused by Windows depending on
+    which process last had input focus - the call succeeding is not proof
+    the window is now frontmost. A caller about to send real keystrokes
+    (which go to whatever has OS focus, not to whatever HWND was asked for)
+    must know whether this actually worked before typing into what might be
+    the wrong window entirely.
+    """
+    if _class_name(hwnd).upper() != WT_CLASS:
+        return False
+    _u32.SetForegroundWindow(wintypes.HWND(hwnd))
+    # GetForegroundWindow.restype is set to HWND above so this compares
+    # correctly regardless of the handle's sign bit - left as plain c_int
+    # (ctypes' default), a HWND with bit 31 set would read back negative and
+    # never equal the positive hwnd, always reporting failure.
+    return _u32.GetForegroundWindow() == hwnd
+
+
+def close_window(hwnd: int) -> bool:
+    """Politely ask a window to close (WM_CLOSE) - the same signal its own
+    title-bar X button sends. Does not force it: a window that ignores this
+    (e.g. Windows Terminal's own "close all tabs?" prompt) stays open.
+
+    Re-checks the window class first, same HWND-reuse rationale as
+    set_foreground/set_geometry.
+    """
+    if _class_name(hwnd).upper() != WT_CLASS:
+        return False
+    return bool(_u32.PostMessageW(wintypes.HWND(hwnd), WM_CLOSE, 0, 0))
 
 
 def set_geometry(hwnd: int, rect: list[int], state: str = "normal") -> bool:

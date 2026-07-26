@@ -1,52 +1,13 @@
 from __future__ import annotations
 
-import time
-
 from conftest import MONITORS, make_layout as _lo, make_window as _win
 
 import reloaded.capture as capture_mod
-from reloaded.capture import _tab_titles_bounded, build_layout, merge_pinned, resolve_tab
+from reloaded.capture import build_layout, merge_pinned, resolve_tab
 from reloaded.layout import Tab
 from reloaded.paths import norm
 
 REPOS = r"C:\Users\k\repos"
-
-
-def test_tab_titles_bounded_returns_the_real_result_when_fast(monkeypatch):
-    monkeypatch.setattr(capture_mod.tabs, "tab_titles", lambda hwnd: ["demo-app", "sample-bot"])
-    assert _tab_titles_bounded(123, timeout=2) == ["demo-app", "sample-bot"]
-
-
-def test_tab_titles_bounded_returns_empty_on_timeout_instead_of_blocking(monkeypatch):
-    """The regression this guards: tab_titles' underlying UIA calls have no
-    timeout of their own, so a hung WT process previously blocked the whole
-    5-minute reconcile task indefinitely."""
-
-    def hangs(hwnd):
-        time.sleep(5)
-        return ["should never get here"]
-
-    monkeypatch.setattr(capture_mod.tabs, "tab_titles", hangs)
-    start = time.monotonic()
-    result = _tab_titles_bounded(123, timeout=0.2)
-    elapsed = time.monotonic() - start
-    assert result == []
-    assert elapsed < 1.0, f"must return promptly at the timeout, took {elapsed:.2f}s"
-
-
-def test_tab_titles_bounded_still_propagates_a_real_failure(monkeypatch):
-    """A genuine UIA failure (not a hang) must keep surfacing normally --
-    only the "never returned" case degrades to an empty list."""
-
-    def raises(hwnd):
-        raise RuntimeError("UIA genuinely unavailable")
-
-    monkeypatch.setattr(capture_mod.tabs, "tab_titles", raises)
-    try:
-        _tab_titles_bounded(123, timeout=2)
-        assert False, "expected the exception to propagate"
-    except RuntimeError as exc:
-        assert "UIA genuinely unavailable" in str(exc)
 
 
 def test_resolve_tab_prefers_the_transcript_title_map():

@@ -1,51 +1,12 @@
 """Compose the OS readers into a saved Layout."""
 from __future__ import annotations
 
-import concurrent.futures
 import datetime
 import os
-import sys
 
 from . import discover, tabs, win32
 from .layout import LAYOUT_VERSION, Layout, Monitor, Tab, Window
 from .paths import norm
-
-# capture_live runs on a 5-minute scheduler forever; one wedged window must
-# degrade a single capture, not hang the whole reconcile task for however
-# long the underlying COM call takes to give up (which can be minutes, or
-# effectively indefinite for a truly unresponsive process).
-TAB_TITLES_TIMEOUT_SECONDS = 5.0
-
-
-def _tab_titles_bounded(hwnd: int, timeout: float = TAB_TITLES_TIMEOUT_SECONDS) -> list[str]:
-    """Read one window's tab titles, bounded by a real timeout.
-
-    tabs.tab_titles() makes raw UIA COM calls that do not consult
-    uiautomation's own search-timeout setting — verified directly against the
-    library source: ControlFromHandle, GetFirstChildControl/
-    GetNextSiblingControl, and the .Name property getter are all
-    unparameterized COM calls, so nothing in the library itself bounds them.
-    Running the call in a worker thread is what makes an external timeout
-    possible; a genuine failure (not a hang) still propagates normally via
-    future.result(), matching tab_titles' documented "raises on UIA failure"
-    contract. The pool is never joined: a thread stuck on a hung COM call
-    cannot be killed from Python, so waiting for it would defeat the point of
-    timing out. It is abandoned and dies with the process — each capture is a
-    fresh, short-lived process, so this does not accumulate.
-    """
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(tabs.tab_titles, hwnd)
-    try:
-        return future.result(timeout=timeout)
-    except concurrent.futures.TimeoutError:
-        print(
-            f"[reloaded] tab read timed out after {timeout:.0f}s on window 0x{hwnd:X} — "
-            "skipping it this cycle",
-            file=sys.stderr,
-        )
-        return []
-    finally:
-        executor.shutdown(wait=False)
 
 
 def resolve_tab(
@@ -128,10 +89,9 @@ def merge_pinned(fresh: Layout, previous: Layout | None) -> Layout:
             if position < len(fresh.windows):
                 target = fresh.windows[position]
             elif fresh.windows:
-                # KNOWN GAP (pre-existing, not yet decided): the window this tab
-                # was pinned to no longer exists, so it lands in the first one —
-                # possibly on a different monitor — with no warning. Dropping it
-                # with a [warn] may be the better policy.
+                # The window this tab was pinned to no longer exists, so it
+                # lands in the first remaining window instead — possibly on
+                # a different monitor, silently.
                 target = fresh.windows[0]
             else:
                 continue
@@ -142,11 +102,25 @@ def merge_pinned(fresh: Layout, previous: Layout | None) -> Layout:
     return fresh
 
 
-def capture_live(repos_root: str, previous: Layout | None = None) -> Layout:
-    """Snapshot the current arrangement. Raises if the UIA scan fails."""
+def capture_live(
+    repos_root: str,
+    previous: Layout | None = None,
+    *,
+    live: dict[str, int] | None = None,
+    title_map: dict[str, str] | None = None,
+) -> Layout:
+    """Snapshot the current arrangement. Raises if the UIA scan fails.
+
+    ``live``/``title_map`` let a caller that already computed them (restart
+    reuses the same snapshot for both the capture and the teardown plan
+    right after it) pass them straight through instead of paying for the
+    psutil scan and the transcript-corpus walk a second time.
+    """
     monitors = win32.list_monitors()
-    live = discover.live_sessions()
-    title_map = discover.title_to_cwd(discover.transcript_index())
+    if live is None:
+        live = discover.live_sessions()
+    if title_map is None:
+        title_map = discover.title_to_cwd(discover.transcript_index())
 
     windows_data: list[dict] = []
     for hwnd in win32.list_wt_windows():
@@ -157,7 +131,7 @@ def capture_live(repos_root: str, previous: Layout | None = None) -> Layout:
                 "state": state,
                 "monitor": device,
                 "dpi": dpi,
-                "titles": _tab_titles_bounded(hwnd),
+                "titles": tabs.tab_titles(hwnd),
             }
         )
 

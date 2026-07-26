@@ -17,6 +17,7 @@ from reloaded.tasks import (
     _ps_quote,
     _vbs_quote,
     install,
+    logon_launcher_installed,
     startup_vbs_path,
     uninstall,
 )
@@ -170,6 +171,16 @@ def test_uninstall_reports_success_when_the_task_never_existed(fake_startup, mon
 def test_uninstall_reports_success_when_the_task_is_actually_removed(fake_startup, monkeypatch):
     _mock_powershell(monkeypatch, 0, stdout="REMOVED\n")
     assert uninstall() == 0
+
+
+def test_logon_launcher_installed_true_when_the_vbs_exists(fake_startup):
+    fake_startup.mkdir(parents=True)
+    (fake_startup / STARTUP_VBS_NAME).write_text("stub", encoding="utf-8")
+    assert logon_launcher_installed() is True
+
+
+def test_logon_launcher_installed_false_when_absent(fake_startup):
+    assert logon_launcher_installed() is False
 
 
 def test_uninstall_reports_failure_when_deletion_is_denied(fake_startup, monkeypatch):

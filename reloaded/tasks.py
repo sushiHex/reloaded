@@ -129,6 +129,15 @@ Register-ScheduledTask -TaskName {_ps_quote(TASK_RECONCILE)} -Action $action -Tr
     return proc.returncode, (proc.stderr or proc.stdout or "").strip()
 
 
+def logon_launcher_installed() -> bool:
+    """Whether the logon launcher (.vbs) exists - callers use this to warn
+    before an action (like `down`) whose effect the launcher would undo at
+    the next logon. The periodic reconcile task runs `capture`, not `up`
+    (see _register_reconcile_task) - it only re-snapshots the current state
+    and never relaunches anything, so it is not a source of this hazard."""
+    return startup_vbs_path().exists()
+
+
 def _remove_reconcile_task() -> tuple[bool, str]:
     """Returns (ok, message). Distinguishes "never existed" from "removal
     failed" by checking Get-ScheduledTask's structured result rather than
