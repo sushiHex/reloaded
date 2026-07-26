@@ -68,6 +68,16 @@ def plan_down(
     return plans
 
 
+def _send_exit(hwnd: int, item) -> bool:
+    """Foreground `item`'s tab and type /exit into it. Returns whether the
+    foreground actually happened (see tabs.select_tab) - a False return
+    means nothing was typed, so the caller must not assume /exit was sent."""
+    if not tabs.select_tab(hwnd, item):
+        return False
+    tabs.send_exit_keystrokes()
+    return True
+
+
 def execute_down(plans: list[WindowPlan], log=print) -> dict:
     """Send /exit to every planned tab, wait for each to actually end, then
     close each window whose tabs were all Claude sessions and all exited."""
@@ -79,7 +89,7 @@ def execute_down(plans: list[WindowPlan], log=print) -> dict:
     for plan in plans:
         all_exited = True
         for title, cwd, pid, item in plan.targets:
-            if not tabs.select_tab(plan.hwnd, item):
+            if not _send_exit(plan.hwnd, item):
                 log(
                     f"    [warn] could not bring window 0x{plan.hwnd:X} to the "
                     f"foreground - skipping {title!r} (exit it manually)"
@@ -88,7 +98,6 @@ def execute_down(plans: list[WindowPlan], log=print) -> dict:
                 all_exited = False
                 continue
 
-            tabs.send_exit_keystrokes()
             log(f"    sent /exit -> {title}  [{cwd}]")
 
             # Polls the specific pid rather than re-scanning every process via
@@ -102,8 +111,9 @@ def execute_down(plans: list[WindowPlan], log=print) -> dict:
             # already imported; this is a cached re-import, not a fresh load.
             import psutil
 
-            deadline = time.time() + EXIT_TIMEOUT_SECONDS
-            retry_at = time.time() + EXIT_RETRY_AFTER_SECONDS
+            start = time.time()
+            deadline = start + EXIT_TIMEOUT_SECONDS
+            retry_at = start + EXIT_RETRY_AFTER_SECONDS
             retried = False
             while psutil.pid_exists(pid):
                 now = time.time()
@@ -114,8 +124,7 @@ def execute_down(plans: list[WindowPlan], log=print) -> dict:
                     break
                 if not retried and now >= retry_at:
                     retried = True
-                    if tabs.select_tab(plan.hwnd, item):
-                        tabs.send_exit_keystrokes()
+                    if _send_exit(plan.hwnd, item):
                         log(
                             f"    {title} still running after "
                             f"{EXIT_RETRY_AFTER_SECONDS:.0f}s - resending /exit"
