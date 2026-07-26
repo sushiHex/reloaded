@@ -17,6 +17,15 @@ from .transcript import SIZE_WARN_BYTES, human_size
 
 STAGGER_SECONDS = 4
 
+# How long to let Windows Terminal settle its own startup layout before
+# verifying/fixing a window's placement - see execute(). Waited once, after
+# every window in the plan has already been placed, rather than once per
+# window: the wait is about giving WT's own in-progress layout time to
+# finish clobbering (or not) whatever we just applied, not about anything
+# specific to a single window, so paying it N times for N windows would be
+# pure added serial latency for the same one-time settling.
+GEOMETRY_SETTLE_SECONDS = 0.3
+
 # Suppresses the resume-return prompt ("compact or continue as-is") by pushing
 # the token gate out of reach. Scoped to the launched process only — it is not a
 # global env var, and it does not affect mid-session auto-compaction.
@@ -264,6 +273,11 @@ def transcripts_to_repair(plan: list[PlanEntry], index: dict[str, TranscriptInfo
 def execute(plan: list[PlanEntry]) -> list[LaunchResult]:
     """Launch every window in the plan and apply its exact geometry."""
     results: list[LaunchResult] = []
+    # (result, target rect, target state) for every window placed below, so
+    # the settle-and-verify pass after the loop knows what each one should
+    # look like without re-deriving it from the plan.
+    to_verify: list[tuple[LaunchResult, list[int], str]] = []
+
     for entry in plan:
         hwnd = launch_window(entry.argv, entry.tabs)
         placed = False
@@ -271,5 +285,17 @@ def execute(plan: list[PlanEntry]) -> list[LaunchResult]:
             # wt --pos got it close; this makes the rect exact and restores
             # maximized state, which --size (character cells) cannot express.
             placed = win32.set_geometry(hwnd, entry.rect, entry.state)
-        results.append(LaunchResult(window_id=entry.id, hwnd=hwnd, placed=placed))
+        result = LaunchResult(window_id=entry.id, hwnd=hwnd, placed=placed)
+        results.append(result)
+        if placed:
+            to_verify.append((result, entry.rect, entry.state))
+
+    if to_verify:
+        # One shared wait for Windows Terminal's own startup layout to
+        # settle, not one per window - every placement above already
+        # happened; this only decides whether any of them need correcting.
+        time.sleep(GEOMETRY_SETTLE_SECONDS)
+        for result, rect, state in to_verify:
+            result.placed = win32.verify_and_fix_geometry(result.hwnd, rect, state)
+
     return results

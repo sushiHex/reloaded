@@ -119,7 +119,7 @@ def test_execute_down_closes_a_window_once_all_its_tabs_exit(monkeypatch):
     monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda: None)
+    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
     # The pid no longer exists on the first poll, simulating a clean exit.
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
     closed_hwnds = []
@@ -141,7 +141,8 @@ def test_execute_down_resends_exit_after_a_partial_wait(monkeypatch):
     case being Claude Code's own /exit confirmation when background agents
     are still running, which the first /exit alone does not satisfy -
     resending it once should give it another chance before the full
-    timeout."""
+    timeout. The resend must NOT dismiss an overlay first: Escape would
+    cancel that very confirmation instead of answering it."""
     monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.02)
     monkeypatch.setattr(teardown_mod, "EXIT_RETRY_AFTER_SECONDS", 0.1)
@@ -151,7 +152,11 @@ def test_execute_down_resends_exit_after_a_partial_wait(monkeypatch):
         teardown_mod.tabs, "select_tab", lambda hwnd, item: select_calls.append(1) or True
     )
     send_calls = []
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda: send_calls.append(1))
+    monkeypatch.setattr(
+        teardown_mod.tabs,
+        "send_exit_keystrokes",
+        lambda *, dismiss_overlay=True: send_calls.append(dismiss_overlay),
+    )
     # Still "running" until the retry (2nd send) has happened.
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: len(send_calls) < 2)
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
@@ -159,7 +164,8 @@ def test_execute_down_resends_exit_after_a_partial_wait(monkeypatch):
     plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
-    assert send_calls == [1, 1]  # sent once, then resent once on retry
+    # Initial send dismisses an overlay; the resend must not.
+    assert send_calls == [True, False]
     assert select_calls == [1, 1]  # re-foregrounded before resending
     assert result["exited"] == [("app-a", CWD_A)]
     assert result["timed_out"] == []
@@ -173,7 +179,11 @@ def test_execute_down_only_resends_once(monkeypatch):
     monkeypatch.setattr(teardown_mod, "EXIT_RETRY_AFTER_SECONDS", 0.05)
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
     send_calls = []
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda: send_calls.append(1))
+    monkeypatch.setattr(
+        teardown_mod.tabs,
+        "send_exit_keystrokes",
+        lambda *, dismiss_overlay=True: send_calls.append(dismiss_overlay),
+    )
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)  # never exits
     monkeypatch.setattr(
         teardown_mod.win32,
@@ -184,15 +194,39 @@ def test_execute_down_only_resends_once(monkeypatch):
     plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
-    assert send_calls == [1, 1]  # initial + exactly one resend, never more
+    assert send_calls == [True, False]  # initial + exactly one resend, never more
     assert result["timed_out"] == [("app-a", CWD_A)]
+
+
+def test_execute_down_logs_when_the_resend_cannot_foreground(monkeypatch):
+    """The retry's foreground failure must be logged like the initial send's
+    is - silently discarding it left operators with no clue the resend
+    never actually happened."""
+    monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.02)
+    monkeypatch.setattr(teardown_mod, "EXIT_RETRY_AFTER_SECONDS", 0.05)
+    select_calls = []
+
+    def fake_select(hwnd, item):
+        select_calls.append(1)
+        return len(select_calls) == 1  # succeeds initially, fails on the retry
+
+    monkeypatch.setattr(teardown_mod.tabs, "select_tab", fake_select)
+    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+
+    logs = []
+    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    teardown_mod.execute_down([plan], log=logs.append)
+
+    assert any("resend" in line and "app-a" in line for line in logs)
 
 
 def test_execute_down_leaves_window_open_when_a_tab_times_out(monkeypatch):
     monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda: None)
+    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
     # The pid never goes away -> the tab never "exits".
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
     monkeypatch.setattr(
@@ -214,7 +248,7 @@ def test_execute_down_never_closes_a_window_with_a_non_claude_tab(monkeypatch):
     monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda: None)
+    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)  # the Claude tab exits
     monkeypatch.setattr(
         teardown_mod.win32,
@@ -237,7 +271,7 @@ def test_execute_down_never_types_into_a_window_that_did_not_actually_foreground
     unrelated window actually has focus. Must skip, not guess."""
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: False)
     sent = []
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda: sent.append(1))
+    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: sent.append(1))
     monkeypatch.setattr(
         psutil,
         "pid_exists",
@@ -261,7 +295,7 @@ def test_execute_down_reports_close_failure_without_crashing(monkeypatch):
     monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda: None)
+    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: False)
 

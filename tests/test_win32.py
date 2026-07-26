@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import reloaded.win32 as win32_mod
-from reloaded.win32 import close_window, set_foreground, set_geometry
+from reloaded.win32 import close_window, set_foreground, set_geometry, verify_and_fix_geometry
 
 
 def test_set_geometry_refuses_a_hwnd_that_is_no_longer_a_wt_window(monkeypatch):
@@ -27,13 +27,10 @@ def test_set_geometry_class_check_runs_before_any_placement_call(monkeypatch):
     assert set_geometry(12345, [0, 0, 100, 100], "normal") is False
 
 
-def test_set_geometry_reapplies_once_to_survive_wt_settling(monkeypatch):
-    """WT can still be finishing its own startup layout right when a freshly
-    launched window is first detected, and a placement applied into that
-    window can end up clobbered by WT's own positioning shortly after -
-    reapplying once after a brief pause is what makes the intended rect the
-    one that sticks."""
-    monkeypatch.setattr(win32_mod, "GEOMETRY_SETTLE_SECONDS", 0)
+def test_set_geometry_applies_exactly_once_no_settle_no_retry(monkeypatch):
+    """set_geometry is the immediate, one-shot placement only now - waiting
+    for WT to settle and reapplying if it drifted is verify_and_fix_geometry's
+    job, called separately (and batched across windows) by deploy.execute."""
     monkeypatch.setattr(win32_mod, "_class_name", lambda hwnd: win32_mod.WT_CLASS)
     calls = []
     monkeypatch.setattr(
@@ -43,23 +40,72 @@ def test_set_geometry_reapplies_once_to_survive_wt_settling(monkeypatch):
         win32_mod._u32, "SetWindowPlacement", lambda hwnd, ref: calls.append("set") or True
     )
     assert set_geometry(12345, [0, 0, 100, 100], "normal") is True
-    assert calls == ["get", "set", "get", "set"]
+    assert calls == ["get", "set"]
 
 
-def test_set_geometry_does_not_reapply_if_the_first_attempt_fails(monkeypatch):
-    monkeypatch.setattr(win32_mod, "GEOMETRY_SETTLE_SECONDS", 0)
+def test_verify_and_fix_geometry_refuses_a_hwnd_that_is_no_longer_a_wt_window(monkeypatch):
+    """Same HWND-reuse hazard set_geometry itself guards against: real time
+    has passed (the caller's settle wait) since the original placement, so
+    the class must be re-checked here too, not just once in set_geometry."""
+    monkeypatch.setattr(win32_mod, "_class_name", lambda hwnd: "SomeUnrelatedApp")
+
+    def boom(*a, **k):
+        raise AssertionError("get_geometry must not be called")
+
+    monkeypatch.setattr(win32_mod, "get_geometry", boom)
+    assert verify_and_fix_geometry(12345, [0, 0, 100, 100], "normal") is False
+
+
+def test_verify_and_fix_geometry_does_nothing_when_placement_already_stuck(monkeypatch):
+    """The common case: no drift, no reapply, no maximize/minimize flicker,
+    and no risk of a transient second-call failure masking the real
+    success."""
     monkeypatch.setattr(win32_mod, "_class_name", lambda hwnd: win32_mod.WT_CLASS)
-    calls = []
     monkeypatch.setattr(
-        win32_mod._u32, "GetWindowPlacement", lambda hwnd, ref: calls.append("get") or False
+        win32_mod, "get_geometry", lambda hwnd: ([0, 0, 100, 100], "normal", "\\\\.\\DISPLAY1", 96)
     )
 
     def boom(*a, **k):
-        raise AssertionError("SetWindowPlacement must not run if GetWindowPlacement failed")
+        raise AssertionError("must not reapply when nothing drifted")
 
     monkeypatch.setattr(win32_mod._u32, "SetWindowPlacement", boom)
-    assert set_geometry(12345, [0, 0, 100, 100], "normal") is False
-    assert calls == ["get"]
+    assert verify_and_fix_geometry(12345, [0, 0, 100, 100], "normal") is True
+
+
+def test_verify_and_fix_geometry_reapplies_when_rect_drifted(monkeypatch):
+    monkeypatch.setattr(win32_mod, "_class_name", lambda hwnd: win32_mod.WT_CLASS)
+    monkeypatch.setattr(
+        win32_mod, "get_geometry", lambda hwnd: ([9, 9, 9, 9], "normal", "\\\\.\\DISPLAY1", 96)
+    )
+    calls = []
+    monkeypatch.setattr(
+        win32_mod._u32, "GetWindowPlacement", lambda hwnd, ref: calls.append("get") or True
+    )
+    monkeypatch.setattr(
+        win32_mod._u32, "SetWindowPlacement", lambda hwnd, ref: calls.append("set") or True
+    )
+    assert verify_and_fix_geometry(12345, [0, 0, 100, 100], "normal") is True
+    assert calls == ["get", "set"]
+
+
+def test_verify_and_fix_geometry_reapplies_when_state_drifted(monkeypatch):
+    """Rect alone isn't enough to verify a maximized/minimized target - state
+    must be checked too, since rcNormalPosition (what the rect comparison
+    reads) stays the same restore-to rect regardless of current state."""
+    monkeypatch.setattr(win32_mod, "_class_name", lambda hwnd: win32_mod.WT_CLASS)
+    monkeypatch.setattr(
+        win32_mod, "get_geometry", lambda hwnd: ([0, 0, 100, 100], "normal", "\\\\.\\DISPLAY1", 96)
+    )
+    calls = []
+    monkeypatch.setattr(win32_mod._u32, "GetWindowPlacement", lambda hwnd, ref: True)
+    monkeypatch.setattr(
+        win32_mod._u32, "SetWindowPlacement", lambda hwnd, ref: calls.append("set") or True
+    )
+    monkeypatch.setattr(
+        win32_mod._u32, "ShowWindow", lambda hwnd, cmd: calls.append(("show", cmd))
+    )
+    assert verify_and_fix_geometry(12345, [0, 0, 100, 100], "maximized") is True
+    assert calls == ["set", ("show", win32_mod.SW_MAXIMIZED)]
 
 
 def test_set_foreground_true_only_when_the_os_actually_moved_focus(monkeypatch):

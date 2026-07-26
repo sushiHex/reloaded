@@ -2,14 +2,9 @@
 from __future__ import annotations
 
 import ctypes
-import time
 from ctypes import wintypes
 
 from .layout import Monitor
-
-# How long to let Windows Terminal settle its own layout after creation
-# before reapplying our placement - see set_geometry.
-GEOMETRY_SETTLE_SECONDS = 0.3
 
 _u32 = ctypes.WinDLL("user32", use_last_error=True)
 try:
@@ -260,17 +255,40 @@ def set_geometry(hwnd: int, rect: list[int], state: str = "normal") -> bool:
     candidates in deploy.launch_window) is enough for that to happen in
     principle, so this must not move/resize whatever the HWND now refers to.
 
-    Reapplies once after a brief settle pause: Windows Terminal can still be
-    finishing its own startup layout right when a freshly launched window is
-    first detected, and a placement applied into that window can end up
-    clobbered by WT's own positioning shortly after - observed as a newly
-    relaunched window landing at an arbitrary spot instead of its saved
-    rect. The second call is a no-op when the first one already stuck.
+    This is the immediate, one-shot placement only - it does not wait for or
+    verify against Windows Terminal's own startup layout settling, which can
+    still be in progress right when a freshly launched window is first
+    detected and can clobber a placement applied into it shortly after. See
+    `verify_and_fix_geometry`, a separate call a caller makes after its own
+    wait (batched across every window in a deploy in `deploy.execute`,
+    rather than paid here per window).
     """
     if _class_name(hwnd).upper() != WT_CLASS:
         return False
+    return _apply_geometry(hwnd, rect, state)
 
-    if not _apply_geometry(hwnd, rect, state):
+
+def verify_and_fix_geometry(hwnd: int, rect: list[int], state: str) -> bool:
+    """Re-check a placement `set_geometry` already applied, reapplying once
+    if Windows Terminal's own startup layout clobbered it.
+
+    Callers are expected to have already waited out WT's startup-settling
+    window (see deploy.GEOMETRY_SETTLE_SECONDS) before calling this. Re-checks
+    the window class again first: real time has passed since the original
+    `set_geometry` call, so the same HWND-reuse hazard applies here too - a
+    blind reapply with no re-check would defeat the guard `set_geometry`
+    itself uses, and could move/resize a since-unrelated window.
+
+    Only reapplies if the placement actually drifted (compares both the
+    restored-position rect and the min/normal/maximized state read back from
+    `get_geometry`), so a window that already stuck - the common case - is
+    never touched again: a maximized/minimized window is never visibly
+    re-transitioned, and a transient failure reading back an already-correct
+    placement can never be reported as if the placement itself had failed.
+    """
+    if _class_name(hwnd).upper() != WT_CLASS:
         return False
-    time.sleep(GEOMETRY_SETTLE_SECONDS)
+    actual_rect, actual_state, _device, _dpi = get_geometry(hwnd)
+    if actual_rect == rect and actual_state == state:
+        return True
     return _apply_geometry(hwnd, rect, state)

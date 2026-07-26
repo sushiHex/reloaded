@@ -5,7 +5,10 @@ import pytest
 import reloaded.deploy as deploy_mod
 from reloaded.deploy import (
     RESUME_SUPPRESSOR,
+    LaunchResult,
+    PlanEntry,
     _pick_window,
+    execute,
     launch_window,
     launcher_command,
     plan_deploy,
@@ -288,3 +291,89 @@ def test_plan_passes_transcript_size_through_to_the_banner():
     lo = _layout([_window([0, 0, 800, 600], [Tab(cwd=r"C:\repos\demo-app", title="demo-app")])])
     plan = plan_deploy(lo, {}, MONITORS, {norm(r"C:\repos\demo-app"): big})
     assert "676 MB" in " ".join(plan[0].argv)
+
+
+def _entry(id_="w1", rect=None, state="normal"):
+    return PlanEntry(
+        id=id_, state=state, rect=rect or [0, 0, 100, 100],
+        tabs=[], skipped=[], missing=[], delays=[], argv=["wt"],
+    )
+
+
+def test_execute_batches_the_settle_wait_once_not_per_window(monkeypatch):
+    """N windows must pay GEOMETRY_SETTLE_SECONDS once total, not once each -
+    the whole point of moving the wait out of win32.set_geometry."""
+    hwnds = iter([100, 200, 300])
+    monkeypatch.setattr(deploy_mod, "launch_window", lambda argv, tabs: next(hwnds))
+    monkeypatch.setattr(deploy_mod.win32, "set_geometry", lambda hwnd, rect, state: True)
+    monkeypatch.setattr(
+        deploy_mod.win32, "verify_and_fix_geometry", lambda hwnd, rect, state: True
+    )
+    sleeps = []
+    monkeypatch.setattr(deploy_mod.time, "sleep", lambda s: sleeps.append(s))
+
+    results = execute([_entry("w1"), _entry("w2"), _entry("w3")])
+
+    assert sleeps == [deploy_mod.GEOMETRY_SETTLE_SECONDS]  # one sleep total, not three
+    assert [r.placed for r in results] == [True, True, True]
+
+
+def test_execute_verifies_each_placed_window_with_its_own_target_after_the_wait(monkeypatch):
+    monkeypatch.setattr(deploy_mod, "launch_window", lambda argv, tabs: 100)
+    monkeypatch.setattr(deploy_mod.win32, "set_geometry", lambda hwnd, rect, state: True)
+    verify_calls = []
+    monkeypatch.setattr(
+        deploy_mod.win32,
+        "verify_and_fix_geometry",
+        lambda hwnd, rect, state: verify_calls.append((hwnd, rect, state)) or True,
+    )
+    monkeypatch.setattr(deploy_mod.time, "sleep", lambda s: None)
+
+    entry = _entry("w1", rect=[1, 2, 3, 4], state="maximized")
+    results = execute([entry])
+
+    assert verify_calls == [(100, [1, 2, 3, 4], "maximized")]
+    assert results[0].placed is True
+
+
+def test_execute_skips_settle_and_verify_when_launch_fails(monkeypatch):
+    monkeypatch.setattr(deploy_mod, "launch_window", lambda argv, tabs: None)
+
+    def boom(*a, **k):
+        raise AssertionError("must not sleep/verify/place when nothing launched")
+
+    monkeypatch.setattr(deploy_mod.win32, "set_geometry", boom)
+    monkeypatch.setattr(deploy_mod.win32, "verify_and_fix_geometry", boom)
+    monkeypatch.setattr(deploy_mod.time, "sleep", boom)
+
+    results = execute([_entry("w1")])
+    assert results == [LaunchResult(window_id="w1", hwnd=None, placed=False)]
+
+
+def test_execute_skips_settle_and_verify_when_initial_placement_fails(monkeypatch):
+    monkeypatch.setattr(deploy_mod, "launch_window", lambda argv, tabs: 100)
+    monkeypatch.setattr(deploy_mod.win32, "set_geometry", lambda hwnd, rect, state: False)
+
+    def boom(*a, **k):
+        raise AssertionError("must not sleep/verify a placement that never succeeded")
+
+    monkeypatch.setattr(deploy_mod.win32, "verify_and_fix_geometry", boom)
+    monkeypatch.setattr(deploy_mod.time, "sleep", boom)
+
+    results = execute([_entry("w1")])
+    assert results == [LaunchResult(window_id="w1", hwnd=100, placed=False)]
+
+
+def test_execute_final_placed_reflects_the_verify_step_not_just_the_initial_apply(monkeypatch):
+    """Even when the initial set_geometry succeeds, the reported placed
+    status is whatever verify_and_fix_geometry ultimately determines - it
+    may have had to correct drift, or found the window gone by then."""
+    monkeypatch.setattr(deploy_mod, "launch_window", lambda argv, tabs: 100)
+    monkeypatch.setattr(deploy_mod.win32, "set_geometry", lambda hwnd, rect, state: True)
+    monkeypatch.setattr(
+        deploy_mod.win32, "verify_and_fix_geometry", lambda hwnd, rect, state: False
+    )
+    monkeypatch.setattr(deploy_mod.time, "sleep", lambda s: None)
+
+    results = execute([_entry("w1")])
+    assert results[0].placed is False

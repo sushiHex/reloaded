@@ -68,13 +68,14 @@ def plan_down(
     return plans
 
 
-def _send_exit(hwnd: int, item) -> bool:
+def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True) -> bool:
     """Foreground `item`'s tab and type /exit into it. Returns whether the
     foreground actually happened (see tabs.select_tab) - a False return
-    means nothing was typed, so the caller must not assume /exit was sent."""
+    means nothing was typed, so the caller must not assume /exit was sent.
+    See tabs.send_exit_keystrokes for what dismiss_overlay controls."""
     if not tabs.select_tab(hwnd, item):
         return False
-    tabs.send_exit_keystrokes()
+    tabs.send_exit_keystrokes(dismiss_overlay=dismiss_overlay)
     return True
 
 
@@ -124,10 +125,19 @@ def execute_down(plans: list[WindowPlan], log=print) -> dict:
                     break
                 if not retried and now >= retry_at:
                     retried = True
-                    if _send_exit(plan.hwnd, item):
+                    # dismiss_overlay=False: Escape would cancel rather than
+                    # answer Claude Code's background-agent /exit
+                    # confirmation - the exact thing this resend exists to
+                    # get past. See tabs.send_exit_keystrokes.
+                    if _send_exit(plan.hwnd, item, dismiss_overlay=False):
                         log(
                             f"    {title} still running after "
                             f"{EXIT_RETRY_AFTER_SECONDS:.0f}s - resending /exit"
+                        )
+                    else:
+                        log(
+                            f"    [warn] could not bring window 0x{plan.hwnd:X} "
+                            f"to the foreground to resend /exit -> {title!r}"
                         )
                 time.sleep(EXIT_POLL_SECONDS)
             else:

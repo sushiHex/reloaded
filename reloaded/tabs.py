@@ -128,6 +128,15 @@ def select_tab(hwnd: int, tab_item) -> bool:
     stays bounded either way - the caller polls for the intended session's
     pid and reports a timeout if it never reacts - but this does not
     guarantee the keystrokes landed on the intended tab specifically.
+    teardown's mid-timeout resend calls this a second time on the same
+    `tab_item`, which doubles exposure to this race for exactly the holdout
+    sessions it targets - not made worse by the resend, but not reduced by
+    it either. A real fix would need a cheap way to verify the tab, not just
+    the window, actually took focus (e.g. reading the item's selection state
+    back after Select()) - not attempted here since the exact uiautomation
+    API for that isn't confirmed against this codebase's pinned version, and
+    getting it wrong risks a worse failure (an exception) than the current
+    documented gap.
     """
     try:
         tab_item.GetSelectionItemPattern().Select()
@@ -136,23 +145,35 @@ def select_tab(hwnd: int, tab_item) -> bool:
     return win32.set_foreground(hwnd)
 
 
-def send_exit_keystrokes() -> None:
+def send_exit_keystrokes(*, dismiss_overlay: bool = True) -> None:
     """Type '/exit' + Enter into whatever terminal currently has focus.
 
-    Sends Escape first to dismiss a transient overlay Claude Code may be
-    showing on refocus - specifically its "away summary" recap, shown after
-    returning to a session that's been idle long enough to trigger one.
-    Without this, the very next keystroke (which is exactly what
-    foregrounding the window here triggers) can get consumed dismissing
-    that overlay instead of reaching the actual prompt, leaving /exit never
-    typed at all - confirmed by a transcript ending in an away_summary
-    system event with no trace of /exit ever being received. Escape is a
-    safe no-op when there is nothing to dismiss.
+    ``dismiss_overlay=True`` (the default, meant for a tab's first exit
+    attempt) sends Escape first to dismiss a transient overlay Claude Code
+    may be showing on refocus - specifically its "away summary" recap,
+    shown after returning to a session that's been idle long enough to
+    trigger one. Without this, the very next keystroke (which is exactly
+    what foregrounding the window here triggers) can get consumed
+    dismissing that overlay instead of reaching the actual prompt, leaving
+    /exit never typed at all - confirmed by a transcript ending in an
+    away_summary system event with no trace of /exit ever being received.
+    Escape is a safe no-op when there is nothing to dismiss.
+
+    ``dismiss_overlay=False`` (used for teardown's mid-timeout retry) skips
+    the Escape. Claude Code's OTHER documented /exit blocker - its
+    confirmation when background agents are still running - is a dialog
+    Escape would cancel rather than answer; sending it on a retry could
+    dismiss exactly the confirmation the retry exists to get past instead
+    of confirming it, undoing its own purpose. By retry time an
+    away-summary overlay from regaining focus would already have been
+    handled by the first attempt, so there is nothing left that Escape
+    should still need to dismiss.
     """
     import time
 
     import uiautomation as auto
 
-    auto.SendKeys("{Esc}")
-    time.sleep(0.1)
+    if dismiss_overlay:
+        auto.SendKeys("{Esc}")
+        time.sleep(0.1)
     auto.SendKeys("/exit{Enter}")
