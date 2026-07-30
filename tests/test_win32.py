@@ -1,7 +1,90 @@
 from __future__ import annotations
 
+import ctypes
+
 import reloaded.win32 as win32_mod
-from reloaded.win32 import close_window, set_foreground, set_geometry, verify_and_fix_geometry
+from reloaded.win32 import (
+    RECT,
+    WINDOWPLACEMENT,
+    close_window,
+    get_geometry,
+    set_foreground,
+    set_geometry,
+    verify_and_fix_geometry,
+)
+
+
+def _fake_get_window_placement(showcmd, normal_rect):
+    """A GetWindowPlacement replacement that writes real values into the
+    caller's WINDOWPLACEMENT struct via its byref, the way the real Win32
+    call does - a plain True/False stub can't exercise get_geometry's field
+    reads."""
+    l, t, w, h = normal_rect
+
+    def fake(hwnd, ref):
+        wp = ctypes.cast(ref, ctypes.POINTER(WINDOWPLACEMENT)).contents
+        wp.showCmd = showcmd
+        wp.rcNormalPosition = RECT(l, t, l + w, t + h)
+        return True
+
+    return fake
+
+
+def _fake_get_window_rect(rect):
+    l, t, w, h = rect
+
+    def fake(hwnd, ref):
+        r = ctypes.cast(ref, ctypes.POINTER(RECT)).contents
+        r.left, r.top, r.right, r.bottom = l, t, l + w, t + h
+        return True
+
+    return fake
+
+
+def test_get_geometry_uses_actual_bounds_for_a_normal_state_window(monkeypatch):
+    """The regression this guards: a window Aero-Snapped to half a monitor
+    reports showCmd as ordinary SW_SHOWNORMAL, identical to a floating
+    window, but GetWindowPlacement's rcNormalPosition for it is the size it
+    would return to if un-snapped - not its current half-screen bounds.
+    Capturing that instead of GetWindowRect's actual bounds silently drops
+    a snap-managed layout on restore."""
+    monkeypatch.setattr(
+        win32_mod._u32,
+        "GetWindowPlacement",
+        _fake_get_window_placement(win32_mod.SW_NORMAL, [999, 999, 111, 111]),
+    )
+    monkeypatch.setattr(
+        win32_mod._u32, "GetWindowRect", _fake_get_window_rect([1920, 0, 1920, 2088])
+    )
+    monkeypatch.setattr(win32_mod._u32, "MonitorFromWindow", lambda hwnd, flags: 0)
+    monkeypatch.setattr(win32_mod._u32, "GetMonitorInfoW", lambda hmon, ref: False)
+
+    rect, state, _device, _dpi = get_geometry(12345)
+    assert state == "normal"
+    assert rect == [1920, 0, 1920, 2088]  # GetWindowRect's actual bounds, not rcNormalPosition
+
+
+def test_get_geometry_uses_restore_rect_for_a_maximized_window(monkeypatch):
+    """The opposite case: GetWindowRect for a maximized window returns the
+    full-screen covering rect, not the size it should restore to -
+    rcNormalPosition must be used here instead, or "maximized" could never
+    be restored to its pre-maximize size."""
+    monkeypatch.setattr(
+        win32_mod._u32,
+        "GetWindowPlacement",
+        _fake_get_window_placement(win32_mod.SW_MAXIMIZED, [100, 100, 800, 600]),
+    )
+
+    def boom(*a, **k):
+        raise AssertionError("must not call GetWindowRect for a maximized window")
+
+    monkeypatch.setattr(win32_mod._u32, "GetWindowRect", boom)
+    monkeypatch.setattr(win32_mod._u32, "MonitorFromWindow", lambda hwnd, flags: 0)
+    monkeypatch.setattr(win32_mod._u32, "GetMonitorInfoW", lambda hmon, ref: False)
+
+    rect, state, _device, _dpi = get_geometry(12345)
+    assert state == "maximized"
+    assert rect == [100, 100, 800, 600]  # rcNormalPosition, the restore-to size
 
 
 def test_set_geometry_refuses_a_hwnd_that_is_no_longer_a_wt_window(monkeypatch):

@@ -161,16 +161,40 @@ def list_monitors() -> list[Monitor]:
 def get_geometry(hwnd: int) -> tuple[list[int], str, str, int]:
     """Return (rect, state, monitor_device, dpi).
 
-    Uses GetWindowPlacement rather than GetWindowRect so the *restored* rect is
-    preserved even while the window is maximized — that is what makes it possible
-    to restore both the maximized state and the size it would return to.
+    For a "normal"-state window, rect is its actual current on-screen bounds
+    (GetWindowRect). This matters specifically for a window Aero-Snapped to
+    half a monitor: Windows reports showCmd as SW_SHOWNORMAL for a snapped
+    window, indistinguishable from a genuinely floating one, but
+    GetWindowPlacement's rcNormalPosition for it is the size the window
+    would return to if *un*-snapped - not its current half-screen bounds.
+    Capturing rcNormalPosition here would silently drop a snap-managed
+    layout: the window comes back at some unrelated earlier float size and
+    position instead of back in its snapped half, restored via
+    SetWindowPlacement to a rect nobody currently sees the window at.
+    Verified directly: on a real snapped 2x2 layout (two monitors, one
+    window snapped to each half), rcNormalPosition reported the same
+    generic non-half-monitor size for every window regardless of which
+    half it was actually snapped to, while GetWindowRect correctly reported
+    each one's real half-monitor bounds.
+
+    For a maximized/minimized window, rect is still rcNormalPosition (via
+    GetWindowPlacement) - the opposite problem applies there instead:
+    GetWindowRect for a maximized window returns the full-screen covering
+    rect, not the size it should restore to. rcNormalPosition is what makes
+    it possible to restore both the maximized state and the size the window
+    would return to if un-maximized.
     """
     wp = WINDOWPLACEMENT()
     wp.length = ctypes.sizeof(WINDOWPLACEMENT)
     _u32.GetWindowPlacement(wintypes.HWND(hwnd), ctypes.byref(wp))
-    r = wp.rcNormalPosition
-    rect = [r.left, r.top, r.right - r.left, r.bottom - r.top]
     state = _STATE_FROM_SHOWCMD.get(wp.showCmd, "normal")
+
+    if state == "normal":
+        r = RECT()
+        _u32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(r))
+    else:
+        r = wp.rcNormalPosition
+    rect = [r.left, r.top, r.right - r.left, r.bottom - r.top]
 
     hmon = _u32.MonitorFromWindow(wintypes.HWND(hwnd), MONITOR_DEFAULTTONEAREST)
     mi = MONITORINFOEXW()
