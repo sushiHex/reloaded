@@ -11,6 +11,14 @@ try:
     _shcore = ctypes.WinDLL("shcore", use_last_error=True)
 except OSError:  # pragma: no cover - shcore exists on Win8.1+
     _shcore = None
+try:
+    _dwm = ctypes.WinDLL("dwmapi", use_last_error=True)
+except OSError:  # pragma: no cover - dwmapi exists on Vista+
+    _dwm = None
+
+# The visible bounds of a window, as opposed to GetWindowRect's rect, which
+# also covers the invisible resize border around it.
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
 
 # Per-monitor DPI v2. Declared at import, before anything else can set it.
 DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = ctypes.c_void_p(-4)
@@ -156,6 +164,52 @@ def list_monitors() -> list[Monitor]:
 
     _u32.EnumDisplayMonitors(None, None, _cb, 0)
     return out
+
+
+def frame_inset(hwnd: int) -> list[int]:
+    """How far the window's visible edges sit inside its GetWindowRect rect,
+    as [left, top, right, bottom].
+
+    Every rect this module reads and writes (GetWindowRect,
+    WINDOWPLACEMENT.rcNormalPosition) includes the invisible resize border
+    Windows draws around a window, but a monitor's work area is expressed in
+    the pixels you can actually see. A window snapped flush to the left half of
+    a screen therefore reports a rect starting at x=-9, and one snapped flush
+    right reports a right edge 9px past the screen. Without this measurement
+    clamp_rect reads that overhang as "off-screen" and pulls the window inward,
+    which is what left snapped windows with a gap at the outer screen edges and
+    an overlap down the middle.
+
+    Measured rather than derived: the inset is the window's own frame, not a
+    system constant. On a 144-DPI display Windows Terminal measures 9px while
+    GetSystemMetricsForDpi(SM_CXSIZEFRAME + SM_CXPADDEDBORDER) reports 11, so
+    computing it from DPI would be wrong for the very windows this tool places.
+
+    Returns zeros when DWM cannot answer (it has nothing to report for a
+    minimized window), which reproduces the old un-inset behaviour rather than
+    inventing an offset.
+    """
+    if _dwm is None:
+        return [0, 0, 0, 0]
+    visible = RECT()
+    if _dwm.DwmGetWindowAttribute(
+        wintypes.HWND(hwnd),
+        ctypes.c_uint(DWMWA_EXTENDED_FRAME_BOUNDS),
+        ctypes.byref(visible),
+        ctypes.sizeof(visible),
+    ) != 0:
+        return [0, 0, 0, 0]
+    full = RECT()
+    if not _u32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(full)):
+        return [0, 0, 0, 0]
+    if visible.right <= visible.left or visible.bottom <= visible.top:
+        return [0, 0, 0, 0]
+    return [
+        visible.left - full.left,
+        visible.top - full.top,
+        full.right - visible.right,
+        full.bottom - visible.bottom,
+    ]
 
 
 def get_geometry(hwnd: int) -> tuple[list[int], str, str, int]:

@@ -230,7 +230,9 @@ def plan_deploy(
             tab_sizes.append(int(sizes.get(norm(tab.cwd), 0)))
             index += 1
 
-        rect = clamp_rect(window.rect, window.dpi, window.monitor, monitors)
+        rect = clamp_rect(
+            window.rect, window.dpi, window.monitor, monitors, window.inset
+        )
         plan.append(
             PlanEntry(
                 id=window_id(position),

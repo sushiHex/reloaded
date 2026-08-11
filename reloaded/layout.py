@@ -35,6 +35,13 @@ class Window:
     state: str  # normal | maximized | minimized
     dpi: int
     tabs: list[Tab] = field(default_factory=list)
+    # How far the visible window sits inside `rect`, as [left, top, right,
+    # bottom] - see win32.frame_inset. `rect` covers the invisible resize
+    # border, so a flush-snapped window's rect legitimately extends past the
+    # monitor's work area; clamp_rect needs this to tell that apart from a rect
+    # that is genuinely off-screen. Defaults to zeros so a layout written
+    # before this field behaves exactly as it used to until the next capture.
+    inset: list[int] = field(default_factory=lambda: [0, 0, 0, 0])
 
 
 @dataclass
@@ -77,6 +84,7 @@ class Layout:
                     rect=list(w.get("rect", [0, 0, 1168, 624])),
                     state=w.get("state", "normal"),
                     dpi=int(w.get("dpi", 96)),
+                    inset=list(w.get("inset", [0, 0, 0, 0])),
                     tabs=[
                         Tab(
                             cwd=t["cwd"],
@@ -137,16 +145,27 @@ def clamp_rect(
     saved_dpi: int,
     saved_monitor: str,
     monitors: list[Monitor],
+    saved_inset: list[int] | None = None,
 ) -> list[int]:
     """Return a rect guaranteed to be visible on an available monitor.
 
     Handles the three ways a saved rect goes bad between capture and deploy:
     the monitor disappeared, the DPI changed, or the resolution shrank.
+
+    `rect` is a window rect, which includes the invisible resize border, while
+    a monitor's work area is measured in visible pixels. `saved_inset` (see
+    win32.frame_inset) reconciles the two: the allowed bounds are widened by
+    the border so a window snapped flush to a screen edge - whose rect really
+    does start at x=-9 and end 9px past the screen - is left exactly where it
+    was. Without it every snapped window got pulled inward by the border width,
+    leaving a gap at the outer screen edges and an overlap down the middle.
+    Omitted or zero reproduces the old behaviour.
     """
     if not monitors:
         return list(rect)
 
     x, y, w, h = rect
+    inset_left, inset_top, inset_right, inset_bottom = saved_inset or [0, 0, 0, 0]
     target = next((m for m in monitors if m.device == saved_monitor), None)
     if target is None:
         # Monitor is gone (undocked, powered off, re-enumerated). Re-anchor near
@@ -160,8 +179,16 @@ def clamp_rect(
         scale = target.dpi / float(saved_dpi)
         w = int(round(w * scale))
         h = int(round(h * scale))
+        # The border is part of the frame, so it scales with the window.
+        inset_left = int(round(inset_left * scale))
+        inset_top = int(round(inset_top * scale))
+        inset_right = int(round(inset_right * scale))
+        inset_bottom = int(round(inset_bottom * scale))
 
-    left, top, right, bottom = target.work
+    left = target.work[0] - inset_left
+    top = target.work[1] - inset_top
+    right = target.work[2] + inset_right
+    bottom = target.work[3] + inset_bottom
     w = max(1, min(w, right - left))
     h = max(1, min(h, bottom - top))
     x = max(left, min(x, right - w))

@@ -3,6 +3,8 @@ from __future__ import annotations
 import dataclasses
 import json
 
+import pytest
+
 from reloaded.layout import (
     LAYOUT_VERSION,
     Layout,
@@ -104,6 +106,59 @@ def test_clamp_pulls_a_window_back_from_past_the_right_edge():
     assert out[0] + out[2] <= 2560
 
 
+# Real values measured on a 2x 3840x2160 @150% setup: work area 3840x2088 per
+# screen, taskbar on the primary, Windows Terminal's invisible resize border
+# 9px on left/right/bottom and 0 on top. Each window is snapped flush to half a
+# screen, so its rect legitimately pokes 9px past the work area on both sides.
+SNAP_MONITORS = [
+    Monitor(device=r"\\.\DISPLAY1", primary=True, work=[0, 0, 3840, 2088], dpi=144),
+    Monitor(device=r"\\.\DISPLAY2", primary=False, work=[3840, 0, 7680, 2088], dpi=144),
+]
+SNAP_INSET = [9, 0, 9, 9]
+
+
+@pytest.mark.parametrize(
+    "monitor,rect",
+    [
+        (r"\\.\DISPLAY1", [-9, 0, 1938, 2097]),    # left half of the primary
+        (r"\\.\DISPLAY1", [1911, 0, 1938, 2097]),  # right half of the primary
+        (r"\\.\DISPLAY2", [3831, 0, 1938, 2097]),  # left half of the second
+        (r"\\.\DISPLAY2", [5751, 0, 1938, 2097]),  # right half of the second
+    ],
+)
+def test_clamp_leaves_a_flush_snapped_window_exactly_where_it_was(monitor, rect):
+    """The whole point of the inset: these rects are correct, not off-screen.
+
+    Clamped to the bare work area they came back as 0 / 1902 / 3840 / 5742 with
+    the height cut to 2088 - a ~9px gap at the outer screen edges and a ~9px
+    overlap down the middle of each monitor.
+    """
+    assert clamp_rect(rect, 144, monitor, SNAP_MONITORS, SNAP_INSET) == rect
+
+
+def test_clamp_without_an_inset_still_pulls_a_snapped_window_inward():
+    """Guards the migration path rather than the fix: a layout saved before the
+    inset field has none, and must behave exactly as it did before."""
+    out = clamp_rect([-9, 0, 1938, 2097], 144, r"\\.\DISPLAY1", SNAP_MONITORS)
+    assert out == [0, 0, 1938, 2088]
+
+
+def test_clamp_still_rescues_a_genuinely_offscreen_rect_when_inset_is_present():
+    """The inset widens the allowance by a frame, not without limit."""
+    out = clamp_rect([9000, 4000, 1938, 2097], 144, r"\\.\DISPLAY1", SNAP_MONITORS, SNAP_INSET)
+    x, y, w, h = out
+    assert x + w <= 3840 + SNAP_INSET[2]
+    assert y + h <= 2088 + SNAP_INSET[3]
+
+
+def test_clamp_scales_the_inset_with_the_window_on_a_dpi_change():
+    """The border is part of the frame, so a rect rescaled for a new DPI needs
+    its allowance rescaled too or the window lands short by a fraction of it."""
+    hidpi = [Monitor(device=r"\\.\DISPLAY1", primary=True, work=[0, 0, 3840, 2088], dpi=288)]
+    out = clamp_rect([-9, 0, 1938, 2097], 144, r"\\.\DISPLAY1", hidpi, SNAP_INSET)
+    assert out[0] == -18, "inset doubled with the DPI, so the window may start 18px out"
+
+
 def test_clamp_handles_empty_monitor_list_without_crashing():
     out = clamp_rect([221, 228, 1168, 624], 96, r"\\.\DISPLAY1", [])
     assert out == [221, 228, 1168, 624]
@@ -143,7 +198,14 @@ def test_every_field_survives_a_roundtrip(tmp_path):
     """
     monitor = Monitor(device=r"\\.\DISPLAY9", primary=True, work=[1, 2, 3, 4], dpi=192)
     tab = Tab(cwd=r"C:\x", title="t", low_confidence=True, pinned=True)
-    window = Window(monitor=r"\\.\DISPLAY9", rect=[5, 6, 7, 8], state="maximized", dpi=192, tabs=[tab])
+    window = Window(
+        monitor=r"\\.\DISPLAY9",
+        rect=[5, 6, 7, 8],
+        state="maximized",
+        dpi=192,
+        tabs=[tab],
+        inset=[9, 0, 9, 9],
+    )
     lo = Layout(version=LAYOUT_VERSION, saved_ts="2026-07-20T00:00:00Z", monitors=[monitor], windows=[window])
 
     for obj in (monitor, tab, window, lo):

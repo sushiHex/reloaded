@@ -57,6 +57,7 @@ def build_layout(
                 rect=list(wd.get("rect", [0, 0, 1168, 624])),
                 state=wd.get("state", "normal"),
                 dpi=int(wd.get("dpi", 96)),
+                inset=list(wd.get("inset", [0, 0, 0, 0])),
                 tabs=tab_objs,
             )
         )
@@ -131,6 +132,10 @@ def capture_live(
                 "state": state,
                 "monitor": device,
                 "dpi": dpi,
+                # Measured per window: the invisible border is the window's own
+                # frame, not a system constant derivable from dpi. clamp_rect
+                # needs it to leave a flush-snapped window alone.
+                "inset": win32.frame_inset(hwnd),
                 "titles": tabs.tab_titles(hwnd),
             }
         )
