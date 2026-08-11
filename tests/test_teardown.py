@@ -298,9 +298,35 @@ def test_execute_down_reports_close_failure_without_crashing(monkeypatch):
     monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: False)
+    # Still a live window - it refused WM_CLOSE rather than having vanished,
+    # which is what makes this a reportable failure instead of a self-close.
+    monkeypatch.setattr(teardown_mod.win32, "is_wt_window", lambda hwnd: True)
 
     plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert result["closed"] == []
     assert result["left_open"] == [1]
+
+
+def test_execute_down_counts_a_self_closed_window_as_closed(monkeypatch):
+    """A window whose last tab closed itself is gone before WM_CLOSE lands.
+
+    close_window returns False for a destroyed HWND for the same reason it does
+    for a foreign one - the class check - so without is_wt_window this would be
+    reported as a failure to close a window that is already exactly where the
+    caller wanted it.
+    """
+    monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
+    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
+    monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: False)
+    monkeypatch.setattr(teardown_mod.win32, "is_wt_window", lambda hwnd: False)
+
+    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    result = teardown_mod.execute_down([plan], log=lambda *_: None)
+
+    assert result["closed"] == [1]
+    assert result["left_open"] == []

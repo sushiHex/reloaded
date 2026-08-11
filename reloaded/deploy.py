@@ -31,7 +31,45 @@ GEOMETRY_SETTLE_SECONDS = 0.3
 # global env var, and it does not affect mid-session auto-compaction.
 RESUME_SUPPRESSOR = "$env:CLAUDE_CODE_RESUME_TOKEN_THRESHOLD='999999999'"
 
+# Claude Code marks the shells it spawns with CLAUDE_CODE_CHILD_SESSION. `up`
+# and `restart` are normally run from inside a Claude Code session, so without
+# this every tab we launch inherits the marker, decides it is a nested child,
+# and silently disables transcript saving — the sessions come back looking
+# healthy but stop recording history, so the next `--continue` finds nothing.
+#
+# Cleared per tab rather than by passing a sanitised env= to the Popen below:
+# Windows Terminal hosts every window in one process, so a new tab inherits
+# that long-lived process's environment, not the environment of the short-lived
+# `wt` stub we spawn. Only a statement running inside the tab is reliable.
+# In PowerShell assigning $null removes the variable outright rather than
+# setting it empty, so children of this shell do not see it at all (verified).
+CHILD_SESSION_CLEAR = "$env:CLAUDE_CODE_CHILD_SESSION=$null"
+
 CLAUDE_COMMAND = "claude --dangerously-skip-permissions --continue"
+
+# A tab exists to host one Claude Code session, so once that session ends the
+# tab is dead weight. `-NoExit` (see new_tab_args) keeps the shell alive on
+# purpose though: a launch that fails immediately has to stay on screen with
+# its error rather than vanishing, which is the "silently dead sessions" case
+# shell_executable() guards against. Exiting only after claude has run long
+# enough to have started successfully satisfies both.
+#
+# This is what lets `down`/`restart` leave a clean desktop. A window is closed
+# only when every one of its Claude tabs exited (teardown.execute_down), so one
+# holdout used to strand the whole window - including tabs whose session had
+# already ended, left sitting at a bare shell prompt. Now those tabs close
+# themselves and the window shrinks to just the holdout.
+#
+# Gated on elapsed time rather than $LASTEXITCODE because what `claude` returns
+# on /exit is not something this package verifies; guessing wrong would either
+# strand dead tabs or swallow startup errors. Elapsed time separates the two
+# cases directly. Verified: an explicit `exit` inside -Command terminates the
+# shell even under -NoExit.
+STARTUP_GRACE_SECONDS = 10
+CLAUDE_STARTED_AT = "$rlStart=Get-Date"
+CLOSE_TAB_IF_STARTED = (
+    f"if (((Get-Date)-$rlStart).TotalSeconds -gt {STARTUP_GRACE_SECONDS}) {{ exit }}"
+)
 
 
 @functools.lru_cache(maxsize=1)
@@ -71,7 +109,7 @@ def _wt_escape(s: str) -> str:
 def launcher_command(cwd: str, delay: int, size_bytes: int) -> str:
     """The PowerShell command run inside one tab."""
     name = os.path.basename(cwd.rstrip("\\/")) or cwd
-    parts = [RESUME_SUPPRESSOR]
+    parts = [CHILD_SESSION_CLEAR, RESUME_SUPPRESSOR]
 
     if size_bytes >= SIZE_WARN_BYTES:
         warn = f"[reloaded] {name} - transcript {human_size(size_bytes)}, consider /compact"
@@ -82,7 +120,9 @@ def launcher_command(cwd: str, delay: int, size_bytes: int) -> str:
     if delay > 0:
         parts.append(f"Start-Sleep {delay}")
 
+    parts.append(CLAUDE_STARTED_AT)
     parts.append(CLAUDE_COMMAND)
+    parts.append(CLOSE_TAB_IF_STARTED)
     return "; ".join(parts)
 
 

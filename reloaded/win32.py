@@ -235,6 +235,16 @@ def set_foreground(hwnd: int) -> bool:
     return _u32.GetForegroundWindow() == hwnd
 
 
+def is_wt_window(hwnd: int) -> bool:
+    """Whether `hwnd` is still a live Windows Terminal window.
+
+    Lets callers tell "this window refused to close" apart from "this window is
+    already gone" — close_window returns False for both, since a destroyed HWND
+    fails the same class check that guards against HWND reuse.
+    """
+    return _class_name(hwnd).upper() == WT_CLASS
+
+
 def close_window(hwnd: int) -> bool:
     """Politely ask a window to close (WM_CLOSE) - the same signal its own
     title-bar X button sends. Does not force it: a window that ignores this

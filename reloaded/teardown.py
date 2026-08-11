@@ -7,6 +7,12 @@ acts on tabs this tool already recognizes as Claude Code sessions - the same
 every one of its tabs was a recognized Claude session and every one of them
 actually exited; a window with an unrelated manual tab, or a holdout that
 didn't respond to /exit in time, is left open rather than force-closed.
+
+Individual tabs are never closed from here. Each one closes itself once its
+session ends (deploy.CLOSE_TAB_IF_STARTED), which is what keeps a window with
+one holdout from stranding the tabs that did exit - they used to sit at a bare
+shell prompt until the whole window could be closed. It also means a window
+may be gone before the close below runs; see is_wt_window.
 """
 from __future__ import annotations
 
@@ -153,6 +159,13 @@ def execute_down(plans: list[WindowPlan], log=print) -> dict:
         if win32.close_window(plan.hwnd):
             closed.append(plan.hwnd)
             log(f"    closed window 0x{plan.hwnd:X}")
+        elif not win32.is_wt_window(plan.hwnd):
+            # Its tabs closed themselves as their sessions ended (see
+            # deploy.CLOSE_TAB_IF_STARTED) and the last one took the window
+            # with it, so there was nothing left for WM_CLOSE to reach. Racing
+            # us to the same outcome is success, not a failure to report.
+            closed.append(plan.hwnd)
+            log(f"    window 0x{plan.hwnd:X} closed itself")
         else:
             left_open.append(plan.hwnd)
             log(f"    [warn] could not close window 0x{plan.hwnd:X}")

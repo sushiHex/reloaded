@@ -4,6 +4,9 @@ import pytest
 
 import reloaded.deploy as deploy_mod
 from reloaded.deploy import (
+    CHILD_SESSION_CLEAR,
+    CLAUDE_STARTED_AT,
+    CLOSE_TAB_IF_STARTED,
     RESUME_SUPPRESSOR,
     LaunchResult,
     PlanEntry,
@@ -43,6 +46,46 @@ def test_launcher_sets_the_resume_suppressor_before_launching():
     cmd = launcher_command(r"C:\repos\editor-app", 0, 1024)
     assert RESUME_SUPPRESSOR in cmd
     assert cmd.index(RESUME_SUPPRESSOR) < cmd.index("claude ")
+
+
+def test_launcher_clears_the_inherited_child_session_marker():
+    """`up`/`restart` are normally run from inside a Claude Code session, which
+    marks the shells it spawns with CLAUDE_CODE_CHILD_SESSION. Inherited, it
+    makes the relaunched session disable transcript saving - healthy-looking
+    tabs that quietly record nothing, so the next --continue finds nothing."""
+    cmd = launcher_command(r"C:\repos\editor-app", 0, 1024)
+    assert CHILD_SESSION_CLEAR in cmd
+    assert cmd.index(CHILD_SESSION_CLEAR) < cmd.index("claude ")
+
+
+def test_launcher_closes_its_tab_once_the_session_ends():
+    """The tab hosts exactly one session, so it should not outlive it at a bare
+    shell prompt - that is what stranded tabs in windows kept open by a single
+    holdout."""
+    cmd = launcher_command(r"C:\repos\editor-app", 0, 1024)
+    assert cmd.index(CLAUDE_STARTED_AT) < cmd.index("claude ")
+    assert cmd.index(CLOSE_TAB_IF_STARTED) > cmd.index("claude ")
+
+
+def test_launcher_keeps_a_failed_launch_on_screen():
+    """The self-close is gated on elapsed time so a claude that dies instantly
+    leaves its tab (and its error) visible, which is why -NoExit exists."""
+    cmd = launcher_command(r"C:\repos\editor-app", 0, 1024)
+    assert f"-gt {deploy_mod.STARTUP_GRACE_SECONDS}" in cmd
+    assert deploy_mod.STARTUP_GRACE_SECONDS > 0
+
+
+def test_launcher_self_close_survives_wt_argument_escaping():
+    """wt treats ';' inside an argument as a subcommand separator, so an
+    unescaped statement would be torn into extra tabs rather than run."""
+    cmd = launcher_command(r"C:\repos\editor-app", 0, 1024)
+    escaped = wt_argv_single_tab(r"C:\repos\editor-app", 1024)[-1]
+    assert "{ exit }" in escaped
+    unescaped = [
+        i for i, ch in enumerate(escaped) if ch == ";" and (i == 0 or escaped[i - 1] != "\\")
+    ]
+    assert unescaped == []
+    assert cmd.count(";") == escaped.count("\\;")
 
 
 def test_launcher_uses_continue_and_never_a_fresh_session():
