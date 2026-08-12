@@ -8,12 +8,10 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import unicodedata
 from dataclasses import dataclass
 
 from .paths import norm
-
-# Claude Code prefixes the terminal title with a spinner glyph while working.
-_GLYPHS = "✳⠐⠂⠁⠉⠙⠒⠄ \t"
 
 # Bounded reads: a transcript can be hundreds of megabytes, and this runs on a
 # timer. cwd appears on nearly every record so the head is enough; customTitle
@@ -35,7 +33,27 @@ class TranscriptInfo:
 
 
 def strip_glyph(title: str) -> str:
-    return (title or "").lstrip(_GLYPHS).strip()
+    """Drop Claude Code's leading status glyph, whichever frame it is showing.
+
+    Matched by Unicode category rather than an explicit frame list. The
+    spinner set has already changed once in the wild - Braille dots to
+    circled halves (◐◑) - and an explicit list fails *silently* when that
+    happens: the glyph stays attached, the title no longer equals the repo
+    basename, and `capture` drops the tab. Because the spinner only shows
+    while a session is busy, the dropped tabs are exactly the working ones,
+    so a capture taken during a relaunch can overwrite a good layout with a
+    partial one. Tested against a list that already covered the old frames
+    and still passed, which is how it went unnoticed.
+
+    Every frame used so far - ✳ (U+2733), ⠐ (U+2810), ◐ (U+25D0) - is
+    category So (Symbol, other). Letters, digits and ordinary punctuation
+    are left alone, so a custom title keeps its text.
+    """
+    s = title or ""
+    i = 0
+    while i < len(s) and (s[i].isspace() or unicodedata.category(s[i]) == "So"):
+        i += 1
+    return s[i:].strip()
 
 
 def live_sessions() -> dict[str, int]:

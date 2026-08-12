@@ -27,6 +27,30 @@ def test_strip_glyph_removes_claude_spinner_prefixes():
     assert strip_glyph("plain") == "plain"
 
 
+def test_strip_glyph_removes_circle_spinner_frames():
+    """The frames Claude Code actually ships now.
+
+    An earlier explicit-frame list covered only ✳ and the Braille dots, so a
+    busy tab kept its glyph, stopped matching its repo basename, and was
+    dropped by `capture` - silently, because the tests only exercised the
+    frames the list already had.
+    """
+    for frame in "◐◑◒◓":
+        assert strip_glyph(f"{frame} computers") == "computers"
+
+
+def test_strip_glyph_survives_an_unknown_future_spinner_frame():
+    # ◴ (U+25F4) is not a frame anything ships today; matching by Unicode
+    # category rather than a literal list is what keeps this passing.
+    assert strip_glyph("◴ computers") == "computers"
+
+
+def test_strip_glyph_keeps_titles_that_merely_start_with_punctuation():
+    assert strip_glyph("-dash-lead") == "-dash-lead"
+    assert strip_glyph("_underscore") == "_underscore"
+    assert strip_glyph("2fa-service") == "2fa-service"
+
+
 def test_strip_glyph_preserves_inner_text_and_spacing():
     assert strip_glyph("⠐ Resume editor-app project") == "Resume editor-app project"
 
