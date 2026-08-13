@@ -41,6 +41,12 @@ def build_layout(
     now_iso: str,
 ) -> Layout:
     windows: list[Window] = []
+    # One repo, one tab, across the whole layout. Two titles can resolve to the
+    # same cwd, and `deploy` launches a tab per entry: the duplicates become two
+    # `claude --continue` in one directory, seconds apart, against a single
+    # transcript. Nothing downstream catches it — merge_pinned only compares
+    # against the previous layout, never a capture against itself.
+    seen_cwds: set[str] = set()
     for wd in windows_data:
         tab_objs: list[Tab] = []
         for title in wd.get("titles", []):
@@ -48,6 +54,9 @@ def build_layout(
             if resolved is None:
                 continue
             cwd, low = resolved
+            if norm(cwd) in seen_cwds:
+                continue
+            seen_cwds.add(norm(cwd))
             tab_objs.append(Tab(cwd=cwd, title=title, low_confidence=low))
         if not tab_objs:
             continue
@@ -80,6 +89,19 @@ def merge_pinned(fresh: Layout, previous: Layout | None) -> Layout:
         return fresh
 
     present = {norm(t.cwd) for w in fresh.windows for t in w.tabs}
+
+    # A pin survives the session it was launched into. A capture taken while a
+    # pinned repo is running sees an ordinary running tab, and skipping it here
+    # dropped `pinned` on the floor: the pin lasted exactly until its first
+    # successful launch, and the repo vanished for good the next time the
+    # session was closed. Re-mark instead of skip.
+    fresh_by_cwd = {norm(t.cwd): t for w in fresh.windows for t in w.tabs}
+    for old_window in previous.windows:
+        for tab in old_window.tabs:
+            if tab.pinned:
+                running = fresh_by_cwd.get(norm(tab.cwd))
+                if running is not None:
+                    running.pinned = True
 
     for position, old_window in enumerate(previous.windows):
         for tab in old_window.tabs:

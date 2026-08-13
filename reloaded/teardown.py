@@ -64,6 +64,12 @@ def plan_down(
         items = tabs.list_tab_items(hwnd)
         targets = []
         for title, item in items:
+            # An unnameable tab still counts toward total_tabs below, so the
+            # window is correctly treated as holding something we did not
+            # start. It can never resolve, and an empty title would otherwise
+            # make the basename guess in resolve_tab test repos_root itself.
+            if not title:
+                continue
             resolved = resolve_tab(title, title_map, live, repos_root)
             if resolved is None:
                 continue

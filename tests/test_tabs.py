@@ -62,6 +62,24 @@ def test_list_tab_items_returns_the_real_result_when_fast(monkeypatch):
     assert [title for title, _item in result] == ["demo-app"]
 
 
+def test_list_tab_items_keeps_an_unnameable_tab_that_tab_titles_omits(monkeypatch):
+    """The two callers need different things from the same walk.
+
+    An unnameable tab identifies nothing, so tab_titles omits it. It still
+    occupies the window, so list_tab_items must report it: teardown counts
+    those for WindowPlan.total_tabs, and dropping them made `down` close a
+    window that still held one.
+    """
+    monkeypatch.setattr(
+        tabs_mod,
+        "_list_tab_items_uia",
+        lambda hwnd: [("demo-app", object()), ("", object())],
+    )
+
+    assert len(tabs_mod.list_tab_items(1)) == 2, "the unnameable tab was dropped"
+    assert tabs_mod.tab_titles(1) == ["demo-app"]
+
+
 def test_list_tab_items_returns_empty_on_timeout_instead_of_blocking(monkeypatch):
     """The regression this guards: the underlying UIA calls have no timeout
     of their own, so a hung WT window previously blocked the caller

@@ -81,7 +81,7 @@ def _capture_layout(args):
 
 def cmd_capture(args) -> int:
     try:
-        lo, path, _live, _title_map = _capture_layout(args)
+        lo, path, live, _title_map = _capture_layout(args)
     except tabs_mod.UIAUnavailable as exc:
         return _report_uia_unavailable(exc)
 
@@ -95,9 +95,92 @@ def cmd_capture(args) -> int:
     if not lo.windows:
         print("No Claude Code tabs found — nothing captured, existing layout untouched.")
         return 1
+
+    unresolved = _unresolved_live_repos(lo, live)
+    if unresolved:
+        print(
+            f"[reloaded] {len(unresolved)} running session(s) did not match any tab: "
+            + ", ".join(unresolved[:6])
+        )
+        print(
+            "    Usually a title this build does not recognise — if Claude Code "
+            "changed its spinner, add the range to discover._SPINNER_RANGES."
+        )
+
+    shrink = _capture_shrinkage(lo, path, live)
+    if shrink and not getattr(args, "force", False):
+        print(f"[reloaded] refusing to overwrite the layout: {shrink}")
+        print(
+            "    Those sessions are still running, so this capture failed to "
+            "read them (a UIA timeout, or a window still starting) rather than "
+            "them having gone away. Saving now would drop them from `up`."
+        )
+        print("    Re-run once they read cleanly, or pass --force to accept it.")
+        return 1
+
     layout_mod.save(lo, path)
     _print_capture_summary(lo, path)
     return 0
+
+
+def _unresolved_live_repos(fresh, live) -> list[str]:
+    """Running sessions that no captured tab accounts for.
+
+    strip_glyph only removes spinner frames it recognises, so an unfamiliar one
+    stays attached, the title matches neither the transcript map nor a repo
+    basename, and the tab is dropped. That is the safe failure - far better
+    than stripping any symbol and acting on someone else's tab - but it is
+    invisible, which is how the previous stale frame list went unnoticed for
+    long enough to overwrite a good layout. Naming the sessions turns a silent
+    drop into something a person can act on.
+    """
+    captured = {norm(t.cwd) for w in fresh.windows for t in w.tabs}
+    return sorted(
+        os.path.basename(cwd.rstrip("\\/")) or cwd
+        for cwd in live
+        if norm(cwd) not in captured
+    )
+
+
+def _capture_shrinkage(fresh, path, live) -> str:
+    """Describe sessions the saved layout has that this capture lost *while
+    they were still running*. Returns "" when there are none.
+
+    Only total loss was guarded before, but partial loss is the common case and
+    the damaging one: `tabs.list_tab_items` degrades a per-window UIA timeout to
+    an empty list, `build_layout` drops that window entirely, and the 5-minute
+    reconcile writes the result over a layout that was correct. Nothing says so
+    on screen - that warning goes to a stderr with no destination under pythonw.
+
+    Keyed on liveness, not on counts. A session the user deliberately closed is
+    *supposed* to leave the layout, and a plain size comparison would refuse
+    that shrink forever, wedging the reconcile task against a layout that can
+    only ever grow. A repo that is still in `live` but absent from the capture
+    is the opposite: it did not go anywhere, so the capture failed to see it.
+    """
+    try:
+        previous = layout_mod.load(path)
+    except Exception:
+        return ""
+    if previous is None or not previous.windows:
+        return ""
+
+    new_cwds = {norm(t.cwd) for w in fresh.windows for t in w.tabs}
+    lost = sorted(
+        {
+            t.cwd
+            for w in previous.windows
+            for t in w.tabs
+            if norm(t.cwd) not in new_cwds and norm(t.cwd) in live
+        }
+    )
+    if not lost:
+        return ""
+
+    names = ", ".join(os.path.basename(c.rstrip("\\/")) for c in lost[:6])
+    if len(lost) > 6:
+        names += f" (+{len(lost) - 6} more)"
+    return f"{len(lost)} running session(s) missing from this capture — {names}"
 
 
 def _log(message: str) -> None:
@@ -389,7 +472,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--repos-root", default=DEFAULT_REPOS_ROOT, help="root directory holding repos")
     sub = p.add_subparsers(dest="command")
 
-    sub.add_parser("capture", help="snapshot the current arrangement into the layout")
+    cap = sub.add_parser("capture", help="snapshot the current arrangement into the layout")
+    cap.add_argument(
+        "--force", action="store_true",
+        help="save even if the capture holds fewer sessions than the saved layout",
+    )
 
     up = sub.add_parser("up", help="deploy the saved layout")
     up.add_argument("--dry-run", action="store_true", help="print what would launch, spawn nothing")

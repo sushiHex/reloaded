@@ -33,6 +33,8 @@ import os
 import pathlib
 import subprocess
 
+from . import readiness
+
 TASK_RECONCILE = "Reloaded-Reconcile"
 STARTUP_VBS_NAME = "reloaded-up.vbs"
 _LEGACY_CMD_NAME = "reloaded-up.cmd"  # pre-fix installs used this; removed on uninstall/reinstall
@@ -104,10 +106,47 @@ def _build_vbs(package_dir: str, layout: str) -> str:
     )
 
 
+def _write_vbs(path: pathlib.Path, vbs: str) -> None:
+    """Write the launcher so Windows Script Host reads it back correctly.
+
+    UTF-16: wscript.exe decodes a BOM-less file with the ANSI code page, so a
+    non-ASCII install path arrives mojibake'd, sys.path.insert points at a
+    directory that does not exist, the import raises, and - because wscript has
+    no console - every logon silently restores nothing. utf-8-sig is not the
+    fix and must not be substituted: WSH rejects it outright with "Invalid
+    character". UTF-16 carries a BOM WSH does honour.
+
+    newline="": _build_vbs emits explicit \\r\\n, and text mode's default
+    newline=None rewrites every \\n as os.linesep, storing each terminator as
+    \\r\\r\\n (measured on the installed launcher: 4 CR for 2 LF).
+
+    Written to a temporary file and moved into place, because `open(path, "w")`
+    truncates before it can fail: an encode error or a crash mid-write would
+    leave a 0-byte launcher that logon_launcher_installed() still reports as
+    installed, having destroyed a working one. layout.save takes the same
+    precaution for the same reason.
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-16", newline="") as fh:
+            fh.write(vbs)
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
 def _run_powershell(script: str) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
         capture_output=True, text=True,
+        # See readiness.NO_WINDOW: a console-subsystem child otherwise gets a
+        # visible console. Harmless from an interactive install; required if
+        # this is ever reached from a windowless parent.
+        creationflags=readiness.NO_WINDOW,
     )
 
 
@@ -166,8 +205,11 @@ def install(package_dir: str, layout: str = "default") -> int:
     path = startup_vbs_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(vbs, encoding="utf-8")
-    except OSError as exc:
+        _write_vbs(path, vbs)
+    except (OSError, ValueError) as exc:
+        # ValueError as well as OSError: a lone surrogate in package_dir raises
+        # UnicodeEncodeError, which is a ValueError, and would otherwise escape
+        # this handler as a traceback out of an unattended install.
         print(f"could not write {path}: {exc}")
         return 1
     print(f"Logon deploy   -> {path}")

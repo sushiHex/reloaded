@@ -71,6 +71,49 @@ def test_build_layout_preserves_window_grouping_and_tab_order():
     assert lo.windows[1].tabs[0].cwd == r"C:\Users\k\repos\editor-app"
 
 
+def test_an_emoji_custom_title_resolves_both_idle_and_busy():
+    """The raw-keyed title map and the stripped lookup must agree.
+
+    They do because strip_glyph removes only spinner frames, and a customTitle
+    never carries one - the spinner decorates the terminal title, not the
+    transcript. A matcher that stripped any symbol broke this: the key kept the
+    emoji, the tab lost it, and the session fell out of the layout.
+    """
+    from reloaded.discover import strip_glyph, title_to_cwd
+    from reloaded.discover import TranscriptInfo
+
+    cwd = "C:\\repos\\svc"
+    live = {norm(cwd): 1234}
+    title_map = title_to_cwd(
+        {"k": TranscriptInfo(cwd=cwd, title="🚀 svc", path="p", mtime=1.0, size=1)}
+    )
+
+    idle = strip_glyph("🚀 svc")
+    busy = strip_glyph("◐ 🚀 svc")
+    assert idle == busy == "🚀 svc"
+    for tab in (idle, busy):
+        assert resolve_tab(tab, title_map, live, "C:\\repos") == (cwd, False)
+
+
+def test_build_layout_never_emits_one_repo_twice():
+    """deploy launches a tab per entry, so a duplicate becomes two sessions.
+
+    Two titles resolving to the same cwd would put two `claude --continue` in
+    one directory seconds apart, both against a single transcript. merge_pinned
+    only compares a capture against the previous layout, never against itself.
+    """
+    live = {norm("C:\\repos\\api"): 1111}
+    windows_data = [
+        {"monitor": "\\\\.\\DISPLAY1", "rect": [0, 0, 100, 100], "titles": ["api"]},
+        {"monitor": "\\\\.\\DISPLAY1", "rect": [100, 0, 100, 100], "titles": ["api"]},
+    ]
+    lo = build_layout(
+        windows_data, MONITORS, {"api": "C:\\repos\\api"}, live, "C:\\repos", "now"
+    )
+    all_cwds = [t.cwd for w in lo.windows for t in w.tabs]
+    assert len(all_cwds) == 1, all_cwds
+
+
 def test_build_layout_drops_windows_with_no_claude_tabs():
     windows_data = [
         {

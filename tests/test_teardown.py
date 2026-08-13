@@ -53,6 +53,28 @@ def test_plan_down_groups_live_claude_tabs_by_window(monkeypatch):
     assert pid == 111
 
 
+def test_plan_down_counts_an_unnameable_tab_toward_total_tabs(monkeypatch):
+    """A tab whose title cleans to "" still occupies the window.
+
+    Dropping it during enumeration made total_tabs smaller than the window's
+    real tab count, so `len(targets) == total_tabs` went true and execute_down
+    sent WM_CLOSE to a window that still held that tab.
+    """
+    _stub_discovery(monkeypatch, live={norm(CWD_A): 111}, title_map={})
+    monkeypatch.setattr(teardown_mod.win32, "list_wt_windows", lambda: [1])
+    monkeypatch.setattr(
+        teardown_mod.tabs,
+        "list_tab_items",
+        lambda hwnd: [("app-a", _Item()), ("", _Item())],
+    )
+
+    plans = teardown_mod.plan_down(REPOS)
+
+    assert len(plans) == 1
+    assert plans[0].total_tabs == 2, "the unnameable tab vanished from the count"
+    assert len(plans[0].targets) == 1, "the unnameable tab must not be a target"
+
+
 def test_plan_down_reuses_a_precomputed_live_and_title_map(monkeypatch):
     """A caller that already has a discovery snapshot (restart, right after
     its own capture) can pass it straight through instead of paying for

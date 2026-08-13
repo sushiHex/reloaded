@@ -11,6 +11,14 @@ import shutil
 import subprocess
 import time
 
+# powershell is a console-subsystem program, so Windows gives it a console
+# unless told not to - and on Win11 that console is a visible Windows Terminal
+# window titled with the exe path. This call is reached from `up --unattended`,
+# which is exactly the logon-launcher path that runs under pythonw precisely so
+# nothing flashes on screen. Without the flag every logon pops a stray window.
+# getattr: the constant is Windows-only, and 0 is "no extra flags" elsewhere.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 from . import win32
 from .layout import Layout
 
@@ -93,6 +101,7 @@ def wt_version() -> tuple[int, ...] | None:
              "$p = Get-AppxPackage -Name '*WindowsTerminal*' | Select-Object -First 1; "
              "if ($p) { $p.Version.ToString() }"],
             capture_output=True, text=True, timeout=10,
+            creationflags=NO_WINDOW,
         )
     except (OSError, subprocess.TimeoutExpired):
         return None

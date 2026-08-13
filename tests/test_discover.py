@@ -6,6 +6,7 @@ import time
 import types
 
 from reloaded.discover import (
+    TranscriptInfo,
     read_transcript_info,
     strip_glyph,
     title_to_cwd,
@@ -22,33 +23,121 @@ def _write_jsonl(path, records):
 
 def test_strip_glyph_removes_claude_spinner_prefixes():
     assert strip_glyph("✳ editor-app") == "editor-app"
-    assert strip_glyph("⠐ computers") == "computers"
+    assert strip_glyph("⠐ sample-repo") == "sample-repo"
     assert strip_glyph("⠂ demo-app") == "demo-app"
     assert strip_glyph("plain") == "plain"
 
 
-def test_strip_glyph_removes_circle_spinner_frames():
-    """The frames Claude Code actually ships now.
+def test_strip_glyph_removes_every_shipped_spinner_family():
+    """One case per range in _SPINNER_RANGES. Add a case when you add a range.
 
-    An earlier explicit-frame list covered only ✳ and the Braille dots, so a
-    busy tab kept its glyph, stopped matching its repo basename, and was
-    dropped by `capture` - silently, because the tests only exercised the
-    frames the list already had.
+    An explicit frame list covered only ✳ and the Braille dots, so when Claude
+    Code moved to circled halves a busy tab kept its glyph, stopped matching
+    its repo basename, and `capture` dropped it - silently, because the tests
+    only exercised the frames the list already had.
     """
-    for frame in "◐◑◒◓":
-        assert strip_glyph(f"{frame} computers") == "computers"
+    for frame in "✳⠐⠂⠁◐◑◒◓":
+        assert strip_glyph(f"{frame} sample-repo") == "sample-repo"
 
 
-def test_strip_glyph_survives_an_unknown_future_spinner_frame():
-    # ◴ (U+25F4) is not a frame anything ships today; matching by Unicode
-    # category rather than a literal list is what keeps this passing.
-    assert strip_glyph("◴ computers") == "computers"
+def test_strip_glyph_removes_an_unshipped_frame_within_a_known_family():
+    # ◴ (U+25F4) is not a frame anything ships today. Ranges rather than
+    # literal codepoints are what keep this passing.
+    assert strip_glyph("◴ sample-repo") == "sample-repo"
+
+
+def test_strip_glyph_consumes_modifiers_trailing_a_spinner():
+    """VS16, ZWJ and skin-tone modifiers are Mn/Cf/Sk, never So.
+
+    A category-So match left them behind, so "✳️ x" kept an orphan U+FE0F that
+    then matched no path at all.
+    """
+    assert strip_glyph("✳️ sample-repo") == "sample-repo"
+
+
+def test_strip_glyph_leaves_user_decoration_alone():
+    """A renamed non-Claude tab must not resolve to a repo.
+
+    Stripping any symbol cleaned "▶ build" to "build", which resolved against
+    a live repo of that name - so `down` typed /exit into the user's own shell
+    and could close its window, violating teardown's contract that a window
+    with an unrelated tab is left open.
+    """
+    for title in ("▶ build", "■ stop", "→ deploy", "⚙️ my-repo", "👍🏻 repo"):
+        assert strip_glyph(title) == title, f"{title!r} was altered"
+
+
+def test_strip_glyph_keeps_an_emoji_title_stable_while_busy():
+    """The idle and busy forms of one tab must clean to the same key.
+
+    An emoji title is itself a symbol, so a category match erased it: idle
+    "🚀" and busy "✳ 🚀" produced different keys and the busy tab vanished.
+    """
+    assert strip_glyph("🚀") == "🚀"
+    assert strip_glyph("✳ 🚀") == strip_glyph("🚀")
 
 
 def test_strip_glyph_keeps_titles_that_merely_start_with_punctuation():
     assert strip_glyph("-dash-lead") == "-dash-lead"
     assert strip_glyph("_underscore") == "_underscore"
     assert strip_glyph("2fa-service") == "2fa-service"
+
+
+def test_read_transcript_info_ignores_non_string_fields(tmp_path):
+    """A transcript record is untrusted input.
+
+    cwd reaches os.path via paths.norm and customTitle reaches strip_glyph;
+    both raise on a non-string. One record with a numeric title would take
+    down capture and every reconcile run until that transcript rotated away.
+    """
+    for junk in (123, True, ["a"], {"a": 1}, None):
+        p = tmp_path / f"t{abs(hash(repr(junk)))}.jsonl"
+        _write_jsonl(p, [{"cwd": str(tmp_path)}, {"customTitle": junk}])
+        info = read_transcript_info(str(p), need_title=True)
+        assert info is not None, f"{junk!r} lost the whole record"
+        assert info.title == "", f"{junk!r} leaked into title"
+        assert title_to_cwd({"k": info}) == {}
+
+    # A non-string cwd is not usable at all, so the record is skipped.
+    p = tmp_path / "badcwd.jsonl"
+    _write_jsonl(p, [{"cwd": 42}, {"customTitle": "fine"}])
+    assert read_transcript_info(str(p), need_title=True) is None
+
+
+def test_title_to_cwd_keys_stay_injective_on_decorated_titles():
+    """Two decorated titles must not collapse onto one key.
+
+    Keying this map on the stripped title makes "✳ api" and "🔧 api" the same
+    key; the loser's cwd is discarded, so a live repo vanishes from the layout
+    and a tab can be bound to another session's pid.
+    """
+    index = {
+        "a": TranscriptInfo(
+            cwd="C:\\repos\\api", title="✳ api", path="p1", mtime=1.0, size=1
+        ),
+        "b": TranscriptInfo(
+            cwd="C:\\repos\\tools", title="🔧 api", path="p2", mtime=2.0, size=1
+        ),
+    }
+    mapping = title_to_cwd(index)
+    assert len(mapping) == 2, f"decorated titles collided: {mapping}"
+    assert set(mapping.values()) == {"C:\\repos\\api", "C:\\repos\\tools"}
+
+
+def test_strip_glyph_does_not_keep_the_spinner_on_an_all_symbol_title():
+    """A busy tab must clean to the same key as its idle self.
+
+    Falling back to the whole string when the strip empties it returns
+    "✳ 🚀" *with* the spinner, so the busy tab stops matching the idle key -
+    the exact silent-drop this function exists to prevent. A bare spinner must
+    also stay empty, or tabs.list_tab_items counts it and WindowPlan.total_tabs
+    never lets `down` close the window.
+    """
+    assert strip_glyph("✳ 🚀") == strip_glyph("🚀")
+    assert strip_glyph("✳") == ""
+    assert strip_glyph("⠐ ") == ""
+    assert strip_glyph("") == ""
+    assert strip_glyph("   ") == ""
 
 
 def test_strip_glyph_preserves_inner_text_and_spacing():

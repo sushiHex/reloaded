@@ -6,8 +6,8 @@ so the tab strip is only reachable through UIA. The window title reflects the
 """
 from __future__ import annotations
 
-import concurrent.futures
 import sys
+import threading
 
 from . import win32
 from .discover import strip_glyph
@@ -69,9 +69,14 @@ def _list_tab_items_uia(hwnd: int) -> list[tuple[str, object]]:
             header = item.Control(searchDepth=8, AutomationId="HeaderTextBlock")
             if header.Exists(maxSearchSeconds=0):
                 name = header.Name or ""
-        cleaned = strip_glyph(name)
-        if cleaned:
-            items.append((cleaned, item))
+        # Every tab is returned, including one whose title cleans to "" (a tab
+        # still rendering, or a control exposing no name — the case the
+        # HeaderTextBlock fallback above exists for). Dropping those here made
+        # them invisible to `WindowPlan.total_tabs`, so `down` counted fewer
+        # tabs than the window held and closed it on top of one. Callers that
+        # want only identifiable tabs filter; callers that need a true count
+        # get one.
+        items.append((strip_glyph(name), item))
     return items
 
 
@@ -86,32 +91,54 @@ def list_tab_items(
     uiautomation's own search-timeout setting - verified directly against
     the library source - so nothing bounds them without this. Running the
     walk in a worker thread is what makes an external timeout possible; a
-    genuine failure (not a hang) still propagates normally via
-    future.result(), matching this function's documented "raises on UIA
-    failure" contract. The pool is never joined: a thread stuck on a hung
-    COM call cannot be killed from Python, so waiting for it would defeat
-    the point of timing out. It is abandoned and dies with the process -
-    every caller here is a short-lived CLI invocation, not a long-running
-    server, so this does not accumulate.
+    genuine failure (not a hang) still propagates normally, matching this
+    function's documented "raises on UIA failure" contract.
+
+    The thread is a *daemon*, and that detail is load-bearing. A thread stuck
+    on a hung COM call cannot be killed from Python, so the timeout has to
+    abandon it - but abandoning it is not what ThreadPoolExecutor does.
+    `executor.shutdown(wait=False)` returns immediately and then the
+    interpreter joins the worker anyway: `threading._shutdown()` runs before
+    any atexit hook and joins every live non-daemon thread. Measured: a 5s
+    timeout fired "as designed" and the process still sat for the full length
+    of the hung call before exiting. So the timeout bounded the call but not
+    the command, and one wedged window made `down` hang silently at exit and
+    burned the reconcile task's whole kill limit every cycle. A daemon thread
+    is exempt from that join, which is what the timeout always meant.
     """
-    executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    future = executor.submit(_list_tab_items_uia, hwnd)
-    try:
-        return future.result(timeout=timeout)
-    except concurrent.futures.TimeoutError:
+    box: dict[str, object] = {}
+
+    def _walk() -> None:
+        try:
+            box["value"] = _list_tab_items_uia(hwnd)
+        except BaseException as exc:  # re-raised on the calling thread below
+            box["error"] = exc
+
+    worker = threading.Thread(
+        target=_walk, name=f"reloaded-uia-0x{hwnd:X}", daemon=True
+    )
+    worker.start()
+    worker.join(timeout)
+
+    if worker.is_alive():
         print(
             f"[reloaded] tab read timed out after {timeout:.0f}s on window 0x{hwnd:X} — "
             "skipping it this cycle",
             file=sys.stderr,
         )
         return []
-    finally:
-        executor.shutdown(wait=False)
+    if "error" in box:
+        raise box["error"]  # type: ignore[misc]
+    return box.get("value", [])  # type: ignore[return-value]
 
 
 def tab_titles(hwnd: int) -> list[str]:
-    """Ordered, glyph-stripped tab titles for one Windows Terminal window."""
-    return [title for title, _item in list_tab_items(hwnd)]
+    """Ordered, glyph-stripped tab titles for one Windows Terminal window.
+
+    Unnameable tabs are omitted — they identify nothing. Use `list_tab_items`
+    directly when you need the window's true tab count.
+    """
+    return [title for title, _item in list_tab_items(hwnd) if title]
 
 
 def select_tab(hwnd: int, tab_item) -> bool:

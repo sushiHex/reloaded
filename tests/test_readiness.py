@@ -83,7 +83,14 @@ def test_claude_not_on_path_blocks_readiness_until_timeout(tmp_path, monkeypatch
 
 
 def _mock_appx_version(monkeypatch, stdout: str, returncode: int = 0):
-    def fake_run(argv, capture_output=True, text=True, timeout=None):
+    def fake_run(argv, **kwargs):
+        # **kwargs rather than a fixed signature, so the fake does not pin the
+        # real call's keyword set. The flag it does assert is load-bearing:
+        # this runs from `up --unattended`, the logon path under pythonw, so
+        # an unflagged console-subsystem child pops a window at every logon.
+        assert kwargs.get("creationflags") == readiness_mod.NO_WINDOW, (
+            "PowerShell spawned without CREATE_NO_WINDOW"
+        )
         return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
 
     monkeypatch.setattr(readiness_mod.subprocess, "run", fake_run)
