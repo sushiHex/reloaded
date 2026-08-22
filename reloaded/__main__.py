@@ -474,7 +474,17 @@ def cmd_restart_one(args, repos: list[str]) -> int:
                 failed = True
                 continue
 
+            # The tab is gone, so the shell that could have read this marker is
+            # gone with it. That makes deleting safe here and nowhere else -
+            # and it is necessary, because the replacement launched below DOES
+            # have the restart loop. Left armed, the marker outlives the tab
+            # that ignored it and fires on the user's next /exit in the new
+            # session, restarting one they meant to close.
             print(f"    {cwd} did not relaunch in place — its tab closed; reopening it")
+            try:
+                restart_marker(cwd).unlink(missing_ok=True)
+            except OSError:
+                pass
             _launch_single_tab(cwd)
             if _wait_for_session(cwd) is None:
                 print(f"    [warn] {cwd} did not come back — start it by hand")
@@ -482,10 +492,13 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     return 1 if failed else 0
 
 
-# No marker this command armed is ever deleted by this command. Deleting one
-# means guessing that its tab will not read it, and that guess is unrecoverable
-# when wrong: the shell breaks out of the restart loop and closes the tab,
-# destroying the session. Staleness is handled where it is safe to handle -
+# A marker is deleted in exactly one place above: after the tab that could have
+# read it is confirmed gone. Everywhere else, deleting means guessing that a
+# live shell will not read it, and that guess is unrecoverable when wrong - the
+# shell leaves the restart loop, CLOSE_TAB_IF_STARTED fires, and the session
+# the restart was meant to bring back is destroyed instead. A timed-out target
+# is therefore left armed, because "did not exit in 20s" is not "will never
+# exit". The rest of staleness is handled where being wrong costs nothing:
 # deploy's TTL makes an old marker inert, and _sweep_stale_markers clears the
 # directory on the next run.
 

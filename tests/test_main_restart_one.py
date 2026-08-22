@@ -230,6 +230,22 @@ def test_a_tab_that_closed_is_reopened(world, capsys):
     assert rc == 0, capsys.readouterr().out
 
 
+def test_a_tab_that_closed_has_its_marker_disarmed(world):
+    """The one place disarming is safe, and necessary.
+
+    A session with no restart loop closes its tab on /exit, so the marker is
+    never read - and the shell that could have read it is provably gone, which
+    is why deleting here cannot destroy anything. Left armed it survives into
+    the REPLACEMENT session, whose launcher does have the loop: the user's next
+    /exit within the TTL then restarts a session they meant to close.
+    """
+    world["wont_relaunch"] = {CWD_A}
+
+    main_mod.cmd_restart(_args(repos=["app-a"]))
+
+    assert not main_mod.restart_marker(CWD_A).exists()
+
+
 def test_the_fallback_says_so_rather_than_pretending(world, capsys):
     world["wont_relaunch"] = {CWD_A}
 
