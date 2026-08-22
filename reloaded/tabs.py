@@ -12,6 +12,12 @@ import threading
 from . import win32
 from .discover import strip_glyph
 
+# How long to let Claude Code's slash-command menu settle after `/exit` is
+# typed, before Enter is pressed. Measured, not guessed: reading the terminal
+# buffer back mid-keystroke showed the menu still filtering with `/exit`
+# unsent, and 1.2s was the interval at which the session exited first time.
+MENU_SETTLE_SECONDS = 1.2
+
 # list_tab_items runs on a 5-minute scheduler forever via the reconcile task
 # (through capture.py's tab_titles) and is also on down/restart's interactive
 # path - either way, one wedged window must be skipped, not hang the caller
@@ -203,4 +209,14 @@ def send_exit_keystrokes(*, dismiss_overlay: bool = True) -> None:
     if dismiss_overlay:
         auto.SendKeys("{Esc}")
         time.sleep(0.1)
-    auto.SendKeys("/exit{Enter}")
+    # Typed and submitted separately, with a pause. Typing `/` opens Claude
+    # Code's slash-command menu, and sending "/exit{Enter}" as one string puts
+    # Enter about ten milliseconds after the final character - while that menu
+    # is still filtering, where it does not submit the command. Diagnosed by
+    # reading the terminal buffer back between the two keystrokes: the menu was
+    # on screen with `/exit` sitting unsent in the prompt. The same keys with a
+    # pause exited the session first time. This is why `down` and `restart`
+    # timed out on session after session while appearing to type correctly.
+    auto.SendKeys("/exit")
+    time.sleep(MENU_SETTLE_SECONDS)
+    auto.SendKeys("{Enter}")
