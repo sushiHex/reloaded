@@ -165,6 +165,32 @@ def test_the_dry_run_does_not_warn_about_a_reloaded_tab(world, capsys):
     assert "upgrad" not in capsys.readouterr().out.lower()
 
 
+def test_a_hand_launched_timeout_does_not_claim_a_restart_is_armed(world, capsys):
+    """Seen in a real run against `fonts`: it timed out and was told "its
+    restart is still armed: it will restart if it exits within 2 min". Nothing
+    was armed - hand-launched sessions never are - so the user was told to
+    expect a restart that cannot happen."""
+    def execute_timeout(plans, log=print, **kw):
+        for plan in plans:
+            for title, cwd, _p, _i in plan.targets:
+                if kw.get("before_exit"):
+                    kw["before_exit"](cwd)
+        return {"exited": [], "timed_out": [("t0", CWD_H)],
+                "closed": [], "left_open": [1]}
+
+    import reloaded.teardown as teardown_mod
+    monkey = main_mod.teardown_mod.execute_down
+    main_mod.teardown_mod.execute_down = execute_timeout
+    try:
+        main_mod.cmd_restart(_args(repos=["by-hand"]))
+    finally:
+        main_mod.teardown_mod.execute_down = monkey
+
+    out = capsys.readouterr().out.lower()
+    assert "never exited" in out
+    assert "still armed" not in out, out
+
+
 def test_a_relaunch_that_will_not_type_is_reported(world, capsys):
     """Typing depends on foregrounding the right tab, which teardown itself
     documents as best-effort."""

@@ -490,15 +490,20 @@ def cmd_restart_one(args, repos: list[str]) -> int:
                 # Disarming here would destroy the session this command was
                 # asked to bring back. Left armed the worst case is a late
                 # restart, which is what was requested, bounded by the TTL.
-                mins = deploy_mod.RESTART_MARKER_TTL_SECONDS // 60
                 print(
                     f"    {cwd} never exited — still running as pid {old_pid}, "
                     f"not restarted"
                 )
-                print(
-                    f"        its restart is still armed: it will restart if it "
-                    f"exits within {mins} min, and be ignored after that"
-                )
+                # Only a reloaded-launched target has a marker at all. Saying
+                # otherwise tells the user to expect a delayed restart that
+                # nothing can perform - seen for real against a hand-launched
+                # session, which is armed with nothing by design.
+                if kinds.get(norm(cwd)) == discover_mod.RELOADED:
+                    mins = deploy_mod.RESTART_MARKER_TTL_SECONDS // 60
+                    print(
+                        f"        its restart is still armed: it will restart if it "
+                        f"exits within {mins} min, and be ignored after that"
+                    )
                 failed = True
                 continue
 
