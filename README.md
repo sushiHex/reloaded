@@ -190,6 +190,31 @@ inferring it from the missing pid. A relaunch that fails inside the startup
 grace deliberately leaves its tab open showing the error; concluding "the tab
 closed" there would open a second tab beside the message you need to read.
 
+### Sessions started by hand
+
+Not every session comes from `reloaded`. One opened by hand — a plain tab, then
+`claude` typed at the prompt — has none of the launcher in its shell, so
+neither restart path fits it: no loop will relaunch it, and its tab does not
+close, so reopening one would leave two tabs for one repo.
+
+`restart <repo>` tells them apart by reading the parent shell's command line,
+which contains the launcher verbatim for a `reloaded`-launched tab. Anything
+unreadable counts as hand-launched, the recoverable guess of the two.
+
+For a hand-launched session the marker is never armed — nothing would read it —
+and after `/exit` the launcher is put into the shell that is left waiting at a
+prompt. Same tab, same slot, and **the tab is upgraded**: from then on it
+carries the restart loop and closes itself when the session ends, exactly like
+any other. `--dry-run` says so before you commit to it, because that change is
+permanent.
+
+The launcher goes into a file and one short line runs it, rather than being
+typed out. `SendKeys` reads `{` and `(` as syntax; escaped, the launcher is 838
+keystrokes, and they did not all arrive when tried. Moving it into a file costs
+one thing — the launcher's closing `exit` runs in script scope, where it need
+not reach the host shell — so the script stops the shell by pid instead, which
+works from any scope and was verified against a real shell.
+
 ### Known limits of the named restart
 
 *Placement on the fallback path is best-effort.* `wt -w 0` means Windows

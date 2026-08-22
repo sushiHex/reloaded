@@ -20,6 +20,7 @@ from .paths import (
     layout_path,
     log_path,
     norm,
+    relaunch_script_path,
     resolve_repo,
     restart_marker,
     restart_marker_dir,
@@ -323,6 +324,35 @@ def _launch_single_tab(cwd: str) -> None:
     subprocess.Popen(argv, close_fds=True)
 
 
+def _type_relaunch(hwnd: int, item, cwd: str, size_bytes: int = 0) -> bool:
+    """Put the launcher into the idle shell a hand-launched session left behind.
+
+    That shell is a plain interactive prompt with no session in it and nothing
+    to close it, so this is the only way its tab gets a session back in the
+    slot it already occupies. The tab is upgraded in the process: from the next
+    restart on it behaves like any reloaded-launched one.
+
+    Written to a file and run by one short line rather than typed out, because
+    SendKeys reads `{` and `(` as syntax - escaped, the launcher is 838
+    keystrokes, and they did not all arrive when tried.
+    """
+    import time
+
+    path = relaunch_script_path(cwd)
+    path.write_text(deploy_mod.relaunch_script(cwd, size_bytes), encoding="utf-8")
+
+    if not tabs_mod.select_tab(hwnd, item):
+        return False
+
+    import uiautomation as auto
+
+    # The session has only just ended; give its shell a moment to finish
+    # returning to a prompt before typing at it.
+    time.sleep(1.0)
+    auto.SendKeys("& '%s'{Enter}" % path)
+    return True
+
+
 def _live_tab_count(hwnd: int) -> int:
     """How many tabs that window has now, or 0 if it is gone."""
     try:
@@ -413,28 +443,45 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     if args.dry_run:
         for _title, cwd, pid, _item in _targets(plans):
             print(f"Would restart {cwd} (pid {pid}) in place, leaving its window open.")
+            if discover_mod.launcher_kind(pid) == discover_mod.HAND:
+                # The one consequence worth previewing: this rewrites what the
+                # tab runs, permanently. A preview reading the same for both
+                # kinds hides it until after the fact.
+                print("    Started by hand — its tab would be upgraded to the "
+                      "reloaded launcher,")
+                print("    which self-closes when the session exits.")
         print("\nDry run — no marker written, nothing sent.")
         return 0
 
     _sweep_stale_markers()
     tabs_before = {plan.hwnd: plan.total_tabs for plan in plans}
+    sizes = _transcript_sizes(discover_mod.transcript_index(need_title=False))
+
+    # A session started by hand sits in a plain interactive shell, so none of
+    # the marker machinery applies to it: nothing would read the marker, and
+    # its tab does not close. It needs the launcher typed into the shell /exit
+    # leaves behind. Classified before anything is armed or exited.
+    kinds = {
+        norm(cwd): discover_mod.launcher_kind(pid)
+        for _t, cwd, pid, _i in _targets(plans)
+    }
+
+    def arm(cwd):
+        if kinds.get(norm(cwd)) == discover_mod.RELOADED:
+            restart_marker(cwd).write_text("restart", encoding="utf-8")
 
     print("Exiting the named sessions — this will steal keyboard focus...")
     # Armed per tab, as its turn comes, rather than all up front: targets are
     # exited serially with a wait each, so a marker written now for the last
     # target would spend every earlier target's wait ageing toward its TTL.
-    down = teardown_mod.execute_down(
-        plans,
-        close_windows=False,
-        before_exit=lambda cwd: restart_marker(cwd).write_text("restart", encoding="utf-8"),
-    )
+    down = teardown_mod.execute_down(plans, close_windows=False, before_exit=arm)
     _print_down_result(down, timed_out_note=" — not restarted")
 
     stuck = {norm(cwd) for _t, cwd in down["timed_out"]}
     print("\nWaiting for them to come back...")
     failed = False
     for plan in plans:
-        for _title, cwd, old_pid, _item in plan.targets:
+        for _title, cwd, old_pid, item in plan.targets:
             if norm(cwd) in stuck:
                 # Deliberately left armed. "Timed out" only means it had not
                 # exited within EXIT_TIMEOUT_SECONDS, not that it never will -
@@ -453,6 +500,23 @@ def cmd_restart_one(args, repos: list[str]) -> int:
                     f"exits within {mins} min, and be ignored after that"
                 )
                 failed = True
+                continue
+
+            if kinds.get(norm(cwd)) == discover_mod.HAND:
+                # Its shell is waiting at a prompt in a tab that never closed.
+                # Nothing will relaunch it, so put the launcher in there.
+                print(f"    {cwd} was started by hand — typing the launcher into its tab")
+                if not _type_relaunch(plan.hwnd, item, cwd, sizes.get(norm(cwd), 0)):
+                    print(f"    [warn] could not reach that tab — start {cwd} by hand")
+                    failed = True
+                    continue
+                pid = _wait_for_session(cwd, not_pid=old_pid)
+                if pid is None:
+                    print(f"    [warn] {cwd} did not come back — start it by hand")
+                    failed = True
+                    continue
+                print(f"    restarted in place -> {cwd} (pid {pid}); its tab is "
+                      "now upgraded and will self-close on exit")
                 continue
 
             pid = _wait_for_session(cwd, not_pid=old_pid)

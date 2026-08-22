@@ -87,6 +87,52 @@ def strip_glyph(title: str) -> str:
     return s[i:].strip()
 
 
+HAND = "hand"
+RELOADED = "reloaded"
+
+# The launcher's own variable, not the word "reloaded". The banner it prints
+# contains that word for every repo, and a repo literally named `reloaded` puts
+# it in a hand-opened shell's title too - matching on it would classify by repo
+# name. `$rlStart` appears only because deploy put it there.
+_LAUNCHER_MARK = "$rlStart"
+
+_psutil = None
+
+
+def _ps():
+    """psutil, imported on first use. A module attribute so tests can replace
+    it, matching how live_sessions imports it lazily rather than at module
+    load - psutil is optional and this package degrades without it."""
+    global _psutil
+    if _psutil is None:
+        import psutil
+
+        _psutil = psutil
+    return _psutil
+
+
+def launcher_kind(pid: int) -> str:
+    """Whether the session at `pid` was launched by reloaded or started by hand.
+
+    They need opposite handling on restart. A reloaded tab's shell runs the
+    launcher, so /exit either relaunches in place or closes the tab. A
+    hand-launched tab's shell is a plain interactive prompt: /exit leaves it
+    sitting there with no session and nothing to close it.
+
+    Read from the parent shell's command line, where the launcher is visible
+    verbatim. Anything unreadable counts as HAND, which is the recoverable
+    guess: treating a hand-launched session as reloaded means waiting for a
+    relaunch no loop will perform and then reporting failure, while the reverse
+    means typing into a shell that a reloaded tab, having closed itself, is not
+    around to receive.
+    """
+    try:
+        parent = _ps().Process(_ps().Process(pid).ppid())
+        return RELOADED if _LAUNCHER_MARK in " ".join(parent.cmdline()) else HAND
+    except Exception:
+        return HAND
+
+
 def live_sessions() -> dict[str, int]:
     """Map normalized cwd -> pid for every running Claude Code session.
 

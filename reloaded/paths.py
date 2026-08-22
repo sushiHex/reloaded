@@ -48,6 +48,19 @@ def restart_marker_dir() -> pathlib.Path:
     return d
 
 
+def relaunch_script_path(cwd: str) -> pathlib.Path:
+    """Where the launcher is written for typing into a hand-launched tab.
+
+    Named by the same digest as the marker, so the filename holds no character
+    SendKeys would read as syntax - the whole point of using a file is that the
+    line typed into the shell is short and literal.
+    """
+    d = state_dir() / "relaunch"
+    d.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(norm(cwd).encode("utf-8")).hexdigest()[:16]
+    return d / f"{digest}.ps1"
+
+
 def restart_marker(cwd: str) -> pathlib.Path:
     """The file `restart` drops to tell one tab's own shell to relaunch.
 

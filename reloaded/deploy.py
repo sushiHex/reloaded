@@ -170,6 +170,31 @@ def launcher_command(cwd: str, delay: int, size_bytes: int) -> str:
     return "; ".join(parts)
 
 
+def relaunch_script(cwd: str, size_bytes: int) -> str:
+    """The launcher, as a script to run inside a shell that already exists.
+
+    `restart <repo>` uses this on a session started by hand rather than by
+    reloaded: /exit leaves its plain interactive shell sitting at a prompt in a
+    tab nothing will close, so the launcher is put into that shell instead and
+    the tab comes out behaving like any reloaded-launched one.
+
+    It is a file rather than typed text because SendKeys reads `{` and `(` as
+    syntax; escaped, the launcher is 838 keystrokes, and they did not arrive
+    intact when tried. One short line runs the file instead.
+
+    The one thing that cannot survive the move is `exit`. Inside a called
+    script it ends the script, and the tab would be left open where a reloaded
+    tab closes - so the shell is stopped by pid, which works from any scope. A
+    PowerShell script runs in the calling process, so $PID is that shell.
+    """
+    body = launcher_command(cwd, 0, size_bytes)
+    return body.replace(
+        CLOSE_TAB_IF_STARTED,
+        f"if (((Get-Date)-$rlStart).TotalSeconds -gt {STARTUP_GRACE_SECONDS}) "
+        f"{{ Stop-Process -Id $PID }}",
+    ) + "\n"
+
+
 def new_tab_args(cwd: str, command: str) -> list[str]:
     """The `new-tab` fragment of a wt command line, with escaping applied.
 

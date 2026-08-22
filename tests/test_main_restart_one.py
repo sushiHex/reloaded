@@ -61,6 +61,12 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod, "layout_path", lambda name: tmp_path / "default.json")
     monkeypatch.setattr(main_mod.discover_mod, "transcript_index", lambda *a, **k: {})
     monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: dict(w["pids"]))
+    # Everything here models a reloaded-launched session; the hand-launched
+    # path has its own file. Without this the real launcher_kind runs against
+    # fabricated pids, can read nothing, and safely answers HAND - which sends
+    # every test in this file down the wrong branch.
+    monkeypatch.setattr(main_mod.discover_mod, "launcher_kind",
+                        lambda pid: main_mod.discover_mod.RELOADED)
     monkeypatch.setattr(main_mod.layout_mod, "save",
                         lambda lo, path: w.__setitem__("saved_layout", True))
     monkeypatch.setattr(main_mod, "RELAUNCH_WAIT_SECONDS", 0.2, raising=False)
