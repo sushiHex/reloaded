@@ -12,7 +12,7 @@ from . import tabs as tabs_mod
 from . import win32
 from .discover import TranscriptInfo
 from .layout import Layout, Monitor, Tab, clamp_rect, window_id
-from .paths import norm
+from .paths import norm, restart_marker
 from .transcript import SIZE_WARN_BYTES, human_size
 
 STAGGER_SECONDS = 4
@@ -71,6 +71,50 @@ CLOSE_TAB_IF_STARTED = (
     f"if (((Get-Date)-$rlStart).TotalSeconds -gt {STARTUP_GRACE_SECONDS}) {{ exit }}"
 )
 
+# How long a restart marker stays good for. `restart` writes one, then has at
+# most teardown.EXIT_TIMEOUT_SECONDS to get the session to end, so anything
+# beyond a couple of minutes means the restart never reached its tab - the
+# window would not come to the foreground, or reloaded itself died. The marker
+# outlives the attempt either way, and obeying it later would relaunch a
+# session the user had just deliberately exited by hand.
+RESTART_MARKER_TTL_SECONDS = 120
+
+
+def restart_loop(cwd: str) -> str:
+    """Wrap the claude invocation so `restart <repo>` can relaunch a session
+    without the tab ever closing.
+
+    A tab's slot in the window is lost the moment it closes, and Windows
+    Terminal ships no keybinding for moving a tab to an index - so the only way
+    to keep a restarted session where it was is to not let the tab go. The
+    shell that already owns the tab runs claude again instead.
+
+    `$rlStart` is reset per iteration so CLOSE_TAB_IF_STARTED still measures
+    the *relaunched* session's lifetime. Measured from the original launch it
+    would always look successful, and a relaunch that died on startup would
+    close its tab and take the error with it.
+    """
+    m = _ps_quote(str(restart_marker(cwd)))
+    body = "; ".join((
+        CLAUDE_COMMAND,
+        f"if (-not (Test-Path '{m}')) {{ break }}",
+        # Read the age before deleting, but delete either way - a stale marker
+        # left on disk would be found again by the next exit.
+        f"$rlAge=((Get-Date)-(Get-Item '{m}').LastWriteTime).TotalSeconds",
+        f"Remove-Item '{m}' -Force -ErrorAction SilentlyContinue",
+        # Consuming the marker is what makes one request produce one restart,
+        # so a delete that failed must stop the loop rather than be ignored.
+        # Remove-Item is silenced, and a marker that survives is still there
+        # and still fresh on the next pass: claude relaunches, exits, finds it
+        # again, forever. Verified - a directory at the marker path (which
+        # -Force cannot remove without -Recurse) spun until the test's 60s
+        # subprocess timeout.
+        f"if (Test-Path '{m}') {{ break }}",
+        f"if ($rlAge -gt {RESTART_MARKER_TTL_SECONDS}) {{ break }}",
+        "$rlStart=Get-Date",
+    ))
+    return f"while ($true) {{ {body} }}"
+
 
 @functools.lru_cache(maxsize=1)
 def shell_executable() -> str:
@@ -121,7 +165,7 @@ def launcher_command(cwd: str, delay: int, size_bytes: int) -> str:
         parts.append(f"Start-Sleep {delay}")
 
     parts.append(CLAUDE_STARTED_AT)
-    parts.append(CLAUDE_COMMAND)
+    parts.append(restart_loop(cwd))
     parts.append(CLOSE_TAB_IF_STARTED)
     return "; ".join(parts)
 

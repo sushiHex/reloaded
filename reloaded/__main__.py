@@ -16,7 +16,14 @@ from . import tasks as tasks_mod
 from . import teardown as teardown_mod
 from . import transcript as transcript_mod
 from . import win32 as win32_mod
-from .paths import layout_path, log_path, norm, resolve_repo
+from .paths import (
+    layout_path,
+    log_path,
+    norm,
+    resolve_repo,
+    restart_marker,
+    restart_marker_dir,
+)
 
 DEFAULT_REPOS_ROOT = os.path.join(os.path.expanduser("~"), "repos")
 
@@ -282,7 +289,217 @@ def cmd_up(args) -> int:
     return _deploy_layout(lo, args)
 
 
+# How long to wait for a restarted session to reappear before concluding its
+# tab closed instead of relaunching. live_sessions() matches on process name
+# and cwd, so a session counts the moment claude.exe exists - well before it
+# has finished reading a large transcript. This is a wait for a spawn, not for
+# a startup.
+RELAUNCH_WAIT_SECONDS = 20.0
+# A full psutil.process_iter() sweep per tick, which teardown's own polling
+# loop avoids precisely because it is "real, avoidable cost". It cannot be
+# avoided here - the pid being waited for does not exist yet, so there is
+# nothing cheaper to poll - so the tick is kept coarse instead. Nobody
+# restarting a session needs the answer a quarter-second sooner.
+RELAUNCH_POLL_SECONDS = 1.0
+
+
+def _launch_single_tab(cwd: str) -> None:
+    """Open one repo as a tab via `wt -w 0`.
+
+    Reached only as `restart <repo>`'s fallback, when the tab closed instead of
+    relaunching in place. Placement is genuinely best-effort and the caller
+    must not promise otherwise: `-w 0` means Windows Terminal's *most recently
+    used* window, which is usually the one teardown just brought forward, but
+    is not the same thing as a captured HWND. If the original window closed
+    with its last tab, the session lands in whichever WT window is MRU, or in a
+    brand-new one if none exists. Either way it arrives at the end of a tab
+    strip rather than in its old slot - restoring the slot is what the in-place
+    restart is for, and this path exists because that did not happen.
+    """
+    import subprocess
+
+    sizes = _transcript_sizes(discover_mod.transcript_index(need_title=False))
+    argv = deploy_mod.wt_argv_single_tab(cwd, sizes.get(norm(cwd), 0))
+    subprocess.Popen(argv, close_fds=True)
+
+
+def _live_tab_count(hwnd: int) -> int:
+    """How many tabs that window has now, or 0 if it is gone."""
+    try:
+        return len(tabs_mod.list_tab_items(hwnd))
+    except Exception:
+        return 0
+
+
+def _wait_for_session(cwd: str, *, not_pid: int | None = None) -> int | None:
+    """Poll for a live session at `cwd`, returning its pid or None on timeout.
+
+    ``not_pid`` is the pid this restart tried to end, and a match for it is not
+    an answer. Accepting any pid meant a session that ignored /exit - still
+    running, still the same process - satisfied the poll on the first tick and
+    got reported as restarted. That was not a narrow reaping race: it held for
+    as long as the old process stayed alive, which for a timed-out exit is
+    indefinitely.
+    """
+    import time
+
+    key = norm(cwd)
+    deadline = time.time() + RELAUNCH_WAIT_SECONDS
+    while True:
+        pid = discover_mod.live_sessions().get(key)
+        if pid is not None and pid != not_pid:
+            return pid
+        if time.time() >= deadline:
+            return None
+        time.sleep(RELAUNCH_POLL_SECONDS)
+
+
+def _sweep_stale_markers() -> None:
+    """Drop restart markers left by an attempt that never reached its tab.
+
+    Markers are deliberately never deleted by the writer: the shell that reads
+    one does so moments after its session exits, and deleting eagerly would be
+    a race we lose. deploy's TTL already makes an old marker inert, so this is
+    housekeeping, not correctness.
+    """
+    import time
+
+    cutoff = time.time() - deploy_mod.RESTART_MARKER_TTL_SECONDS
+    try:
+        stale = [m for m in restart_marker_dir().glob("*.marker")
+                 if m.stat().st_mtime < cutoff]
+    except OSError:
+        return
+    for m in stale:
+        try:
+            m.unlink()
+        except OSError:
+            pass
+
+
+def cmd_restart_one(args, repos: list[str]) -> int:
+    """Restart only the named sessions, in place, without closing their tabs."""
+    cwds = [resolve_repo(r, args.repos_root) for r in repos]
+    live = discover_mod.live_sessions()
+
+    not_running = [c for c in cwds if norm(c) not in live]
+    if not_running:
+        for c in not_running:
+            print(f"Not running: {c}")
+        print("\n`reloaded status` lists the live sessions.")
+        return 1
+
+    try:
+        plans = teardown_mod.plan_down(args.repos_root, live=live, only=cwds)
+    except tabs_mod.UIAUnavailable as exc:
+        return _report_uia_unavailable(exc)
+
+    # Every requested repo must have a tab we can actually type into, or the
+    # batch is refused whole. Acting on the resolvable subset used to restart
+    # some repos, skip the rest without a word, and still return 0 - with the
+    # skipped repos' markers left armed on disk.
+    planned = {norm(cwd) for _t, cwd, _p, _i in _targets(plans)}
+    unresolved = [c for c in cwds if norm(c) not in planned]
+    if unresolved:
+        for c in unresolved:
+            print(f"No Windows Terminal tab found for {c}")
+        print(
+            "\n    Running, but no tab this tool can drive — started outside "
+            "Windows Terminal, or UIA cannot read its title."
+        )
+        print("    Nothing was restarted; re-run without it to restart the rest.")
+        return 1
+
+    if args.dry_run:
+        for _title, cwd, pid, _item in _targets(plans):
+            print(f"Would restart {cwd} (pid {pid}) in place, leaving its window open.")
+        print("\nDry run — no marker written, nothing sent.")
+        return 0
+
+    _sweep_stale_markers()
+    tabs_before = {plan.hwnd: plan.total_tabs for plan in plans}
+
+    print("Exiting the named sessions — this will steal keyboard focus...")
+    # Armed per tab, as its turn comes, rather than all up front: targets are
+    # exited serially with a wait each, so a marker written now for the last
+    # target would spend every earlier target's wait ageing toward its TTL.
+    down = teardown_mod.execute_down(
+        plans,
+        close_windows=False,
+        before_exit=lambda cwd: restart_marker(cwd).write_text("restart", encoding="utf-8"),
+    )
+    _print_down_result(down, timed_out_note=" — not restarted")
+
+    stuck = {norm(cwd) for _t, cwd in down["timed_out"]}
+    print("\nWaiting for them to come back...")
+    failed = False
+    for plan in plans:
+        for _title, cwd, old_pid, _item in plan.targets:
+            if norm(cwd) in stuck:
+                # Deliberately left armed. "Timed out" only means it had not
+                # exited within EXIT_TIMEOUT_SECONDS, not that it never will -
+                # and if the marker is gone when it does, the shell breaks out
+                # of the restart loop and CLOSE_TAB_IF_STARTED closes the tab.
+                # Disarming here would destroy the session this command was
+                # asked to bring back. Left armed the worst case is a late
+                # restart, which is what was requested, bounded by the TTL.
+                mins = deploy_mod.RESTART_MARKER_TTL_SECONDS // 60
+                print(
+                    f"    {cwd} never exited — still running as pid {old_pid}, "
+                    f"not restarted"
+                )
+                print(
+                    f"        its restart is still armed: it will restart if it "
+                    f"exits within {mins} min, and be ignored after that"
+                )
+                failed = True
+                continue
+
+            pid = _wait_for_session(cwd, not_pid=old_pid)
+            if pid is not None:
+                print(f"    restarted in place -> {cwd} (pid {pid})")
+                continue
+
+            # Nothing live at that cwd. Either the tab closed (no restart loop
+            # in a session started before this existed) or the relaunch failed
+            # fast enough that the startup guard kept the tab open to show the
+            # error. Those need opposite responses, so ask the window rather
+            # than inferring from the absent pid: a second tab beside an error
+            # message is the worst of both.
+            if _live_tab_count(plan.hwnd) >= tabs_before.get(plan.hwnd, 0):
+                print(
+                    f"    [warn] {cwd} did not come back, but still has its tab — "
+                    "read the error in that window rather than opening another"
+                )
+                failed = True
+                continue
+
+            print(f"    {cwd} did not relaunch in place — its tab closed; reopening it")
+            _launch_single_tab(cwd)
+            if _wait_for_session(cwd) is None:
+                print(f"    [warn] {cwd} did not come back — start it by hand")
+                failed = True
+    return 1 if failed else 0
+
+
+# No marker this command armed is ever deleted by this command. Deleting one
+# means guessing that its tab will not read it, and that guess is unrecoverable
+# when wrong: the shell breaks out of the restart loop and closes the tab,
+# destroying the session. Staleness is handled where it is safe to handle -
+# deploy's TTL makes an old marker inert, and _sweep_stale_markers clears the
+# directory on the next run.
+
+
+def _targets(plans):
+    for plan in plans:
+        yield from plan.targets
+
+
 def cmd_restart(args) -> int:
+    repos = list(getattr(args, "repos", None) or [])
+    if repos:
+        return cmd_restart_one(args, repos)
+
     try:
         lo, path, live, title_map = _capture_layout(args)
     except tabs_mod.UIAUnavailable as exc:
@@ -499,7 +716,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     restart = sub.add_parser(
         "restart",
-        help="capture the current arrangement, gracefully /exit everything, then relaunch it exactly as it was",
+        help="restart named sessions in place; with no names, capture the current "
+             "arrangement, gracefully /exit everything, then relaunch it exactly as it was",
+    )
+    restart.add_argument(
+        "repos",
+        nargs="*",
+        help="repo name or path to restart in place, keeping its tab and window "
+             "(default: every session, via a full capture and relaunch)",
     )
     restart.add_argument(
         "--dry-run", action="store_true", help="print what would be captured/exited/relaunched, do nothing"

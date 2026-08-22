@@ -46,6 +46,7 @@ def plan_down(
     *,
     live: dict[str, int] | None = None,
     title_map: dict[str, str] | None = None,
+    only: list[str] | None = None,
 ) -> list[WindowPlan]:
     """Every WT window with at least one live Claude Code tab, and which of
     its tabs those are. Read-only: selects, types, and closes nothing.
@@ -53,11 +54,18 @@ def plan_down(
     ``live``/``title_map`` let a caller that already computed them (restart,
     right after its own capture) pass them straight through instead of
     paying for the psutil scan and the transcript-corpus walk again.
+
+    ``only`` narrows the targets to those cwds — `restart <repo>` — and is
+    compared through norm(), since it arrives from a typed argument while the
+    cwds it matches came from psutil. It filters *targets*, never total_tabs:
+    the untouched tabs still occupy their window, and execute_down relies on
+    that count to decide the window is not empty enough to close.
     """
     if live is None:
         live = discover.live_sessions()
     if title_map is None:
         title_map = discover.title_to_cwd(discover.transcript_index())
+    wanted = {norm(c) for c in only} if only is not None else None
 
     plans: list[WindowPlan] = []
     for hwnd in win32.list_wt_windows():
@@ -74,26 +82,54 @@ def plan_down(
             if resolved is None:
                 continue
             cwd, _low_confidence = resolved
+            if wanted is not None and norm(cwd) not in wanted:
+                continue
             targets.append((title, cwd, live[norm(cwd)], item))
         if targets:
             plans.append(WindowPlan(hwnd=hwnd, total_tabs=len(items), targets=targets))
     return plans
 
 
-def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True) -> bool:
+def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=None) -> bool:
     """Foreground `item`'s tab and type /exit into it. Returns whether the
     foreground actually happened (see tabs.select_tab) - a False return
     means nothing was typed, so the caller must not assume /exit was sent.
     See tabs.send_exit_keystrokes for what dismiss_overlay controls."""
     if not tabs.select_tab(hwnd, item):
         return False
+    # After the tab is focused, before anything is typed. `restart` arms its
+    # marker here so a tab that could not be foregrounded is never armed: it
+    # will never read the marker, and one left on disk would fire on the
+    # user's next manual exit instead.
+    if before_send is not None:
+        before_send()
     tabs.send_exit_keystrokes(dismiss_overlay=dismiss_overlay)
     return True
 
 
-def execute_down(plans: list[WindowPlan], log=print) -> dict:
+def execute_down(
+    plans: list[WindowPlan],
+    log=print,
+    *,
+    close_windows: bool = True,
+    before_exit=None,
+) -> dict:
     """Send /exit to every planned tab, wait for each to actually end, then
-    close each window whose tabs were all Claude sessions and all exited."""
+    close each window whose tabs were all Claude sessions and all exited.
+
+    ``close_windows=False`` skips that last step, for `restart <repo>`: a
+    restarted session comes back inside the very shell that is exiting, so its
+    window has to outlive the exit. A single-session window otherwise satisfies
+    ``len(targets) == total_tabs`` and gets WM_CLOSE'd out from under the tab
+    that is about to reappear in it.
+
+    ``before_exit(cwd)`` runs once per target, after its tab is focused and
+    before /exit is typed into it. Targets are handled serially with a wait of
+    up to EXIT_TIMEOUT_SECONDS each, so work done here for target N would
+    otherwise have to stay valid across every earlier target's wait — which is
+    how `restart`'s marker TTL used to be a function of batch size rather than
+    of one tab's exit.
+    """
     exited: list[tuple[str, str]] = []
     timed_out: list[tuple[str, str]] = []
     closed: list[int] = []
@@ -102,7 +138,8 @@ def execute_down(plans: list[WindowPlan], log=print) -> dict:
     for plan in plans:
         all_exited = True
         for title, cwd, pid, item in plan.targets:
-            if not _send_exit(plan.hwnd, item):
+            arm = None if before_exit is None else (lambda c=cwd: before_exit(c))
+            if not _send_exit(plan.hwnd, item, before_send=arm):
                 log(
                     f"    [warn] could not bring window 0x{plan.hwnd:X} to the "
                     f"foreground - skipping {title!r} (exit it manually)"
@@ -155,10 +192,12 @@ def execute_down(plans: list[WindowPlan], log=print) -> dict:
             else:
                 exited.append((title, cwd))
 
-        should_close = all_exited and len(plan.targets) == plan.total_tabs
+        should_close = (
+            close_windows and all_exited and len(plan.targets) == plan.total_tabs
+        )
         if not should_close:
             left_open.append(plan.hwnd)
-            if all_exited:
+            if all_exited and close_windows:
                 log(f"    left window 0x{plan.hwnd:X} open - it has non-Claude tabs too")
             continue
 

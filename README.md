@@ -67,6 +67,7 @@ or the unattended runs will fail with an import error.
 | `reloaded open <repo>` | Add one repo as a new tab in the *current* window (see also: `up`, which deploys the whole saved layout into new windows) |
 | `reloaded down` | Gracefully `/exit` every live Claude Code tab, then close windows that were entirely made up of sessions that exited (`--dry-run` to preview) |
 | `reloaded restart` | Capture the current arrangement, gracefully `/exit` everything, then relaunch it exactly as it was (`--dry-run` to preview) |
+| `reloaded restart <repo>...` | Restart only the named sessions, in place — same window, same tab, same position (`--dry-run` to preview) |
 | `reloaded install-tasks` | Register the logon launcher and the 5-minute reconcile task |
 | `reloaded uninstall-tasks` | Remove both |
 
@@ -142,6 +143,75 @@ not at the last `capture`. It then runs the same graceful `down` sequence,
 and relaunches from that fresh capture; a session that didn't exit in time is
 skipped rather than duplicated, the same as any other already-running session
 `up` encounters.
+
+**`restart <repo>` keeps the tab instead of restoring it.** A tab's position
+is lost the moment it closes, and Windows Terminal ships `moveTab` as an
+action with no default keybinding — so there is no key to send to put a tab
+back at an index. Rather than restore the slot, a named restart never gives it
+up: the launcher command runs `claude` inside a loop, and `restart <repo>`
+drops a marker file that tells the tab's own shell to go round again instead
+of exiting. Same window, same slot, and no window is closed along the way.
+
+Each marker is armed as its own tab's turn comes, not for the whole batch up
+front. Targets are exited serially with a wait each, so a marker written up
+front for the last of six repos would spend every earlier wait ageing toward
+its two-minute TTL and be discarded before its tab was ever asked to exit.
+Armed per tab, a marker only has to survive its own exit.
+
+The marker is consumed on read, so one request can only produce one restart —
+and if the delete fails, the loop stops rather than relaunching against a
+marker it could not consume. A marker at a path `Remove-Item` cannot remove
+otherwise relaunches `claude` forever, silently, because the failure is
+suppressed.
+
+**No marker is ever deleted by the command that wrote it.** Deleting one means
+guessing that its tab will not read it, and that guess is unrecoverable when
+wrong: the shell breaks out of the restart loop and the tab closes, destroying
+the session the restart was meant to bring back. A session that timed out is
+reported as still armed, since "did not exit within 20 seconds" is not "will
+never exit" — it will restart if it exits inside the TTL. Staleness is handled
+where it is safe to handle it: the TTL makes an old marker inert, and the next
+run sweeps the directory.
+
+**A named restart is all-or-nothing.** Every repo named must be both running
+and reachable through a Windows Terminal tab. If any one of them resolves to no
+tab, nothing is armed and nothing is exited — restarting the reachable subset
+and returning success while silently skipping the rest is worse than refusing.
+
+**A session that ignores `/exit` is not reported as restarted.** The relaunched
+session is identified by a *change* of pid, not by the presence of one: a
+session that never exited is still running under its original pid at the same
+cwd, which any "is something live here" check would happily accept.
+
+A session started before this existed has no loop in its shell, so its tab
+closes on `/exit` as it always did. That is detected rather than predicted —
+and the window is asked whether its tab actually went away, rather than
+inferring it from the missing pid. A relaunch that fails inside the startup
+grace deliberately leaves its tab open showing the error; concluding "the tab
+closed" there would open a second tab beside the message you need to read.
+
+### Known limits of the named restart
+
+*Placement on the fallback path is best-effort.* `wt -w 0` means Windows
+Terminal's most recently used window, which is normally the one just
+foregrounded to type `/exit` — but it is not a captured window handle. If the
+original window closed with its last tab, the session lands in whichever WT
+window is MRU, or a new one.
+
+*Two overlapping restarts of the same repo are not distinguished.* A marker
+carries no nonce or generation, so concurrent requests collapse into one
+restart. Not fixed: adding a handshake means the shell has to report back, and
+nothing in the intended use — one person, one repo at a time — produces the
+race.
+
+*The 5-minute reconcile can drop a repo from the saved layout during the
+restart gap.* A session is briefly absent from `live`, which is exactly how a
+session the user deliberately closed looks. Not fixed: the next reconcile
+re-adds it once it is back, so this self-heals, and the alternative is a lock
+file that has to be correct when `reloaded` is killed.
+
+*`restart <repo>` and a full `restart` do not coordinate.* Running both at once
+lets the full restart's `/exit` consume the targeted marker.
 
 ## License
 
