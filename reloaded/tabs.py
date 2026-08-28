@@ -147,6 +147,40 @@ def tab_titles(hwnd: int) -> list[str]:
     return [title for title, _item in list_tab_items(hwnd) if title]
 
 
+def close_tab(tab_item) -> bool:
+    """Close one tab by invoking its own Close Tab button.
+
+    Needs no focus, no foreground and no synthesized keystroke, so unlike
+    send_quit_keystrokes it cannot land on the wrong tab - the failure mode
+    select_tab exists to guard against. Verified by hand against a wedged tab
+    that Ctrl+D would not close, with three live sessions in the same window
+    left untouched.
+
+    For a tab that must be GONE and whose session has already ended. A live
+    session is still asked to quit through its own UI, so that it gets the
+    chance to shut down cleanly rather than have its tab pulled out from
+    under it.
+    """
+    try:
+        children = tab_item.GetChildren()
+    except Exception:
+        return False
+
+    for child in children:
+        # The control type matters as much as the name: a label or tooltip
+        # reading "Close Tab" would otherwise be invoked instead.
+        if getattr(child, "ControlTypeName", "") != "ButtonControl":
+            continue
+        if "close" not in (getattr(child, "Name", "") or "").lower():
+            continue
+        try:
+            child.GetInvokePattern().Invoke()
+            return True
+        except Exception:
+            return False
+    return False
+
+
 def select_tab(hwnd: int, tab_item, attempts: int = 10, settle: float = 0.3) -> bool:
     """Select `tab_item`, confirm it actually took, and foreground its window.
 

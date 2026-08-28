@@ -107,6 +107,40 @@ def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=Non
     return True
 
 
+def close_dead_tabs(plans, exited, still_open=None, log=print) -> int:
+    """Close tabs whose session ended but whose shell did not close itself.
+
+    A tab launched by reloaded closes itself once its session ends - see
+    deploy.CLOSE_TAB_IF_STARTED. One started by hand sits in a plain
+    interactive shell and does not, leaving a dead prompt in the strip where a
+    session used to be. WM_CLOSE is the wrong tool for that: the window may
+    hold other live sessions.
+
+    Only tabs in `exited` are touched. A session that never exited is still
+    running, and closing its tab would kill it - the one thing a graceful
+    teardown must not do.
+
+    `still_open` decides whether a tab is even there any more; a tab that
+    already closed itself would otherwise mean invoking a button on a dead UIA
+    element. Returns how many were closed, so the caller can subtract them
+    from the window's remaining tab count.
+    """
+    from . import tabs as tabs_mod
+
+    ended = {cwd for _title, cwd in exited}
+    closed = 0
+    for plan in plans:
+        for title, cwd, _pid, item in plan.targets:
+            if cwd not in ended:
+                continue
+            if still_open is not None and not still_open(item):
+                continue
+            if tabs_mod.close_tab(item):
+                log(f"    closed the empty tab left by {title}")
+                closed += 1
+    return closed
+
+
 def execute_down(
     plans: list[WindowPlan],
     log=print,
@@ -191,6 +225,15 @@ def execute_down(
                 time.sleep(EXIT_POLL_SECONDS)
             else:
                 exited.append((title, cwd))
+
+        # A tab this package launched closes itself once its session ends. One
+        # started by hand does not - its shell is a plain interactive prompt -
+        # so `down` used to leave a dead tab where a session had been. Closed
+        # through the tab's own button rather than by typing at it, so it
+        # cannot reach a neighbour. `still_open` is left None: close_tab
+        # already reports False for an element that has gone away, which makes
+        # a separate liveness probe per tab pure cost.
+        close_dead_tabs([plan], exited, still_open=None, log=log)
 
         should_close = (
             close_windows and all_exited and len(plan.targets) == plan.total_tabs
