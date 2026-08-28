@@ -1681,10 +1681,19 @@ Not a task — these cannot be asserted in pytest, and this project has already
 produced six confident wrong explanations from inference. Each is stated as
 unproven until it has actually been run.
 
-- [ ] `reloaded status` lists the Codex tab alongside the Claude ones
-- [ ] `reloaded capture` records `agent: "codex"` and the real command line
-- [ ] `reloaded restart <codex-repo> --dry-run` names the right tab
-- [ ] `reloaded restart <codex-repo>` quits and relaunches it, on a repo the
-      user has named expendable
+- [x] `reloaded status` lists the Codex tab alongside the Claude ones
+- [x] `reloaded capture` records `agent: "codex"` and the real command line —
+      confirmed in the REAL saved layout, written unattended by the 5-minute
+      reconcile task rather than by a hand-run capture
+- [x] `reloaded restart <codex-repo> --dry-run` names the right tab, once
+      (finding the missing plan_down dedup in the process)
+- [ ] `reloaded restart <codex-repo>` quits and relaunches it — needs a repo
+      the user has named expendable, and `constructicon` is mid-task
 - [ ] `reloaded up` into a fresh directory reports the trust prompt rather
       than hanging silently
+
+Two additional bugs were found by running these rather than by reasoning, and
+both are fixed: `plan_down` never deduped by cwd (one window here holds two
+tabs titled `constructicon` behind a single process), and readiness resolved
+binaries only against the PATH this process inherited, so an installer that
+updated PATH afterwards made a live binary look missing.
