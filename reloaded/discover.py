@@ -191,6 +191,31 @@ def live_agents() -> dict[str, str]:
     return {cwd: kind for cwd, (_pid, kind) in _sessions().items()}
 
 
+def session_command(pid: int) -> str:
+    """The command line a live session is running, for a captured tab.
+
+    The executable is reduced to its bare name: an absolute path would pin the
+    saved layout to one install location, and every agent binary is on PATH by
+    the time readiness lets a deploy start.
+
+    Returns "" when the process cannot be read, which the caller treats as
+    "use the kind's default" rather than as a failure. A capture that dropped a
+    tab because one cmdline was unreadable would be worse than one that
+    relaunches it with default flags.
+    """
+    try:
+        import psutil
+
+        argv = list(psutil.Process(pid).cmdline())
+    except Exception:
+        return ""
+    if not argv:
+        return ""
+
+    argv[0] = os.path.splitext(os.path.basename(argv[0]))[0]
+    return " ".join(f'"{a}"' if " " in a else a for a in argv)
+
+
 def _str_field(obj: dict, key: str) -> bool:
     """Whether `obj[key]` is a non-empty string.
 
