@@ -263,7 +263,32 @@ def _deploy_layout(lo, args) -> int:
     launched = sum(len(e.tabs) for e in plan)
     summary = f"Launched {launched} session(s) in {len(plan)} window(s)."
     _log(summary) if args.unattended else print(f"\n{summary}")
+
+    silent = _never_started(lo, discover_mod.live_sessions())
+    if silent:
+        note = f"[reloaded] {len(silent)} tab(s) opened but no session started:"
+        _log(note) if args.unattended else print(f"\n{note}")
+        for cwd in silent[:6]:
+            print(f"    - {cwd}")
+        print("    Codex asks whether to trust a directory it has not seen")
+        print("    before it starts. Answer it in the tab - this tool will not")
+        print("    answer a security question on your behalf.")
+
     return 1 if failures else 0
+
+
+def _never_started(lo, live) -> list[str]:
+    """Tabs the deploy launched that have no live session behind them.
+
+    Usually Codex asking whether to trust a directory it has not seen: the tab
+    opens, the prompt waits, and no session ever appears. Reported rather than
+    answered - it is a security question, and a launcher has no business
+    clicking through one for the user.
+
+    Not Codex-specific. A session that failed to start for any reason is worth
+    naming, because the tab looks perfectly healthy either way.
+    """
+    return [t.cwd for w in lo.windows for t in w.tabs if norm(t.cwd) not in live]
 
 
 def cmd_up(args) -> int:
