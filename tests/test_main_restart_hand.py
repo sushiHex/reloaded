@@ -55,7 +55,8 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod, "RELAUNCH_WAIT_SECONDS", 0.2, raising=False)
     monkeypatch.setattr(main_mod, "RELAUNCH_POLL_SECONDS", 0.01, raising=False)
     monkeypatch.setattr(main_mod, "_live_tab_count", lambda hwnd: w["tabs"])
-    monkeypatch.setattr(main_mod, "_launch_single_tab", w["launched"].append)
+    monkeypatch.setattr(main_mod, "_launch_single_tab",
+                        lambda cwd, **kw: w["launched"].append(cwd))
 
     def plan_down(repos_root, **kw):
         only = {norm(c) for c in (kw.get("only") or [])}

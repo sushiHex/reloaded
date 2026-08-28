@@ -329,7 +329,7 @@ RELAUNCH_WAIT_SECONDS = 20.0
 RELAUNCH_POLL_SECONDS = 1.0
 
 
-def _launch_single_tab(cwd: str) -> None:
+def _launch_single_tab(cwd: str, agent: str = "claude", command: str = "") -> None:
     """Open one repo as a tab via `wt -w 0`.
 
     Reached only as `restart <repo>`'s fallback, when the tab closed instead of
@@ -345,7 +345,8 @@ def _launch_single_tab(cwd: str) -> None:
     import subprocess
 
     sizes = _transcript_sizes(discover_mod.transcript_index(need_title=False))
-    argv = deploy_mod.wt_argv_single_tab(cwd, sizes.get(norm(cwd), 0))
+    argv = deploy_mod.wt_argv_single_tab(cwd, sizes.get(norm(cwd), 0),
+                                         agent, command)
     subprocess.Popen(argv, close_fds=True)
 
 
@@ -589,7 +590,8 @@ def cmd_restart_one(args, repos: list[str]) -> int:
                 restart_marker(cwd).unlink(missing_ok=True)
             except OSError:
                 pass
-            _launch_single_tab(cwd)
+            _launch_single_tab(cwd, agent=agent_kinds.get(norm(cwd), "claude"),
+                               command=discover_mod.session_command(old_pid))
             if _wait_for_session(cwd) is None:
                 print(f"    [warn] {cwd} did not come back — start it by hand")
                 failed = True
@@ -758,6 +760,22 @@ def cmd_status(args) -> int:
     return 0
 
 
+def _recorded_agent(args, cwd) -> tuple:
+    """The (agent, command) the saved layout has for `cwd`.
+
+    ("claude", "") when there is no layout, or no tab for this repo in it.
+    """
+    try:
+        lo = layout_mod.load(layout_path(args.layout))
+    except Exception:
+        return "claude", ""
+    for w in lo.windows:
+        for t in w.tabs:
+            if norm(t.cwd) == norm(cwd):
+                return t.agent, t.command
+    return "claude", ""
+
+
 def cmd_open(args) -> int:
     cwd = resolve_repo(args.repo, args.repos_root)
     if not os.path.isdir(cwd):
@@ -770,7 +788,13 @@ def cmd_open(args) -> int:
         return 0
 
     sizes = _transcript_sizes(discover_mod.transcript_index(need_title=False))
-    argv = deploy_mod.wt_argv_single_tab(cwd, sizes.get(norm(cwd), 0))
+    # Nothing is running to read the kind off, so the saved layout is the
+    # only record of what this repo runs. Absent from it, or no layout at
+    # all, means Claude Code - which is what every repo meant before a
+    # second kind existed.
+    agent, command = _recorded_agent(args, cwd)
+    argv = deploy_mod.wt_argv_single_tab(cwd, sizes.get(norm(cwd), 0),
+                                         agent, command)
 
     if args.dry_run:
         print(" ".join(repr(a) for a in argv))

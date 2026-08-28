@@ -114,7 +114,8 @@ def world(monkeypatch, tmp_path):
         if w["launch_works"]:
             w["pids"][norm(cwd)] = 777
 
-    monkeypatch.setattr(main_mod, "_launch_single_tab", launch, raising=False)
+    monkeypatch.setattr(main_mod, "_launch_single_tab",
+                        lambda cwd, **kw: launch(cwd), raising=False)
     monkeypatch.setattr(main_mod, "_live_tab_count",
                         lambda hwnd: w["tab_counts"].get(hwnd, 0), raising=False)
     return w
