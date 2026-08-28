@@ -395,8 +395,21 @@ def launch_window(argv: list[str], tabs: list[Tab], timeout: float = 20.0, settl
 
 
 def transcripts_to_repair(plan: list[PlanEntry], index: dict[str, TranscriptInfo]) -> list[str]:
-    """Transcript paths for the sessions this plan will launch."""
-    wanted = {norm(t.cwd) for entry in plan for t in entry.tabs}
+    """Transcript paths for the sessions this plan will launch.
+
+    Only for kinds with a verified torn-tail guard. `index` is Claude Code's
+    transcript corpus, so a Codex tab is mostly safe by accident - but a repo
+    that used to run Claude and now runs Codex has an entry in there, and
+    repairing it on that tab's behalf would truncate a file for a session that
+    is not going to read it.
+    """
+    from .transcript import guards_for
+
+    wanted = {
+        norm(t.cwd)
+        for entry in plan for t in entry.tabs
+        if guards_for(t.agent)
+    }
     return [info.path for key, info in index.items() if key in wanted]
 
 
