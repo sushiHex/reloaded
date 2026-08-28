@@ -349,7 +349,8 @@ def _launch_single_tab(cwd: str) -> None:
     subprocess.Popen(argv, close_fds=True)
 
 
-def _type_relaunch(hwnd: int, item, cwd: str, size_bytes: int = 0) -> bool:
+def _type_relaunch(hwnd: int, item, cwd: str, size_bytes: int = 0,
+                   agent: str = "claude", command: str = "") -> bool:
     """Put the launcher into the idle shell a hand-launched session left behind.
 
     That shell is a plain interactive prompt with no session in it and nothing
@@ -364,16 +365,20 @@ def _type_relaunch(hwnd: int, item, cwd: str, size_bytes: int = 0) -> bool:
     import time
 
     path = relaunch_script_path(cwd)
-    path.write_text(deploy_mod.relaunch_script(cwd, size_bytes), encoding="utf-8")
-
-    if not tabs_mod.select_tab(hwnd, item):
-        return False
+    path.write_text(deploy_mod.relaunch_script(cwd, size_bytes, agent, command),
+                    encoding="utf-8")
 
     import uiautomation as auto
 
-    # The session has only just ended; give its shell a moment to finish
-    # returning to a prompt before typing at it.
+    # The session has only just ended, so its shell needs a moment to finish
+    # returning to a prompt. That wait happens BEFORE the tab is claimed, not
+    # after: confirming the tab and then sleeping a second leaves a second in
+    # which focus can move, and typing at an unconfirmed target is exactly how
+    # a stray /exit reaches a live session. Nothing goes between select_tab
+    # returning True and the keystrokes.
     time.sleep(1.0)
+    if not tabs_mod.select_tab(hwnd, item):
+        return False
     auto.SendKeys("& '%s'{Enter}" % path)
     return True
 
@@ -538,7 +543,10 @@ def cmd_restart_one(args, repos: list[str]) -> int:
                 # Its shell is waiting at a prompt in a tab that never closed.
                 # Nothing will relaunch it, so put the launcher in there.
                 print(f"    {cwd} was started by hand — typing the launcher into its tab")
-                if not _type_relaunch(plan.hwnd, item, cwd, sizes.get(norm(cwd), 0)):
+                if not _type_relaunch(plan.hwnd, item, cwd,
+                                      sizes.get(norm(cwd), 0),
+                                      agent=agent_kinds.get(norm(cwd), "claude"),
+                                      command=discover_mod.session_command(old_pid)):
                     print(f"    [warn] could not reach that tab — start {cwd} by hand")
                     failed = True
                     continue
