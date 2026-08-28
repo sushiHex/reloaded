@@ -238,6 +238,46 @@ file that has to be correct when `reloaded` is killed.
 *`restart <repo>` and a full `restart` do not coordinate.* Running both at once
 lets the full restart's `/exit` consume the targeted marker.
 
+## Agent kinds
+
+A managed tab may hold a **Claude Code** session or a **Codex CLI** one. They
+are told apart by the running process — `claude.exe` or `codex.exe` — and the
+kind is recorded on the tab when it is captured.
+
+A second `codex.exe` runs as a child of the Codex desktop app. That is not a
+terminal tab, so it is excluded by its parent process; excluding by image name
+would lose the real tab along with it. Both run at once on a machine with the
+desktop app installed.
+
+**Each tab remembers how it was launched.** Capture reads the live process's
+own command line, so a session comes back with the flags it was actually
+running rather than with whatever this tool would have picked. The executable
+is reduced to its bare name — an absolute path would pin the layout to one
+install location. A tab with no captured command falls back to its kind's
+default.
+
+**Quitting differs by kind.** Claude Code takes `/exit` then Enter; Codex takes
+Ctrl+C twice. Both are sent one keystroke at a time with a pause between, never
+joined — Claude Code's slash-command menu will not accept an Enter arriving ten
+milliseconds behind the command, and two interrupts sent together read as one.
+
+**Readiness waits only for what a layout needs.** A layout of Codex tabs does
+not wait for `claude` on PATH, and the reason it reports names whichever
+binary is actually missing.
+
+**The torn-transcript guard is Claude Code's.** It ends in a truncation, so it
+only runs for kinds whose failure mode has been verified. A repo that used to
+run Claude and now runs Codex still has an entry in that corpus; it is skipped
+rather than repaired on the Codex tab's behalf.
+
+**Codex asks about a directory it has not seen.** It prompts to trust the
+contents before starting, so an unattended `up` into a fresh repo opens the tab
+and waits there. `up` names tabs that opened without starting a session — it
+does not answer the prompt, because that is a security question.
+
+A layout written before any of this carries no `agent` field and reads as
+Claude Code, so it keeps working with no migration.
+
 ## License
 
 [MIT](LICENSE)
