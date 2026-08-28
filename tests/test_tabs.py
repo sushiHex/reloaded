@@ -15,9 +15,13 @@ import reloaded.tabs as tabs_mod
 class _FakeSelectionPattern:
     def __init__(self):
         self.selected = False
+        # UIA exposes the selection state as IsSelected, and select_tab now
+        # reads it back to confirm the tab took focus rather than assuming it.
+        self.IsSelected = False
 
     def Select(self):
         self.selected = True
+        self.IsSelected = True
 
 
 class _FakeTabItem:
@@ -35,17 +39,22 @@ def test_select_tab_selects_then_foregrounds(monkeypatch):
     assert item.pattern.selected is True
 
 
-def test_select_tab_survives_a_stale_control(monkeypatch):
-    """A tab that can't be selected via UIA (stale control, closed tab)
-    should not abort the call — the caller decides what to do based on
-    whether the window actually ended up foreground, not on Select()."""
+def test_select_tab_refuses_a_stale_control(monkeypatch):
+    """A tab whose UIA control is stale or closed must fail the call.
+
+    This test used to assert the opposite, and argued for it: "the caller
+    decides based on whether the window actually ended up foreground, not on
+    Select()." That was the bug, written down as a requirement. A caller acting
+    on True here types into whichever tab IS active, which is how /exit reached
+    the wrong session repeatedly. Foreground is necessary and not sufficient.
+    """
 
     class _BoomItem:
         def GetSelectionItemPattern(self):
             raise RuntimeError("stale control")
 
     monkeypatch.setattr(tabs_mod.win32, "set_foreground", lambda hwnd: True)
-    assert tabs_mod.select_tab(12345, _BoomItem()) is True
+    assert tabs_mod.select_tab(12345, _BoomItem()) is False
 
 
 def test_select_tab_reports_foreground_failure(monkeypatch):
