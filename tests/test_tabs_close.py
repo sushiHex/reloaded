@@ -148,7 +148,7 @@ def test_execute_down_closes_a_tab_the_shell_left_behind(monkeypatch):
     monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", lambda *a, **k: None)
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
 
@@ -167,7 +167,7 @@ def test_execute_down_leaves_the_tab_of_a_session_that_would_not_exit(monkeypatc
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(teardown_mod, "EXIT_RETRY_AFTER_SECONDS", 999)
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", lambda *a, **k: None)
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
 

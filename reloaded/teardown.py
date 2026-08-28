@@ -19,7 +19,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 
-from . import discover, tabs, win32
+from . import agents, discover, tabs, win32
 from .capture import resolve_tab
 from .paths import norm
 
@@ -67,6 +67,14 @@ def plan_down(
         title_map = discover.title_to_cwd(discover.transcript_index())
     wanted = {norm(c) for c in only} if only is not None else None
 
+    # One repo, one target, across the whole plan. Two tabs can carry the same
+    # title and resolve to the same live session - seen for real, a window
+    # holding two tabs both named `constructicon` behind one process. Undeduped
+    # that types the quit keys twice for one session, and arms `restart`'s
+    # marker twice with the second arming landing after the first was consumed.
+    # build_layout dedups by cwd for exactly this reason.
+    seen_cwds: set = set()
+
     plans: list[WindowPlan] = []
     for hwnd in win32.list_wt_windows():
         items = tabs.list_tab_items(hwnd)
@@ -84,17 +92,29 @@ def plan_down(
             cwd, _low_confidence = resolved
             if wanted is not None and norm(cwd) not in wanted:
                 continue
+            # Deliberately NOT counted against total_tabs: a duplicate tab still
+            # occupies the window, and execute_down relies on that count to know
+            # the window still holds something.
+            if norm(cwd) in seen_cwds:
+                continue
+            seen_cwds.add(norm(cwd))
             targets.append((title, cwd, live[norm(cwd)], item))
         if targets:
             plans.append(WindowPlan(hwnd=hwnd, total_tabs=len(items), targets=targets))
     return plans
 
 
-def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=None) -> bool:
-    """Foreground `item`'s tab and type /exit into it. Returns whether the
-    foreground actually happened (see tabs.select_tab) - a False return
-    means nothing was typed, so the caller must not assume /exit was sent.
-    See tabs.send_exit_keystrokes for what dismiss_overlay controls."""
+def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=None,
+               quit_keys=("/exit", "{Enter}")) -> bool:
+    """Foreground `item`'s tab and type its agent's quit keys into it.
+
+    Returns whether the tab actually took focus (see tabs.select_tab) - a
+    False return means nothing was typed, so the caller must not assume the
+    session was asked to quit.
+
+    `quit_keys` defaults to Claude Code's, which is what every caller meant
+    before a second agent kind existed. See tabs.send_quit_keystrokes for
+    what dismiss_overlay controls."""
     if not tabs.select_tab(hwnd, item):
         return False
     # After the tab is focused, before anything is typed. `restart` arms its
@@ -103,7 +123,7 @@ def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=Non
     # user's next manual exit instead.
     if before_send is not None:
         before_send()
-    tabs.send_exit_keystrokes(dismiss_overlay=dismiss_overlay)
+    tabs.send_quit_keystrokes(quit_keys, dismiss_overlay=dismiss_overlay)
     return True
 
 
@@ -147,6 +167,7 @@ def execute_down(
     *,
     close_windows: bool = True,
     before_exit=None,
+    kinds: dict | None = None,
 ) -> dict:
     """Send /exit to every planned tab, wait for each to actually end, then
     close each window whose tabs were all Claude sessions and all exited.
@@ -173,7 +194,12 @@ def execute_down(
         all_exited = True
         for title, cwd, pid, item in plan.targets:
             arm = None if before_exit is None else (lambda c=cwd: before_exit(c))
-            if not _send_exit(plan.hwnd, item, before_send=arm):
+            # How this session is asked to quit depends on which CLI it is.
+            # An unknown cwd is Claude Code, which is what every teardown
+            # meant before a second kind existed.
+            quit_keys = agents.for_kind((kinds or {}).get(norm(cwd))).quit_keys
+            if not _send_exit(plan.hwnd, item, before_send=arm,
+                              quit_keys=quit_keys):
                 log(
                     f"    [warn] could not bring window 0x{plan.hwnd:X} to the "
                     f"foreground - skipping {title!r} (exit it manually)"
@@ -212,7 +238,8 @@ def execute_down(
                     # answer Claude Code's background-agent /exit
                     # confirmation - the exact thing this resend exists to
                     # get past. See tabs.send_exit_keystrokes.
-                    if _send_exit(plan.hwnd, item, dismiss_overlay=False):
+                    if _send_exit(plan.hwnd, item, dismiss_overlay=False,
+                                  quit_keys=quit_keys):
                         log(
                             f"    {title} still running after "
                             f"{EXIT_RETRY_AFTER_SECONDS:.0f}s - resending /exit"

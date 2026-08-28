@@ -99,6 +99,28 @@ def test_filter_matches_regardless_of_case_or_separator(monkeypatch):
     assert _cwds(plans) == [norm(CWD_A)]
 
 
+def test_two_tabs_for_one_repo_produce_one_target(monkeypatch):
+    """Seen for real: one window held two tabs both titled `constructicon`,
+    resolving to a single session. Undeduped, `down` types the quit keys twice
+    for one session and `restart` arms its marker twice - and the second arming
+    lands after the first has already been consumed. build_layout dedups by cwd
+    for the same reason; this did not."""
+    _stub(monkeypatch, {1: ["app-a", "app-a"]}, {norm(CWD_A): 111})
+
+    plans = teardown_mod.plan_down(REPOS)
+
+    assert len(plans) == 1
+    assert len(plans[0].targets) == 1
+
+
+def test_deduping_targets_does_not_shrink_the_tab_count(monkeypatch):
+    """Both tabs still occupy the window, and execute_down uses total_tabs to
+    decide whether the window still holds something."""
+    _stub(monkeypatch, {1: ["app-a", "app-a"]}, {norm(CWD_A): 111})
+
+    assert teardown_mod.plan_down(REPOS)[0].total_tabs == 2
+
+
 def test_an_unknown_repo_selects_nothing(monkeypatch):
     """Rather than silently falling back to every session."""
     _stub(monkeypatch, {1: ["app-a"]}, {norm(CWD_A): 111})

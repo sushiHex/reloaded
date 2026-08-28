@@ -457,24 +457,26 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     tabs_before = {plan.hwnd: plan.total_tabs for plan in plans}
     sizes = _transcript_sizes(discover_mod.transcript_index(need_title=False))
 
-    # A session started by hand sits in a plain interactive shell, so none of
-    # the marker machinery applies to it: nothing would read the marker, and
-    # its tab does not close. It needs the launcher typed into the shell /exit
-    # leaves behind. Classified before anything is armed or exited.
-    kinds = {
+    # Two different classifications, and conflating them sends a Codex tab
+    # `/exit`. `launchers` is how a session was STARTED - by hand or by this
+    # package - which decides whether the marker machinery applies at all.
+    # `agent_kinds` is WHICH CLI it is, which decides how it is asked to quit.
+    launchers = {
         norm(cwd): discover_mod.launcher_kind(pid)
         for _t, cwd, pid, _i in _targets(plans)
     }
+    agent_kinds = discover_mod.live_agents()
 
     def arm(cwd):
-        if kinds.get(norm(cwd)) == discover_mod.RELOADED:
+        if launchers.get(norm(cwd)) == discover_mod.RELOADED:
             restart_marker(cwd).write_text("restart", encoding="utf-8")
 
     print("Exiting the named sessions — this will steal keyboard focus...")
     # Armed per tab, as its turn comes, rather than all up front: targets are
     # exited serially with a wait each, so a marker written now for the last
     # target would spend every earlier target's wait ageing toward its TTL.
-    down = teardown_mod.execute_down(plans, close_windows=False, before_exit=arm)
+    down = teardown_mod.execute_down(plans, close_windows=False, before_exit=arm,
+                                     kinds=agent_kinds)
     _print_down_result(down, timed_out_note=" — not restarted")
 
     stuck = {norm(cwd) for _t, cwd in down["timed_out"]}
@@ -498,7 +500,7 @@ def cmd_restart_one(args, repos: list[str]) -> int:
                 # otherwise tells the user to expect a delayed restart that
                 # nothing can perform - seen for real against a hand-launched
                 # session, which is armed with nothing by design.
-                if kinds.get(norm(cwd)) == discover_mod.RELOADED:
+                if launchers.get(norm(cwd)) == discover_mod.RELOADED:
                     mins = deploy_mod.RESTART_MARKER_TTL_SECONDS // 60
                     print(
                         f"        its restart is still armed: it will restart if it "
@@ -507,7 +509,7 @@ def cmd_restart_one(args, repos: list[str]) -> int:
                 failed = True
                 continue
 
-            if kinds.get(norm(cwd)) == discover_mod.HAND:
+            if launchers.get(norm(cwd)) == discover_mod.HAND:
                 # Its shell is waiting at a prompt in a tab that never closed.
                 # Nothing will relaunch it, so put the launcher in there.
                 print(f"    {cwd} was started by hand — typing the launcher into its tab")
@@ -609,7 +611,8 @@ def cmd_restart(args) -> int:
     except tabs_mod.UIAUnavailable as exc:
         return _report_uia_unavailable(exc)
 
-    down_result = teardown_mod.execute_down(plans)
+    down_result = teardown_mod.execute_down(
+        plans, kinds=discover_mod.live_agents())
     _print_down_result(
         down_result,
         timed_out_note=" — the relaunch below will skip them rather than duplicate them",
@@ -652,7 +655,7 @@ def cmd_down(args) -> int:
         return 0
 
     print(f"\nSending /exit to {total} session(s) — this will steal keyboard focus...")
-    result = teardown_mod.execute_down(plans)
+    result = teardown_mod.execute_down(plans, kinds=discover_mod.live_agents())
     print()
     _print_down_result(result)
     return 1 if result["timed_out"] else 0

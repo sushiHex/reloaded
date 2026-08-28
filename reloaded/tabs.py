@@ -245,17 +245,39 @@ def send_exit_keystrokes(*, dismiss_overlay: bool = True) -> None:
 
     import uiautomation as auto
 
+    send_quit_keystrokes(("/exit", "{Enter}"), dismiss_overlay=dismiss_overlay)
+
+
+def send_quit_keystrokes(keys, dismiss_overlay: bool = True) -> None:
+    """Type one agent kind's quit sequence into whatever terminal has focus.
+
+    Each element is sent on its own with MENU_SETTLE_SECONDS between them,
+    never joined. Two separate reasons, one rule:
+
+    Typing `/` opens Claude Code's slash-command menu, and sending
+    "/exit{Enter}" as a single string puts Enter about ten milliseconds after
+    the final character - while that menu is still filtering, where it does not
+    submit. Diagnosed by reading the terminal buffer back between the two
+    keystrokes: the menu was on screen with `/exit` sitting unsent in the
+    prompt. The same keys with a pause exited the session first time. That is
+    why `down` and `restart` timed out on session after session while appearing
+    to type correctly.
+
+    And two interrupts sent back to back read as one, which leaves a Codex
+    session running.
+
+    ``dismiss_overlay`` sends Escape first, clearing a transient overlay that
+    would otherwise eat the first keystroke. Skipped on a retry, where Escape
+    would cancel the very confirmation the retry exists to answer.
+    """
+    import time
+
+    import uiautomation as auto
+
     if dismiss_overlay:
         auto.SendKeys("{Esc}")
         time.sleep(0.1)
-    # Typed and submitted separately, with a pause. Typing `/` opens Claude
-    # Code's slash-command menu, and sending "/exit{Enter}" as one string puts
-    # Enter about ten milliseconds after the final character - while that menu
-    # is still filtering, where it does not submit the command. Diagnosed by
-    # reading the terminal buffer back between the two keystrokes: the menu was
-    # on screen with `/exit` sitting unsent in the prompt. The same keys with a
-    # pause exited the session first time. This is why `down` and `restart`
-    # timed out on session after session while appearing to type correctly.
-    auto.SendKeys("/exit")
-    time.sleep(MENU_SETTLE_SECONDS)
-    auto.SendKeys("{Enter}")
+    for i, key in enumerate(keys):
+        if i:
+            time.sleep(MENU_SETTLE_SECONDS)
+        auto.SendKeys(key)

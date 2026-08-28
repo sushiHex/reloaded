@@ -27,7 +27,7 @@ def clean_exit(monkeypatch):
     monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", lambda *a, **k: None)
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
 
@@ -49,8 +49,8 @@ def test_before_exit_runs_before_that_target_is_asked_to_exit(clean_exit, monkey
     """Armed afterwards, the shell would already have decided to close."""
     order = []
     monkeypatch.setattr(
-        teardown_mod.tabs, "send_exit_keystrokes",
-        lambda **k: order.append("exit"),
+        teardown_mod.tabs, "send_quit_keystrokes",
+        lambda *a, **k: order.append("exit"),
     )
     plan = _plan([("app-a", CWD_A, 111, _Item())])
 
@@ -66,8 +66,8 @@ def test_each_target_is_armed_only_once_its_turn_comes(clean_exit, monkeypatch):
     or its marker ages through app-a's wait for nothing."""
     order = []
     monkeypatch.setattr(
-        teardown_mod.tabs, "send_exit_keystrokes",
-        lambda **k: order.append("exit"),
+        teardown_mod.tabs, "send_quit_keystrokes",
+        lambda *a, **k: order.append("exit"),
     )
     plan = _plan([("app-a", CWD_A, 111, _Item()), ("app-b", CWD_B, 222, _Item())])
 
