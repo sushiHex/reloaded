@@ -133,29 +133,62 @@ def launcher_kind(pid: int) -> str:
         return HAND
 
 
-def live_sessions() -> dict[str, int]:
-    """Map normalized cwd -> pid for every running Claude Code session.
+# Codex also runs as a child of its desktop app, where it is not a terminal tab
+# at all - both are live on this machine at once. Excluding by image name would
+# lose the real tab along with it, so the parent process is what distinguishes
+# them.
+DESKTOP_HOSTS = ("chatgpt.exe",)
 
-    This is ground truth for liveness and stays correct for an idle session,
-    which is why no heartbeat is needed.
-    """
+
+def _sessions() -> dict[str, tuple]:
+    """Normalized cwd -> (pid, kind) for every live agent session."""
     try:
         import psutil
     except ImportError:
         return {}
 
-    out: dict[str, int] = {}
-    for proc in psutil.process_iter(["pid", "name"]):
-        name = (proc.info.get("name") or "").lower()
-        if name != "claude.exe":
+    from . import agents as agents_mod
+
+    by_process = {a.process: a.kind for a in agents_mod.AGENTS.values()}
+    out: dict[str, tuple] = {}
+    for proc in psutil.process_iter(["pid", "name", "ppid"]):
+        kind = by_process.get((proc.info.get("name") or "").lower())
+        if kind is None:
             continue
+        try:
+            parent = psutil.Process(proc.info.get("ppid"))
+            if (parent.name() or "").lower() in DESKTOP_HOSTS:
+                continue
+        except Exception:
+            # An unreadable parent is not grounds to drop a session that is
+            # otherwise a normal match - the common case for that is a
+            # permissions error, not a desktop-hosted process.
+            pass
         try:
             cwd = proc.cwd()
         except Exception:
             continue
         if cwd:
-            out[norm(cwd)] = int(proc.info["pid"])
+            out[norm(cwd)] = (int(proc.info["pid"]), kind)
     return out
+
+
+def live_sessions() -> dict[str, int]:
+    """Map normalized cwd -> pid for every running agent session.
+
+    Ground truth for liveness, and correct for an idle session, which is why no
+    heartbeat is needed.
+
+    The signature is unchanged from when this only knew about Claude Code: nine
+    call sites depend on dict[str, int], and which kind a session is travels
+    beside it in live_agents() rather than through here.
+    """
+    return {cwd: pid for cwd, (pid, _kind) in _sessions().items()}
+
+
+def live_agents() -> dict[str, str]:
+    """Map normalized cwd -> agent kind, alongside live_sessions()."""
+    return {cwd: kind for cwd, (_pid, kind) in _sessions().items()}
 
 
 def _str_field(obj: dict, key: str) -> bool:
