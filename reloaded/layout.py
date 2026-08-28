@@ -26,6 +26,23 @@ class Tab:
     # reconcile rebuilds the layout from live reality, so without this flag an
     # edit like "also launch `sample-repo` next time" would be erased within minutes.
     pinned: bool = False
+    # Which agent CLI ran here. Absent from every layout written before a
+    # second kind existed, so it defaults rather than being required - that is
+    # what makes this a schema addition with no migration.
+    agent: str = "claude"
+    # The command this session was actually launched with, read off the live
+    # process at capture time. Empty means "use the kind's default". Captured
+    # rather than assumed because the flags are the user's choice, and this
+    # package's whole premise is putting things back as they were.
+    command: str = ""
+
+    def __post_init__(self):
+        # A key present but null in the JSON defeats the dataclass default and
+        # would put None where every consumer expects a string.
+        if not self.agent:
+            self.agent = "claude"
+        if not self.command:
+            self.command = ""
 
 
 @dataclass
@@ -91,6 +108,11 @@ class Layout:
                             title=t.get("title", ""),
                             low_confidence=bool(t.get("low_confidence", False)),
                             pinned=bool(t.get("pinned", False)),
+                            # Both absent from any layout written before a
+                            # second agent kind existed; Tab.__post_init__
+                            # turns an absent-or-null value into the default.
+                            agent=t.get("agent", "claude"),
+                            command=t.get("command", ""),
                         )
                         for t in w.get("tabs", [])
                     ],
