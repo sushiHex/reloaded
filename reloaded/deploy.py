@@ -80,9 +80,14 @@ CLOSE_TAB_IF_STARTED = (
 RESTART_MARKER_TTL_SECONDS = 120
 
 
-def restart_loop(cwd: str) -> str:
-    """Wrap the claude invocation so `restart <repo>` can relaunch a session
-    without the tab ever closing.
+def restart_loop(cwd: str, invocation: str = CLAUDE_COMMAND) -> str:
+    """Wrap `invocation` so `restart <repo>` can relaunch a session without the
+    tab ever closing.
+
+    `invocation` is whatever this tab runs - the agent kind's default, or the
+    command capture read off the live process. Everything around it is a
+    property of the shell rather than of the agent, so it is identical for
+    every kind.
 
     A tab's slot in the window is lost the moment it closes, and Windows
     Terminal ships no keybinding for moving a tab to an index - so the only way
@@ -96,7 +101,7 @@ def restart_loop(cwd: str) -> str:
     """
     m = _ps_quote(str(restart_marker(cwd)))
     body = "; ".join((
-        CLAUDE_COMMAND,
+        invocation,
         f"if (-not (Test-Path '{m}')) {{ break }}",
         # Read the age before deleting, but delete either way - a stale marker
         # left on disk would be found again by the next exit.
@@ -150,8 +155,18 @@ def _wt_escape(s: str) -> str:
     return s.replace(";", "\\;")
 
 
-def launcher_command(cwd: str, delay: int, size_bytes: int) -> str:
-    """The PowerShell command run inside one tab."""
+def launcher_command(cwd: str, delay: int, size_bytes: int,
+                     agent: str = "claude", command: str = "") -> str:
+    """The PowerShell command run inside one tab.
+
+    `command` is what capture read off the live process; empty falls back to
+    the kind's default. Only that invocation differs between agent kinds - the
+    environment hygiene around it, the restart loop and the self-closing guard
+    are properties of the shell and apply to every tab.
+    """
+    from . import agents as agents_mod
+
+    invocation = command or agents_mod.for_kind(agent).launch
     name = os.path.basename(cwd.rstrip("\\/")) or cwd
     parts = [CHILD_SESSION_CLEAR, RESUME_SUPPRESSOR]
 
@@ -165,12 +180,13 @@ def launcher_command(cwd: str, delay: int, size_bytes: int) -> str:
         parts.append(f"Start-Sleep {delay}")
 
     parts.append(CLAUDE_STARTED_AT)
-    parts.append(restart_loop(cwd))
+    parts.append(restart_loop(cwd, invocation))
     parts.append(CLOSE_TAB_IF_STARTED)
     return "; ".join(parts)
 
 
-def relaunch_script(cwd: str, size_bytes: int) -> str:
+def relaunch_script(cwd: str, size_bytes: int,
+                    agent: str = "claude", command: str = "") -> str:
     """The launcher, as a script to run inside a shell that already exists.
 
     `restart <repo>` uses this on a session started by hand rather than by
@@ -187,7 +203,7 @@ def relaunch_script(cwd: str, size_bytes: int) -> str:
     tab closes - so the shell is stopped by pid, which works from any scope. A
     PowerShell script runs in the calling process, so $PID is that shell.
     """
-    body = launcher_command(cwd, 0, size_bytes)
+    body = launcher_command(cwd, 0, size_bytes, agent, command)
     return body.replace(
         CLOSE_TAB_IF_STARTED,
         f"if (((Get-Date)-$rlStart).TotalSeconds -gt {STARTUP_GRACE_SECONDS}) "
@@ -208,9 +224,11 @@ def new_tab_args(cwd: str, command: str) -> list[str]:
     ]
 
 
-def wt_argv_single_tab(cwd: str, size_bytes: int = 0) -> list[str]:
+def wt_argv_single_tab(cwd: str, size_bytes: int = 0,
+                       agent: str = "claude", command: str = "") -> list[str]:
     """Open one repo as a tab in the current window (`-w 0`)."""
-    return ["wt", "-w", "0"] + new_tab_args(cwd, launcher_command(cwd, 0, size_bytes))
+    return ["wt", "-w", "0"] + new_tab_args(
+        cwd, launcher_command(cwd, 0, size_bytes, agent, command))
 
 
 def wt_argv(rect: list[int], tabs: list[Tab], delays: list[int], sizes: list[int]) -> list[str]:
@@ -228,7 +246,8 @@ def wt_argv(rect: list[int], tabs: list[Tab], delays: list[int], sizes: list[int
     for i, tab in enumerate(tabs):
         if i:
             argv.append(";")  # structural separator — must stay unescaped
-        argv += new_tab_args(tab.cwd, launcher_command(tab.cwd, delays[i], sizes[i]))
+        argv += new_tab_args(tab.cwd, launcher_command(
+            tab.cwd, delays[i], sizes[i], tab.agent, tab.command))
     return argv
 
 
