@@ -51,6 +51,53 @@ def _missing_repos(lo: Layout) -> list[str]:
     return sorted(set(missing))
 
 
+def _persisted_path_dirs() -> list[str]:
+    """PATH directories as Windows has them stored, not as this process
+    inherited them.
+
+    A process keeps the PATH it started with. An installer that adds a
+    directory afterwards is invisible to everything already running - so a
+    long-lived session asking `is codex installed?` gets the wrong answer, and
+    the tabs it goes on to launch, which DO get a fresh environment, would have
+    resolved it fine. Seen exactly that: codex on the user PATH, absent from
+    the session doing the checking, and the logon deploy would have waited out
+    its whole timeout for a binary that was installed.
+
+    Registry rather than `setx` or a subprocess: this runs on the logon path
+    where spawning a shell to read an environment variable is its own hazard.
+    """
+    import winreg
+
+    out: list[str] = []
+    for hive, key in (
+        (winreg.HKEY_CURRENT_USER, r"Environment"),
+        (winreg.HKEY_LOCAL_MACHINE,
+         r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+    ):
+        try:
+            with winreg.OpenKey(hive, key) as handle:
+                value, _kind = winreg.QueryValueEx(handle, "Path")
+        except OSError:
+            continue
+        out.extend(
+            os.path.expandvars(part).strip('"')
+            for part in str(value).split(os.pathsep) if part.strip()
+        )
+    return out
+
+
+def _on_path(binary: str) -> bool:
+    """Whether `binary` is resolvable, by this process or by one started now."""
+    if shutil.which(binary) is not None:
+        return True
+    exts = [e for e in os.environ.get("PATHEXT", ".EXE").split(os.pathsep) if e]
+    for directory in _persisted_path_dirs():
+        for ext in exts:
+            if os.path.isfile(os.path.join(directory, binary + ext)):
+                return True
+    return False
+
+
 def required_binaries(lo: Layout) -> list[str]:
     """Which agent binaries this layout's tabs actually need on PATH.
 
@@ -83,7 +130,7 @@ def wait_for_ready(lo: Layout, timeout: float = 120.0, poll: float = 2.0) -> tup
         # PATH does not shrink while we wait, so once found stop re-scanning.
         if not have_wt:
             have_wt = shutil.which("wt") is not None
-        missing = {b for b in missing if shutil.which(b) is None}
+        missing = {b for b in missing if not _on_path(b)}
 
         if not have_wt:
             reason = "wt.exe not on PATH"
