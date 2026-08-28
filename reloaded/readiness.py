@@ -51,8 +51,24 @@ def _missing_repos(lo: Layout) -> list[str]:
     return sorted(set(missing))
 
 
+def required_binaries(lo: Layout) -> list[str]:
+    """Which agent binaries this layout's tabs actually need on PATH.
+
+    Waiting unconditionally for `claude` made a Codex-only layout sit out its
+    whole timeout for a binary it never uses, then report that as the reason
+    it was not ready - which sends people looking in the wrong place.
+    """
+    from . import agents as agents_mod
+
+    return sorted({
+        agents_mod.for_kind(t.agent).binary
+        for w in lo.windows for t in w.tabs
+    })
+
+
 def wait_for_ready(lo: Layout, timeout: float = 120.0, poll: float = 2.0) -> tuple[bool, str]:
-    """Block until wt.exe, claude, and the saved monitors are available.
+    """Block until wt.exe, the layout's agent binaries, and the saved
+    monitors are available.
 
     Returns (ready, reason). A False result still allows deploy to proceed with
     clamping — it reports what was never satisfied. Missing repo directories
@@ -61,18 +77,18 @@ def wait_for_ready(lo: Layout, timeout: float = 120.0, poll: float = 2.0) -> tup
     deadline = time.time() + timeout
     reason = ""
     have_wt = False
-    have_claude = False
+    # Only what this layout's tabs actually need.
+    missing = set(required_binaries(lo))
     while True:
         # PATH does not shrink while we wait, so once found stop re-scanning.
         if not have_wt:
             have_wt = shutil.which("wt") is not None
-        if not have_claude:
-            have_claude = shutil.which("claude") is not None
+        missing = {b for b in missing if shutil.which(b) is None}
 
         if not have_wt:
             reason = "wt.exe not on PATH"
-        elif not have_claude:
-            reason = "claude not on PATH"
+        elif missing:
+            reason = f"{', '.join(sorted(missing))} not on PATH"
         else:
             missing_mon = _missing_monitors(lo)
             if missing_mon:
