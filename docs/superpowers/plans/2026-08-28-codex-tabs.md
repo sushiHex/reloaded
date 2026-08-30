@@ -1687,10 +1687,21 @@ unproven until it has actually been run.
       reconcile task rather than by a hand-run capture
 - [x] `reloaded restart <codex-repo> --dry-run` names the right tab, once
       (finding the missing plan_down dedup in the process)
-- [ ] `reloaded restart <codex-repo>` quits and relaunches it — needs a repo
-      the user has named expendable, and `constructicon` is mid-task
+- [ ] `reloaded restart <codex-repo>` quits and relaunches it — **will not be
+      run against a live session**, see below
 - [ ] `reloaded up` into a fresh directory reports the trust prompt rather
-      than hanging silently
+      than hanging silently — same
+
+These two stay unproven. Verifying them means ending a real session, and this
+package has already killed six of the user's by accident: a rename left tests
+stubbing a function that no longer existed, so they called the real keystroke
+sender and typed `/exit` into whatever had focus. Standing rule from the user
+afterwards: do not test against live sessions, and do not ask which repo is
+expendable.
+
+If they are ever worth proving, it is against a repo created for the purpose
+and thrown away — never one that holds work. An unticked box is cheap; a lost
+session is not.
 
 Two additional bugs were found by running these rather than by reasoning, and
 both are fixed: `plan_down` never deduped by cwd (one window here holds two
