@@ -79,7 +79,7 @@ CWD_A = r"C:\repos\alpha"
 def _plan(item, total_tabs=2):
     return teardown_mod.WindowPlan(
         hwnd=1, total_tabs=total_tabs,
-        targets=[("alpha", CWD_A, 111, item)],
+        targets=[teardown_mod.Target("alpha", CWD_A, 111, item)],
     )
 
 

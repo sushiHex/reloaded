@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import NamedTuple
 
 from . import agents, discover, tabs, win32
 from .capture import resolve_tab
@@ -41,12 +42,26 @@ EXIT_POLL_SECONDS = 0.5
 EXIT_RETRY_AFTER_SECONDS = 6.0
 
 
+class Target(NamedTuple):
+    """One tab holding a live agent session, and how to reach it.
+
+    A NamedTuple rather than a comment above a bare tuple. Every consumer used
+    to unpack this positionally and throw away three of the four fields, which
+    reads as `for _t, cwd, _p, _i in ...` and says nothing about what was
+    discarded or why.
+    """
+
+    title: str
+    cwd: str
+    pid: int
+    item: object  # the UIA TabItemControl; never touched outside tabs.py
+
+
 @dataclass
 class WindowPlan:
     hwnd: int
     total_tabs: int
-    # (title, cwd, pid, TabItemControl) for the tabs recognized as live agent sessions.
-    targets: list[tuple] = field(default_factory=list)
+    targets: list[Target] = field(default_factory=list)
 
 
 def plan_down(
@@ -111,7 +126,7 @@ def plan_down(
                     "session is left running, close the duplicate tab.")
                 continue
             seen_cwds.add(norm(cwd))
-            targets.append((title, cwd, live[norm(cwd)], item))
+            targets.append(Target(title, cwd, live[norm(cwd)], item))
         if targets:
             plans.append(WindowPlan(hwnd=hwnd, total_tabs=len(items), targets=targets))
     return plans
@@ -186,13 +201,13 @@ def close_dead_tabs(plans, exited, still_open=None, log=print) -> int:
     ended = {cwd for _title, cwd in exited}
     closed = 0
     for plan in plans:
-        for title, cwd, _pid, item in plan.targets:
-            if cwd not in ended:
+        for t in plan.targets:
+            if t.cwd not in ended:
                 continue
-            if still_open is not None and not still_open(item):
+            if still_open is not None and not still_open(t.item):
                 continue
-            if tabs_mod.close_tab(item):
-                log(f"    closed the empty tab left by {title}")
+            if tabs_mod.close_tab(t.item):
+                log(f"    closed the empty tab left by {t.title}")
                 closed += 1
     return closed
 

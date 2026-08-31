@@ -67,7 +67,8 @@ def _fake_plan(hwnd=0x100, total_tabs=1, targets=None):
     return main_mod.teardown_mod.WindowPlan(
         hwnd=hwnd,
         total_tabs=total_tabs,
-        targets=targets or [("app-a", r"C:\repos\app-a", 111, object())],
+        targets=targets or [main_mod.teardown_mod.Target(
+            "app-a", r"C:\repos\app-a", 111, object())],
     )
 
 

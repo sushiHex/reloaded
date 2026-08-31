@@ -2,6 +2,11 @@
 
 Two failures this pins, both found reviewing the branch before merge rather
 than by a test failing.
+
+It takes a `_Restarting` rather than five loose arguments with three defaults.
+That shape was the bug in the first test below: a caller passed the first three
+and got Claude's launcher for a Codex tab, silently, because the parameters it
+forgot each had a harmless-looking default.
 """
 from __future__ import annotations
 
@@ -13,6 +18,15 @@ import pytest
 import reloaded.__main__ as main_mod
 
 CWD = r"C:\repos\by-hand"
+
+
+def _session(**kw) -> main_mod._Restarting:
+    """A hand-launched Claude session, unless a test says otherwise."""
+    fields = dict(hwnd=1, item=object(), title="by-hand", cwd=CWD, pid=111,
+                  launcher=main_mod.discover_mod.HAND, agent="claude",
+                  command="", size_bytes=0)
+    fields.update(kw)
+    return main_mod._Restarting(**fields)
 
 
 @pytest.fixture
@@ -37,7 +51,7 @@ def test_a_codex_tab_gets_the_codex_launcher(typed):
     Codex session was handed the CLAUDE launcher and came back as Claude."""
     _events, script = typed
 
-    main_mod._type_relaunch(1, object(), CWD, 0, agent="codex")
+    main_mod._type_relaunch(_session(agent="codex"))
 
     body = script.read_text(encoding="utf-8")
     assert "codex resume --last" in body
@@ -47,8 +61,7 @@ def test_a_codex_tab_gets_the_codex_launcher(typed):
 def test_a_captured_command_is_used(typed):
     _events, script = typed
 
-    main_mod._type_relaunch(1, object(), CWD, 0, agent="codex",
-                            command="codex --profile fast")
+    main_mod._type_relaunch(_session(agent="codex", command="codex --profile fast"))
 
     assert "codex --profile fast" in script.read_text(encoding="utf-8")
 
@@ -56,7 +69,7 @@ def test_a_captured_command_is_used(typed):
 def test_a_claude_tab_is_unchanged(typed):
     _events, script = typed
 
-    main_mod._type_relaunch(1, object(), CWD, 0)
+    main_mod._type_relaunch(_session())
 
     assert "claude --dangerously-skip-permissions" in script.read_text(encoding="utf-8")
 
@@ -68,7 +81,7 @@ def test_nothing_is_typed_between_confirming_the_tab_and_typing(typed):
     """
     events, _script = typed
 
-    main_mod._type_relaunch(1, object(), CWD, 0)
+    main_mod._type_relaunch(_session())
 
     kinds = [k for k, _v in events]
     assert kinds.index("select") == kinds.index("type") - 1, kinds
@@ -79,7 +92,7 @@ def test_the_shell_is_still_given_time_to_settle(typed):
     happens before the tab is claimed rather than after."""
     events, _script = typed
 
-    main_mod._type_relaunch(1, object(), CWD, 0)
+    main_mod._type_relaunch(_session())
 
     kinds = [k for k, _v in events]
     assert "sleep" in kinds
@@ -90,5 +103,5 @@ def test_a_tab_that_cannot_be_confirmed_is_never_typed_into(monkeypatch, typed):
     events, _script = typed
     monkeypatch.setattr(main_mod.tabs_mod, "select_tab", lambda hwnd, item: False)
 
-    assert main_mod._type_relaunch(1, object(), CWD, 0) is False
+    assert main_mod._type_relaunch(_session()) is False
     assert not any(k == "type" for k, _v in events)

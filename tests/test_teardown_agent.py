@@ -99,7 +99,7 @@ def _run(monkeypatch, kinds):
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
 
     plan = teardown_mod.WindowPlan(
-        hwnd=1, total_tabs=1, targets=[("beta", CWD, 222, _Item())]
+        hwnd=1, total_tabs=1, targets=[teardown_mod.Target("beta", CWD, 222, _Item())]
     )
     teardown_mod.execute_down([plan], log=lambda *_: None, kinds=kinds)
     return sent

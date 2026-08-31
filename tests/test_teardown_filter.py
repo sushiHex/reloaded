@@ -149,7 +149,7 @@ def _exit_cleanly(monkeypatch):
 
 def _one_tab_window():
     return teardown_mod.WindowPlan(
-        hwnd=1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())]
+        hwnd=1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())]
     )
 
 

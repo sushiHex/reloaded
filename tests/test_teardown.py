@@ -149,7 +149,7 @@ def test_execute_down_closes_a_window_once_all_its_tabs_exit(monkeypatch):
         teardown_mod.win32, "close_window", lambda hwnd: closed_hwnds.append(hwnd) or True
     )
 
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert result["exited"] == [("app-a", CWD_A)]
@@ -183,7 +183,7 @@ def test_execute_down_resends_exit_after_a_partial_wait(monkeypatch):
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: len(send_calls) < 2)
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
 
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     # Initial send dismisses an overlay; the resend must not.
@@ -213,7 +213,7 @@ def test_execute_down_only_resends_once(monkeypatch):
         lambda hwnd: (_ for _ in ()).throw(AssertionError("must not close a holdout window")),
     )
 
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert send_calls == [True, False]  # initial + exactly one resend, never more
@@ -238,7 +238,7 @@ def test_execute_down_logs_when_the_resend_cannot_foreground(monkeypatch):
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
 
     logs = []
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     teardown_mod.execute_down([plan], log=logs.append)
 
     assert any("resend" in line and "app-a" in line for line in logs)
@@ -257,7 +257,7 @@ def test_execute_down_leaves_window_open_when_a_tab_times_out(monkeypatch):
         lambda hwnd: (_ for _ in ()).throw(AssertionError("must not close a window with a holdout")),
     )
 
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert result["timed_out"] == [("app-a", CWD_A)]
@@ -279,7 +279,7 @@ def test_execute_down_never_closes_a_window_with_a_non_claude_tab(monkeypatch):
     )
 
     # total_tabs=2 but only 1 target: a manual/plain tab shares this window.
-    plan = _plan(1, total_tabs=2, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=2, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert result["exited"] == [("app-a", CWD_A)]
@@ -305,7 +305,7 @@ def test_execute_down_never_types_into_a_window_that_did_not_actually_foreground
         lambda hwnd: (_ for _ in ()).throw(AssertionError("must not close on a foreground failure")),
     )
 
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert sent == []
@@ -324,7 +324,7 @@ def test_execute_down_reports_close_failure_without_crashing(monkeypatch):
     # which is what makes this a reportable failure instead of a self-close.
     monkeypatch.setattr(teardown_mod.win32, "is_wt_window", lambda hwnd: True)
 
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert result["closed"] == []
@@ -347,7 +347,7 @@ def test_execute_down_counts_a_self_closed_window_as_closed(monkeypatch):
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: False)
     monkeypatch.setattr(teardown_mod.win32, "is_wt_window", lambda hwnd: False)
 
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert result["closed"] == [1]

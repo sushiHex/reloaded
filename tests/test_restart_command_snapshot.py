@@ -69,7 +69,7 @@ def world(monkeypatch, tmp_path):
 
     def plan_down(repos_root, **kw):
         return [main_mod.teardown_mod.WindowPlan(
-            hwnd=1, total_tabs=2, targets=[("t", CWD, 111, _Item())])]
+            hwnd=1, total_tabs=2, targets=[main_mod.teardown_mod.Target("t", CWD, 111, _Item())])]
 
     monkeypatch.setattr(main_mod.teardown_mod, "plan_down", plan_down)
 
@@ -85,12 +85,11 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod.teardown_mod, "execute_down", execute_down)
     monkeypatch.setattr(
         main_mod, "_type_relaunch",
-        lambda hwnd, item, cwd, size_bytes=0, **kw: (
-            w["typed"].append(kw.get("command")) or True),
+        lambda s: w["typed"].append(s.command) or True,
         raising=False)
     monkeypatch.setattr(
         main_mod, "_launch_single_tab",
-        lambda cwd, **kw: w["launched"].append(kw.get("command")),
+        lambda s: w["launched"].append(s.command),
         raising=False)
     return w
 

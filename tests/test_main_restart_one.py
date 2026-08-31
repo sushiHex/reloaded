@@ -79,7 +79,7 @@ def world(monkeypatch, tmp_path):
                 if only is None or norm(c) in {norm(x) for x in only}]
         if not keep:
             return []
-        targets = [(f"tab-{i}", c, w["pids"][norm(c)], _Item())
+        targets = [main_mod.teardown_mod.Target(f"tab-{i}", c, w["pids"][norm(c)], _Item())
                    for i, c in enumerate(keep)]
         return [main_mod.teardown_mod.WindowPlan(hwnd=1, total_tabs=len(targets),
                                                  targets=targets)]
@@ -115,7 +115,7 @@ def world(monkeypatch, tmp_path):
             w["pids"][norm(cwd)] = 777
 
     monkeypatch.setattr(main_mod, "_launch_single_tab",
-                        lambda cwd, **kw: launch(cwd), raising=False)
+                        lambda s: launch(s.cwd), raising=False)
     monkeypatch.setattr(main_mod, "_live_tab_count",
                         lambda hwnd: w["tab_counts"].get(hwnd, 0), raising=False)
     return w

@@ -56,11 +56,11 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod, "RELAUNCH_POLL_SECONDS", 0.01, raising=False)
     monkeypatch.setattr(main_mod, "_live_tab_count", lambda hwnd: w["tabs"])
     monkeypatch.setattr(main_mod, "_launch_single_tab",
-                        lambda cwd, **kw: w["launched"].append(cwd))
+                        lambda s: w["launched"].append(s.cwd))
 
     def plan_down(repos_root, **kw):
         only = {norm(c) for c in (kw.get("only") or [])}
-        targets = [(f"t{i}", c, w["pids"][norm(c)], _Item())
+        targets = [main_mod.teardown_mod.Target(f"t{i}", c, w["pids"][norm(c)], _Item())
                    for i, c in enumerate([CWD_H, CWD_R])
                    if not only or norm(c) in only]
         if not targets:
@@ -88,9 +88,9 @@ def world(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main_mod.teardown_mod, "execute_down", execute_down)
 
-    def type_relaunch(hwnd, item, cwd, size_bytes=0, **kw):
-        w["typed"].append(cwd)
-        w["pids"][norm(cwd)] = 777      # the shell runs it and claude comes up
+    def type_relaunch(s):
+        w["typed"].append(s.cwd)
+        w["pids"][norm(s.cwd)] = 777    # the shell runs it and claude comes up
         return True
 
     monkeypatch.setattr(main_mod, "_type_relaunch", type_relaunch, raising=False)
@@ -196,7 +196,7 @@ def test_a_relaunch_that_will_not_type_is_reported(world, capsys):
     """Typing depends on foregrounding the right tab, which teardown itself
     documents as best-effort."""
     import reloaded.__main__ as m
-    m._type_relaunch = lambda hwnd, item, cwd, size_bytes=0, **kw: False
+    m._type_relaunch = lambda s: False
 
     rc = main_mod.cmd_restart(_args(repos=["by-hand"]))
 

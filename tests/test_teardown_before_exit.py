@@ -33,6 +33,9 @@ def clean_exit(monkeypatch):
 
 
 def _plan(targets):
+    """Bare tuples in, real Targets out - a fixture that cannot be told apart
+    from the real thing is how a whole integration went untested."""
+    targets = [teardown_mod.Target(*t) for t in targets]
     return teardown_mod.WindowPlan(hwnd=1, total_tabs=len(targets), targets=targets)
 
 

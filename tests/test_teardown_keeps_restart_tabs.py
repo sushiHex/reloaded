@@ -54,7 +54,7 @@ def desktop(monkeypatch):
 def _plan(total_tabs=1, item=None):
     return teardown_mod.WindowPlan(
         hwnd=0x1234, total_tabs=total_tabs,
-        targets=[("demo", CWD, 4321, item or _Item())],
+        targets=[teardown_mod.Target("demo", CWD, 4321, item or _Item())],
     )
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from dataclasses import dataclass
 
 from . import agents as agents_mod
 from . import capture as capture_mod
@@ -209,10 +210,36 @@ def _transcript_sizes(index) -> dict[str, int]:
     return {norm(info.cwd): info.size for info in index.values()}
 
 
+def _reporter(args):
+    """Where this run's output goes, decided once instead of at every message.
+
+    An unattended run is started by Task Scheduler under pythonw, where stdout
+    has no destination at all - so anything printed there is simply lost, and
+    choosing between `print` and `_log` is a correctness question rather than a
+    formatting one. That choice was being made four separate times in one
+    function, and the last of them left its detail lines on bare `print`: which
+    repos failed to start, and the explanation of Codex's trust prompt, were
+    invisible in exactly the run nobody is watching.
+
+    `blank` asks for a separating line, which only the console gets. A
+    timestamped empty line is litter in a log file.
+    """
+    def say(message: str, *, blank: bool = False) -> None:
+        if args.unattended:
+            _log(message)
+            return
+        if blank:
+            print()
+        print(message)
+
+    return say
+
+
 def _deploy_layout(lo, args) -> int:
     """Deploy an already-loaded Layout: plan, print, repair torn transcripts,
     launch, and place. Shared by `up` (loads the saved layout from disk) and
     `restart` (deploys a layout it just captured in the same run)."""
+    say = _reporter(args)
     live = discover_mod.live_sessions()
     monitors = win32_mod.list_monitors()
     # Built once and reused by both the size guard and the torn-tail repair —
@@ -222,8 +249,7 @@ def _deploy_layout(lo, args) -> int:
 
     if not plan:
         total = sum(len(w.tabs) for w in lo.windows)
-        msg = f"All {total} session(s) already running — nothing to do."
-        _log(msg) if args.unattended else print(msg)
+        say(f"All {total} session(s) already running — nothing to do.")
         return 0
 
     for entry in plan:
@@ -262,18 +288,17 @@ def _deploy_layout(lo, args) -> int:
             print(f"[warn] window {r.window_id}: launched but geometry could not be applied")
             failures += 1
     launched = sum(len(e.tabs) for e in plan)
-    summary = f"Launched {launched} session(s) in {len(plan)} window(s)."
-    _log(summary) if args.unattended else print(f"\n{summary}")
+    say(f"Launched {launched} session(s) in {len(plan)} window(s).", blank=True)
 
     silent = _never_started(lo, discover_mod.live_sessions())
     if silent:
-        note = f"[reloaded] {len(silent)} tab(s) opened but no session started:"
-        _log(note) if args.unattended else print(f"\n{note}")
+        say(f"[reloaded] {len(silent)} tab(s) opened but no session started:",
+            blank=True)
         for cwd in silent[:6]:
-            print(f"    - {cwd}")
-        print("    Codex asks whether to trust a directory it has not seen")
-        print("    before it starts. Answer it in the tab - this tool will not")
-        print("    answer a security question on your behalf.")
+            say(f"    - {cwd}")
+        say("    Codex asks whether to trust a directory it has not seen")
+        say("    before it starts. Answer it in the tab - this tool will not")
+        say("    answer a security question on your behalf.")
 
     return 1 if failures else 0
 
@@ -330,8 +355,49 @@ RELAUNCH_WAIT_SECONDS = 20.0
 RELAUNCH_POLL_SECONDS = 1.0
 
 
-def _launch_single_tab(cwd: str, agent: str = "claude", command: str = "") -> None:
-    """Open one repo as a tab via `wt -w 0`.
+@dataclass(frozen=True)
+class _Restarting:
+    """One session `restart <repo>` is putting back.
+
+    Every field is read while that session is still running, because once
+    teardown has finished there is nothing left to read: the pid is gone,
+    psutil raises, and each lookup quietly falls back to a default. For Codex
+    that default disables the sandbox. Snapshotting is not an optimisation
+    here, it is the only correct order to ask the questions in.
+
+    One record rather than the four dictionaries keyed by cwd this replaced.
+    Those cost nine `.get(norm(cwd), default)` lookups, wrote the same two
+    defaults twice each, and let three call sites hand a Codex tab Claude's
+    launch command by forgetting an optional argument.
+    """
+
+    # Where to type. The window, the tab element, and what the tab is called.
+    hwnd: int
+    item: object
+    title: str
+    # What was running there.
+    cwd: str
+    pid: int
+    # How it was STARTED — by hand, or by this package. Decides whether the
+    # restart-marker machinery applies at all. A different question from
+    # `agent`, and conflating the two sends a Codex tab `/exit`.
+    launcher: str
+    # WHICH CLI it is. Decides how it is asked to quit, and what comes back.
+    agent: str
+    # The exact command line it was running. Empty means the kind's default,
+    # which is the outcome this whole record exists to avoid arriving at by
+    # accident.
+    command: str
+    size_bytes: int
+
+    @property
+    def key(self) -> str:
+        """Its normalized cwd, which is how every map around it is keyed."""
+        return norm(self.cwd)
+
+
+def _launch_single_tab(s: _Restarting) -> None:
+    """Open `s` as a new tab via `wt -w 0`.
 
     Reached only as `restart <repo>`'s fallback, when the tab closed instead of
     relaunching in place. Placement is genuinely best-effort and the caller
@@ -345,14 +411,11 @@ def _launch_single_tab(cwd: str, agent: str = "claude", command: str = "") -> No
     """
     import subprocess
 
-    sizes = _transcript_sizes(discover_mod.transcript_index(need_title=False))
-    argv = deploy_mod.wt_argv_single_tab(cwd, sizes.get(norm(cwd), 0),
-                                         agent, command)
+    argv = deploy_mod.wt_argv_single_tab(s.cwd, s.size_bytes, s.agent, s.command)
     subprocess.Popen(argv, close_fds=True)
 
 
-def _type_relaunch(hwnd: int, item, cwd: str, size_bytes: int = 0,
-                   agent: str = "claude", command: str = "") -> bool:
+def _type_relaunch(s: _Restarting) -> bool:
     """Put the launcher into the idle shell a hand-launched session left behind.
 
     That shell is a plain interactive prompt with no session in it and nothing
@@ -366,9 +429,10 @@ def _type_relaunch(hwnd: int, item, cwd: str, size_bytes: int = 0,
     """
     import time
 
-    path = relaunch_script_path(cwd)
-    path.write_text(deploy_mod.relaunch_script(cwd, size_bytes, agent, command),
-                    encoding="utf-8")
+    path = relaunch_script_path(s.cwd)
+    path.write_text(
+        deploy_mod.relaunch_script(s.cwd, s.size_bytes, s.agent, s.command),
+        encoding="utf-8")
 
     import uiautomation as auto
 
@@ -379,7 +443,7 @@ def _type_relaunch(hwnd: int, item, cwd: str, size_bytes: int = 0,
     # a stray /exit reaches a live session. Nothing goes between select_tab
     # returning True and the keystrokes.
     time.sleep(1.0)
-    if not tabs_mod.select_tab(hwnd, item):
+    if not tabs_mod.select_tab(s.hwnd, s.item):
         return False
     auto.SendKeys("& '%s'{Enter}" % path)
     return True
@@ -444,11 +508,9 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     cwds = [resolve_repo(r, args.repos_root) for r in repos]
     live = discover_mod.live_sessions()
 
-    not_running = [c for c in cwds if norm(c) not in live]
-    if not_running:
-        for c in not_running:
-            print(f"Not running: {c}")
-        print("\n`reloaded status` lists the live sessions.")
+    refusal = _nothing_running_there(cwds, live)
+    if refusal:
+        print(refusal)
         return 1
 
     try:
@@ -456,161 +518,205 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     except tabs_mod.UIAUnavailable as exc:
         return _report_uia_unavailable(exc)
 
-    # Every requested repo must have a tab we can actually type into, or the
-    # batch is refused whole. Acting on the resolvable subset used to restart
-    # some repos, skip the rest without a word, and still return 0 - with the
-    # skipped repos' markers left armed on disk.
-    planned = {norm(cwd) for _t, cwd, _p, _i in _targets(plans)}
-    unresolved = [c for c in cwds if norm(c) not in planned]
-    if unresolved:
-        for c in unresolved:
-            print(f"No Windows Terminal tab found for {c}")
-        print(
-            "\n    Running, but no tab this tool can drive — started outside "
-            "Windows Terminal, or UIA cannot read its title."
-        )
-        print("    Nothing was restarted; re-run without it to restart the rest.")
+    refusal = _no_tab_to_type_into(cwds, plans)
+    if refusal:
+        print(refusal)
         return 1
 
     if args.dry_run:
-        for _title, cwd, pid, _item in _targets(plans):
-            print(f"Would restart {cwd} (pid {pid}) in place, leaving its window open.")
-            if discover_mod.launcher_kind(pid) == discover_mod.HAND:
-                # The one consequence worth previewing: this rewrites what the
-                # tab runs, permanently. A preview reading the same for both
-                # kinds hides it until after the fact.
-                print("    Started by hand — its tab would be upgraded to the "
-                      "reloaded launcher,")
-                print("    which self-closes when the session exits.")
-        print("\nDry run — no marker written, nothing sent.")
+        _preview_restart(plans)
         return 0
 
     _sweep_stale_markers()
     tabs_before = {plan.hwnd: plan.total_tabs for plan in plans}
-    sizes = _transcript_sizes(discover_mod.transcript_index(need_title=False))
-
-    # Two different classifications, and conflating them sends a Codex tab
-    # `/exit`. `launchers` is how a session was STARTED - by hand or by this
-    # package - which decides whether the marker machinery applies at all.
-    # `agent_kinds` is WHICH CLI it is, which decides how it is asked to quit.
-    launchers = {
-        norm(cwd): discover_mod.launcher_kind(pid)
-        for _t, cwd, pid, _i in _targets(plans)
-    }
-    agent_kinds = discover_mod.live_agents()
-
-    # Read the command lines HERE, while the processes are still running.
-    # Both places below that need one are past execute_down, where the pid is
-    # already gone: psutil raises, session_command returns "", and the relaunch
-    # falls back to the kind's default flags. For Codex that default carries
-    # --dangerously-bypass-approvals-and-sandbox, so a session started without
-    # it would silently come back with it. A recycled pid is worse still - the
-    # "command" would belong to some unrelated process, and it gets typed into
-    # a terminal. The saved layout is the fallback, because it at least records
-    # what this repo was launched with; the kind's default is the last resort.
-    recorded = {}
-    for _t, cwd, pid, _i in _targets(plans):
-        recorded[norm(cwd)] = (discover_mod.session_command(pid)
-                               or _recorded_agent(args, cwd)[1])
+    sessions = _snapshot_restarts(plans, args)
+    by_key = {s.key: s for s in sessions}
 
     def arm(cwd):
-        if launchers.get(norm(cwd)) == discover_mod.RELOADED:
+        s = by_key.get(norm(cwd))
+        if s is not None and s.launcher == discover_mod.RELOADED:
             restart_marker(cwd).write_text("restart", encoding="utf-8")
 
     print("Exiting the named sessions — this will steal keyboard focus...")
     # Armed per tab, as its turn comes, rather than all up front: targets are
     # exited serially with a wait each, so a marker written now for the last
     # target would spend every earlier target's wait ageing toward its TTL.
-    down = teardown_mod.execute_down(plans, close_emptied=False, before_exit=arm,
-                                     kinds=agent_kinds)
+    down = teardown_mod.execute_down(
+        plans, close_emptied=False, before_exit=arm,
+        kinds={s.key: s.agent for s in sessions},
+    )
     _print_down_result(down, timed_out_note=" — not restarted")
 
     stuck = {norm(cwd) for _t, cwd in down["timed_out"]}
     print("\nWaiting for them to come back...")
     failed = False
-    for plan in plans:
-        for _title, cwd, old_pid, item in plan.targets:
-            if norm(cwd) in stuck:
-                # Deliberately left armed. "Timed out" only means it had not
-                # exited within EXIT_TIMEOUT_SECONDS, not that it never will -
-                # and if the marker is gone when it does, the shell breaks out
-                # of the restart loop and CLOSE_TAB_IF_STARTED closes the tab.
-                # Disarming here would destroy the session this command was
-                # asked to bring back. Left armed the worst case is a late
-                # restart, which is what was requested, bounded by the TTL.
-                print(
-                    f"    {cwd} never exited — still running as pid {old_pid}, "
-                    f"not restarted"
-                )
-                # Only a reloaded-launched target has a marker at all. Saying
-                # otherwise tells the user to expect a delayed restart that
-                # nothing can perform - seen for real against a hand-launched
-                # session, which is armed with nothing by design.
-                if launchers.get(norm(cwd)) == discover_mod.RELOADED:
-                    mins = deploy_mod.RESTART_MARKER_TTL_SECONDS // 60
-                    print(
-                        f"        its restart is still armed: it will restart if it "
-                        f"exits within {mins} min, and be ignored after that"
-                    )
-                failed = True
-                continue
-
-            if launchers.get(norm(cwd)) == discover_mod.HAND:
-                # Its shell is waiting at a prompt in a tab that never closed.
-                # Nothing will relaunch it, so put the launcher in there.
-                print(f"    {cwd} was started by hand — typing the launcher into its tab")
-                if not _type_relaunch(plan.hwnd, item, cwd,
-                                      sizes.get(norm(cwd), 0),
-                                      agent=agent_kinds.get(norm(cwd), "claude"),
-                                      command=recorded.get(norm(cwd), "")):
-                    print(f"    [warn] could not reach that tab — start {cwd} by hand")
-                    failed = True
-                    continue
-                pid = _wait_for_session(cwd, not_pid=old_pid)
-                if pid is None:
-                    print(f"    [warn] {cwd} did not come back — start it by hand")
-                    failed = True
-                    continue
-                print(f"    restarted in place -> {cwd} (pid {pid}); its tab is "
-                      "now upgraded and will self-close on exit")
-                continue
-
-            pid = _wait_for_session(cwd, not_pid=old_pid)
-            if pid is not None:
-                print(f"    restarted in place -> {cwd} (pid {pid})")
-                continue
-
-            # Nothing live at that cwd. Either the tab closed (no restart loop
-            # in a session started before this existed) or the relaunch failed
-            # fast enough that the startup guard kept the tab open to show the
-            # error. Those need opposite responses, so ask the window rather
-            # than inferring from the absent pid: a second tab beside an error
-            # message is the worst of both.
-            if _live_tab_count(plan.hwnd) >= tabs_before.get(plan.hwnd, 0):
-                print(
-                    f"    [warn] {cwd} did not come back, but still has its tab — "
-                    "read the error in that window rather than opening another"
-                )
-                failed = True
-                continue
-
-            # The tab is gone, so the shell that could have read this marker is
-            # gone with it. That makes deleting safe here and nowhere else -
-            # and it is necessary, because the replacement launched below DOES
-            # have the restart loop. Left armed, the marker outlives the tab
-            # that ignored it and fires on the user's next /exit in the new
-            # session, restarting one they meant to close.
-            print(f"    {cwd} did not relaunch in place — its tab closed; reopening it")
-            try:
-                restart_marker(cwd).unlink(missing_ok=True)
-            except OSError:
-                pass
-            _launch_single_tab(cwd, agent=agent_kinds.get(norm(cwd), "claude"),
-                               command=recorded.get(norm(cwd), ""))
-            if _wait_for_session(cwd) is None:
-                print(f"    [warn] {cwd} did not come back — start it by hand")
-                failed = True
+    for s in sessions:
+        if s.key in stuck:
+            came_back = _report_never_exited(s)
+        elif s.launcher == discover_mod.HAND:
+            came_back = _relaunch_by_typing(s)
+        else:
+            came_back = _await_relaunch(s, tabs_before)
+        failed = failed or not came_back
     return 1 if failed else 0
+
+
+def _nothing_running_there(cwds, live) -> str:
+    """Why this batch cannot start, or "" if every named repo has a session."""
+    missing = [c for c in cwds if norm(c) not in live]
+    if not missing:
+        return ""
+    return "\n".join([f"Not running: {c}" for c in missing]
+                     + ["", "`reloaded status` lists the live sessions."])
+
+
+def _no_tab_to_type_into(cwds, plans) -> str:
+    """Why this batch cannot proceed, or "" if every repo resolved to a tab.
+
+    Every requested repo must have a tab this tool can drive, or the batch is
+    refused whole. Acting on the resolvable subset used to restart some repos,
+    skip the rest without a word, and still return 0 - leaving the skipped
+    repos' markers armed on disk.
+    """
+    planned = {norm(t.cwd) for t in _targets(plans)}
+    unresolved = [c for c in cwds if norm(c) not in planned]
+    if not unresolved:
+        return ""
+    return "\n".join(
+        [f"No Windows Terminal tab found for {c}" for c in unresolved]
+        + ["",
+           "    Running, but no tab this tool can drive — started outside "
+           "Windows Terminal, or UIA cannot read its title.",
+           "    Nothing was restarted; re-run without it to restart the rest."]
+    )
+
+
+def _preview_restart(plans) -> None:
+    """`--dry-run`: what would happen, and the one consequence worth previewing."""
+    for t in _targets(plans):
+        print(f"Would restart {t.cwd} (pid {t.pid}) in place, leaving its window open.")
+        if discover_mod.launcher_kind(t.pid) == discover_mod.HAND:
+            # Restarting a hand-launched session rewrites what its tab runs,
+            # permanently. A preview that reads the same for both kinds hides
+            # that until after the fact.
+            print("    Started by hand — its tab would be upgraded to the "
+                  "reloaded launcher,")
+            print("    which self-closes when the session exits.")
+    print("\nDry run — no marker written, nothing sent.")
+
+
+def _snapshot_restarts(plans, args) -> list[_Restarting]:
+    """Everything the relaunch will need, read while the sessions are alive.
+
+    The single place these facts are gathered, and it runs before anything is
+    asked to quit. See _Restarting for why the order is load-bearing rather
+    than merely tidy.
+    """
+    sizes = _transcript_sizes(discover_mod.transcript_index(need_title=False))
+    live_kinds = discover_mod.live_agents()
+    saved = _recorded_launches(args)
+
+    sessions = []
+    for plan in plans:
+        for t in plan.targets:
+            key = norm(t.cwd)
+            saved_agent, saved_command = saved.get(
+                key, (agents_mod.DEFAULT_KIND, ""))
+            sessions.append(_Restarting(
+                hwnd=plan.hwnd,
+                item=t.item,
+                title=t.title,
+                cwd=t.cwd,
+                pid=t.pid,
+                launcher=discover_mod.launcher_kind(t.pid),
+                # Live process first, saved layout second, kind's default last.
+                # Each fallback knows strictly less than the one before it.
+                agent=live_kinds.get(key, saved_agent),
+                command=discover_mod.session_command(t.pid) or saved_command,
+                size_bytes=sizes.get(key, 0),
+            ))
+    return sessions
+
+
+def _report_never_exited(s: _Restarting) -> bool:
+    """It did not quit inside the timeout, so nothing was restarted.
+
+    Its marker is deliberately left armed. "Timed out" only means it had not
+    exited within EXIT_TIMEOUT_SECONDS, not that it never will - and if the
+    marker is gone when it does, the shell breaks out of the restart loop and
+    CLOSE_TAB_IF_STARTED closes the tab. Disarming here would destroy the very
+    session this command was asked to bring back. Left armed, the worst case is
+    a late restart, which is what was requested, bounded by the TTL.
+    """
+    print(f"    {s.cwd} never exited — still running as pid {s.pid}, not restarted")
+    # Only a reloaded-launched session has a marker at all. Saying otherwise
+    # promises a delayed restart nothing can perform - seen for real against a
+    # hand-launched session, which is armed with nothing by design.
+    if s.launcher == discover_mod.RELOADED:
+        mins = deploy_mod.RESTART_MARKER_TTL_SECONDS // 60
+        print(f"        its restart is still armed: it will restart if it "
+              f"exits within {mins} min, and be ignored after that")
+    return False
+
+
+def _relaunch_by_typing(s: _Restarting) -> bool:
+    """Hand-launched: its shell is idle at a prompt in a tab nothing will close.
+
+    No marker machinery applies, so the launcher is typed into that waiting
+    shell instead. The tab is upgraded by it and behaves like a
+    reloaded-launched one from here on.
+    """
+    print(f"    {s.cwd} was started by hand — typing the launcher into its tab")
+    if not _type_relaunch(s):
+        print(f"    [warn] could not reach that tab — start {s.cwd} by hand")
+        return False
+    pid = _wait_for_session(s.cwd, not_pid=s.pid)
+    if pid is None:
+        print(f"    [warn] {s.cwd} did not come back — start it by hand")
+        return False
+    print(f"    restarted in place -> {s.cwd} (pid {pid}); its tab is "
+          "now upgraded and will self-close on exit")
+    return True
+
+
+def _await_relaunch(s: _Restarting, tabs_before: dict[int, int]) -> bool:
+    """Reloaded-launched: its own shell reads the marker and relaunches in place."""
+    pid = _wait_for_session(s.cwd, not_pid=s.pid)
+    if pid is not None:
+        print(f"    restarted in place -> {s.cwd} (pid {pid})")
+        return True
+
+    # Nothing live at that cwd. Either the tab closed (no restart loop, in a
+    # session started before this existed) or the relaunch failed fast enough
+    # that the startup guard kept the tab open to show the error. Those need
+    # opposite responses, so ask the window rather than inferring from the
+    # absent pid: a second tab beside an error message is the worst of both.
+    if _live_tab_count(s.hwnd) >= tabs_before.get(s.hwnd, 0):
+        print(f"    [warn] {s.cwd} did not come back, but still has its tab — "
+              "read the error in that window rather than opening another")
+        return False
+    return _reopen_in_a_new_tab(s)
+
+
+def _reopen_in_a_new_tab(s: _Restarting) -> bool:
+    """Its tab is gone, so there is no slot left to restart into.
+
+    The tab going means the shell that could have read this marker went with
+    it, which is what makes deleting safe here and nowhere else - and
+    necessary, because the replacement opened below DOES have the restart loop.
+    Left armed, the marker outlives the tab that ignored it and fires on the
+    user's next /exit in the new session, restarting one they meant to close.
+    """
+    print(f"    {s.cwd} did not relaunch in place — its tab closed; reopening it")
+    try:
+        restart_marker(s.cwd).unlink(missing_ok=True)
+    except OSError:
+        pass
+    _launch_single_tab(s)
+    if _wait_for_session(s.cwd) is None:
+        print(f"    [warn] {s.cwd} did not come back — start it by hand")
+        return False
+    return True
 
 
 # A marker is deleted in exactly one place above: after the tab that could have
@@ -690,8 +796,8 @@ def cmd_down(args) -> int:
         if len(p.targets) != p.total_tabs:
             note = f"  ({p.total_tabs - len(p.targets)} other tab(s) here — window stays open)"
         print(f"  window 0x{p.hwnd:X}{note}")
-        for title, cwd, _pid, _item in p.targets:
-            print(f"    - {title}  [{cwd}]")
+        for t in p.targets:
+            print(f"    - {t.title}  [{t.cwd}]")
 
     if tasks_mod.logon_launcher_installed():
         print(
@@ -708,8 +814,8 @@ def cmd_down(args) -> int:
     # rather than /exit, and a line that says otherwise is the user's only
     # record of what this command did to their desktop.
     kinds = discover_mod.live_agents()
-    labels = sorted({agents_mod.for_kind(kinds.get(norm(cwd))).quit_label
-                     for _t, cwd, _p, _i in _targets(plans)})
+    labels = sorted({agents_mod.for_kind(kinds.get(norm(t.cwd))).quit_label
+                     for t in _targets(plans)})
     print(f"\nSending {' / '.join(labels)} to {total} session(s) — "
           "this will steal keyboard focus...")
     result = teardown_mod.execute_down(plans, kinds=kinds)
@@ -782,20 +888,28 @@ def cmd_status(args) -> int:
     return 0
 
 
-def _recorded_agent(args, cwd) -> tuple:
-    """The (agent, command) the saved layout has for `cwd`.
+def _recorded_launches(args) -> dict[str, tuple[str, str]]:
+    """(agent, command) per repo, as the saved layout records them.
 
-    ("claude", "") when there is no layout, or no tab for this repo in it.
+    The fallback for a session whose live process cannot be read. Empty when
+    there is no layout, or none can be parsed - callers then fall back again,
+    to the kind's default.
+
+    Loaded once for the whole batch. The per-repo version of this re-read and
+    re-parsed the entire layout file for every repo being restarted.
     """
     try:
         lo = layout_mod.load(layout_path(args.layout))
     except Exception:
-        return "claude", ""
-    for w in lo.windows:
-        for t in w.tabs:
-            if norm(t.cwd) == norm(cwd):
-                return t.agent, t.command
-    return "claude", ""
+        return {}
+    return {norm(t.cwd): (t.agent, t.command)
+            for w in lo.windows for t in w.tabs}
+
+
+def _recorded_launch(args, cwd) -> tuple[str, str]:
+    """One repo's (agent, command) from the saved layout, or the defaults."""
+    return _recorded_launches(args).get(
+        norm(cwd), (agents_mod.DEFAULT_KIND, ""))
 
 
 def cmd_open(args) -> int:
@@ -814,7 +928,7 @@ def cmd_open(args) -> int:
     # only record of what this repo runs. Absent from it, or no layout at
     # all, means Claude Code - which is what every repo meant before a
     # second kind existed.
-    agent, command = _recorded_agent(args, cwd)
+    agent, command = _recorded_launch(args, cwd)
     argv = deploy_mod.wt_argv_single_tab(cwd, sizes.get(norm(cwd), 0),
                                          agent, command)
 

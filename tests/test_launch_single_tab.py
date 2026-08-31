@@ -16,6 +16,15 @@ from reloaded.layout import Tab
 CWD = r"C:\repos\constructicon"
 
 
+def _session(**kw) -> main_mod._Restarting:
+    """A reloaded-launched Claude session, unless a test says otherwise."""
+    fields = dict(hwnd=1, item=object(), title="constructicon", cwd=CWD,
+                  pid=111, launcher=main_mod.discover_mod.RELOADED,
+                  agent="claude", command="", size_bytes=0)
+    fields.update(kw)
+    return main_mod._Restarting(**fields)
+
+
 @pytest.fixture
 def spawned(monkeypatch, tmp_path):
     """Record the wt argv, without spawning anything."""
@@ -39,21 +48,20 @@ def _command(argv):
 
 
 def test_a_codex_repo_is_reopened_with_codex(spawned):
-    main_mod._launch_single_tab(CWD, agent="codex")
+    main_mod._launch_single_tab(_session(agent="codex"))
 
     assert "codex resume --last" in _command(spawned[0])
     assert "claude --dangerously-skip-permissions" not in _command(spawned[0])
 
 
 def test_a_captured_command_is_used(spawned):
-    main_mod._launch_single_tab(CWD, agent="codex",
-                                command="codex --profile fast")
+    main_mod._launch_single_tab(_session(agent="codex", command="codex --profile fast"))
 
     assert "codex --profile fast" in _command(spawned[0])
 
 
 def test_a_claude_repo_is_unchanged(spawned):
-    main_mod._launch_single_tab(CWD)
+    main_mod._launch_single_tab(_session())
 
     assert "claude --dangerously-skip-permissions" in _command(spawned[0])
 
