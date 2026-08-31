@@ -254,13 +254,13 @@ def _deploy_layout(lo, args) -> int:
 
     for entry in plan:
         x, y, w, h = entry.rect
-        print(f"window {entry.id}  ({x},{y} {w}x{h}, {entry.state})")
+        say(f"window {entry.id}  ({x},{y} {w}x{h}, {entry.state})")
         for tab, delay in zip(entry.tabs, entry.delays):
-            print(f"    +{delay:>3}s  {tab.title}  [{tab.cwd}]")
+            say(f"    +{delay:>3}s  {tab.title}  [{tab.cwd}]")
         for tab in entry.skipped:
-            print(f"      --   {tab.title}  (already running)")
+            say(f"      --   {tab.title}  (already running)")
         for tab in entry.missing:
-            print(f"      --   {tab.title}  [warn] directory not found: {tab.cwd}")
+            say(f"      --   {tab.title}  [warn] directory not found: {tab.cwd}")
         if args.dry_run:
             print("    argv: " + " ".join(repr(a) for a in entry.argv))
 
@@ -274,18 +274,20 @@ def _deploy_layout(lo, args) -> int:
         deploy_mod.transcripts_to_repair(plan, index)
     ):
         if isinstance(outcome, OSError):
-            print(f"[warn] could not repair {transcript_path}: {outcome}")
+            say(f"[warn] could not repair {transcript_path}: {outcome}")
         elif outcome:
-            print(f"[reloaded] repaired torn transcript: {transcript_path}")
+            say(f"[reloaded] repaired torn transcript: {transcript_path}")
 
     results = deploy_mod.execute(plan)
     failures = 0
     for r in results:
         if r.hwnd is None:
-            print(f"[warn] window {r.window_id}: could not identify the new window; geometry not applied")
+            say(f"[warn] window {r.window_id}: could not identify the new "
+                "window; geometry not applied")
             failures += 1
         elif not r.placed:
-            print(f"[warn] window {r.window_id}: launched but geometry could not be applied")
+            say(f"[warn] window {r.window_id}: launched but geometry could "
+                "not be applied")
             failures += 1
     launched = sum(len(e.tabs) for e in plan)
     say(f"Launched {launched} session(s) in {len(plan)} window(s).", blank=True)
@@ -371,10 +373,9 @@ class _Restarting:
     launch command by forgetting an optional argument.
     """
 
-    # Where to type. The window, the tab element, and what the tab is called.
+    # Where to type: the window, and the tab element inside it.
     hwnd: int
     item: object
-    title: str
     # What was running there.
     cwd: str
     pid: int
@@ -622,21 +623,19 @@ def _snapshot_restarts(plans, args) -> list[_Restarting]:
             key = norm(t.cwd)
             saved_agent, saved_command = saved.get(
                 key, (agents_mod.DEFAULT_KIND, ""))
-            agent = live_kinds.get(key) or saved_agent
-            command = discover_mod.session_command(t.pid)
+            # Both from the same process, in one read. See session_launch for
+            # what taking them from two sweeps costs.
+            agent, command = discover_mod.session_launch(t.pid)
+            agent = agent or live_kinds.get(key) or saved_agent
             if not command and agent == saved_agent:
-                # Agent and command are one fact, so they fall back together.
-                # Taken separately, a live-read agent could be paired with a
-                # layout-read command from a repo that has since changed CLI -
-                # agent "codex" carrying claude's command line. launcher_command
-                # trusts the command over the agent, so that tab comes back as
-                # the wrong CLI. When the two sources disagree, the command is
-                # left empty and the agent's own default is used instead.
+                # The layout lends its command line only to the agent it
+                # recorded it for. A repo that has changed CLI since the last
+                # capture would otherwise hand claude's flags to a Codex tab,
+                # and launcher_command trusts the command over the agent.
                 command = saved_command
             sessions.append(_Restarting(
                 hwnd=plan.hwnd,
                 item=t.item,
-                title=t.title,
                 cwd=t.cwd,
                 pid=t.pid,
                 launcher=discover_mod.launcher_kind(t.pid),
@@ -911,8 +910,15 @@ def _recorded_launches(args) -> dict[str, tuple[str, str]]:
         lo = layout_mod.load(layout_path(args.layout))
     except Exception:
         return {}
-    return {norm(t.cwd): (t.agent, t.command)
-            for w in lo.windows for t in w.tabs}
+    # First match wins, not last. Capture dedups by cwd, but a hand-edited
+    # layout can hold two tabs for one repo, and a dict comprehension would
+    # quietly reverse which of them this reads - a behaviour change smuggled
+    # inside a refactor is worse than the duplicate itself.
+    out: dict[str, tuple[str, str]] = {}
+    for w in lo.windows:
+        for t in w.tabs:
+            out.setdefault(norm(t.cwd), (t.agent, t.command))
+    return out
 
 
 def _recorded_launch(args, cwd) -> tuple[str, str]:

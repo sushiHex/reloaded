@@ -15,14 +15,21 @@ import reloaded.discover as discover_mod
 
 
 class _Proc:
-    def __init__(self, argv=None, raises=None):
+    def __init__(self, argv=None, raises=None, image=None, name_raises=None):
         self._argv = argv or []
         self._raises = raises
+        self._image = image
+        self._name_raises = name_raises
 
     def cmdline(self):
         if self._raises:
             raise self._raises
         return list(self._argv)
+
+    def name(self):
+        if self._name_raises:
+            raise self._name_raises
+        return self._image or ""
 
 
 def _stub(monkeypatch, proc):
@@ -124,3 +131,72 @@ def test_an_empty_cmdline_yields_no_command(monkeypatch):
     _stub(monkeypatch, _Proc([]))
 
     assert discover_mod.session_command(7) == ""
+
+
+# ── session_launch: the kind and the command, from one process ───────────
+#
+# The promise is both or neither. A caller that gets a command without a kind
+# fills the kind in from somewhere else - a cwd-keyed sweep, or a saved layout
+# - and can end up pairing one process's command line with another's identity.
+# Teardown chooses quit keystrokes from the kind while launcher_command chooses
+# the invocation from the command, so that pair interrupts one CLI and
+# relaunches the other.
+
+
+def test_the_kind_and_the_command_come_back_together(monkeypatch):
+    _stub(monkeypatch, _Proc([r"C:\x\codex.exe", "resume"], image="codex.exe"))
+
+    assert discover_mod.session_launch(7) == ("codex", "codex resume")
+
+
+def test_the_image_name_decides_the_kind(monkeypatch):
+    _stub(monkeypatch, _Proc([r"C:\x\claude.exe", "--continue"],
+                             image="claude.exe"))
+
+    assert discover_mod.session_launch(7)[0] == "claude"
+
+
+def test_an_unreadable_image_name_falls_back_to_the_command(monkeypatch):
+    """The narrow gap a name-only lookup leaves: the cmdline reads but the
+    image name does not. A command line that starts with `claude` is evidence
+    about which agent it is, and using it keeps the both-or-neither promise."""
+    _stub(monkeypatch, _Proc([r"C:\x\claude.exe", "--continue"],
+                             name_raises=PermissionError("denied")))
+
+    assert discover_mod.session_launch(7) == ("claude", "claude --continue")
+
+
+def test_an_unreadable_cmdline_still_yields_the_kind(monkeypatch):
+    """The other way round, and the common one on Windows: the image name is
+    readable when the command line is not. The kind is worth keeping."""
+    _stub(monkeypatch, _Proc(raises=PermissionError("denied"), image="codex.exe"))
+
+    assert discover_mod.session_launch(7) == ("codex", "")
+
+
+def test_a_process_that_cannot_be_opened_yields_neither(monkeypatch):
+    _stub(monkeypatch, None)
+
+    assert discover_mod.session_launch(7) == ("", "")
+
+
+def test_an_unrelated_process_is_not_claimed_as_an_agent(monkeypatch):
+    """A recycled pid now belonging to something else. Returning a kind for it
+    would let a restart relaunch a stranger's command line."""
+    _stub(monkeypatch, _Proc([r"C:\Windows\svchost.exe", "-k", "netsvcs"],
+                             image="svchost.exe"))
+
+    assert discover_mod.session_launch(7)[0] == ""
+
+
+def test_a_command_never_arrives_without_a_kind(monkeypatch):
+    """The invariant, stated directly. Every readable command line here also
+    names its agent, so no caller has to source the two halves separately."""
+    for proc in (
+        _Proc([r"C:\x\codex.exe", "resume"], image="codex.exe"),
+        _Proc([r"C:\x\claude.exe"], name_raises=OSError("x")),
+        _Proc([r"C:\x\codex.exe"], image="CODEX.EXE"),
+    ):
+        _stub(monkeypatch, proc)
+        kind, command = discover_mod.session_launch(7)
+        assert not (command and not kind), (kind, command)

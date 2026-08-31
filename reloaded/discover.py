@@ -228,29 +228,81 @@ def _ps_arg(arg: str) -> str:
     return "'" + arg.replace("'", "''") + "'"
 
 
+def session_launch(pid: int) -> tuple[str, str]:
+    """One live session's (agent kind, command line), read from one process.
+
+    Both facts or neither. Read from separate sweeps they drift apart: a
+    process that vanishes between them gives its kind to one call and nothing
+    to the other, the gap gets filled from a saved layout that may describe a
+    different CLI entirely, and the result is a pair that never existed -
+    agent "codex" carrying claude's command line, or the reverse. That is not
+    cosmetic. Teardown picks its quit keystrokes from the agent while
+    launcher_command picks the invocation from the command, so a mismatched
+    pair interrupts one CLI and relaunches the other.
+
+    The kind comes from the image name, and falls back to the command's own
+    argv[0] - a command line that names `claude` is evidence about which agent
+    it is. That fallback is what keeps the promise above: anything that yields
+    a command also yields a kind.
+
+    ("", "") when the process cannot be read, which callers treat as "fall
+    back" rather than as a failure.
+    """
+    from . import agents as agents_mod
+
+    try:
+        import psutil
+
+        proc = psutil.Process(pid)
+    except Exception:
+        return "", ""
+
+    # Guarded separately: on Windows the image name is usually readable when
+    # the command line is not, and losing both to one AccessDenied would throw
+    # away the more reliable of the two.
+    try:
+        name = (proc.name() or "").lower()
+    except Exception:
+        name = ""
+    try:
+        argv = list(proc.cmdline())
+    except Exception:
+        argv = []
+
+    command = _format_command(argv)
+    kind = ({a.process: a.kind for a in agents_mod.AGENTS.values()}.get(name)
+            or {a.binary: a.kind for a in agents_mod.AGENTS.values()}.get(
+                command.split(" ", 1)[0])
+            or "")
+    return kind, command
+
+
 def session_command(pid: int) -> str:
     """The command line a live session is running, for a captured tab.
+
+    Capture wants only this half; restart wants the pair, and takes it from
+    session_launch rather than from here.
+    """
+    return session_launch(pid)[1]
+
+
+def _format_command(argv: list) -> str:
+    """One process's argv as a command line safe to paste into PowerShell.
 
     The executable is reduced to its bare name: an absolute path would pin the
     saved layout to one install location, and every agent binary is on PATH by
     the time readiness lets a deploy start.
 
-    Returns "" when the process cannot be read, which the caller treats as
-    "use the kind's default" rather than as a failure. A capture that dropped a
-    tab because one cmdline was unreadable would be worse than one that
-    relaunches it with default flags.
+    Returns "" when there is nothing usable, which the caller treats as "use
+    the kind's default" rather than as a failure. A capture that dropped a tab
+    because one cmdline was unreadable would be worse than one that relaunches
+    it with default flags.
 
     The result is spliced into a PowerShell command by deploy.launcher_command,
     so every argument is quoted for PowerShell rather than only the ones with
     spaces in them. Single quotes, not double: PowerShell expands `$` inside
     double quotes, so a captured argument holding `$(...)` would have run.
     """
-    try:
-        import psutil
-
-        argv = list(psutil.Process(pid).cmdline())
-    except Exception:
-        return ""
     if not argv:
         return ""
 

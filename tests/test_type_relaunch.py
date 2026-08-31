@@ -22,7 +22,7 @@ CWD = r"C:\repos\by-hand"
 
 def _session(**kw) -> main_mod._Restarting:
     """A hand-launched Claude session, unless a test says otherwise."""
-    fields = dict(hwnd=1, item=object(), title="by-hand", cwd=CWD, pid=111,
+    fields = dict(hwnd=1, item=object(), cwd=CWD, pid=111,
                   launcher=main_mod.discover_mod.HAND, agent="claude",
                   command="", size_bytes=0)
     fields.update(kw)

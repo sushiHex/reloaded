@@ -18,7 +18,7 @@ CWD = r"C:\repos\constructicon"
 
 def _session(**kw) -> main_mod._Restarting:
     """A reloaded-launched Claude session, unless a test says otherwise."""
-    fields = dict(hwnd=1, item=object(), title="constructicon", cwd=CWD,
+    fields = dict(hwnd=1, item=object(), cwd=CWD,
                   pid=111, launcher=main_mod.discover_mod.RELOADED,
                   agent="claude", command="", size_bytes=0)
     fields.update(kw)

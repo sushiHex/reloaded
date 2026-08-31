@@ -89,6 +89,73 @@ def test_every_line_of_the_no_session_report_reaches_the_log(logged, monkeypatch
     assert "trust a directory" in joined, "the explanation is not in the log"
 
 
+def test_a_failed_placement_reaches_the_log(logged, monkeypatch):
+    """A window that launched but could not be identified or placed is the
+    other thing worth knowing about an unattended deploy, and it was on bare
+    `print` too."""
+    lo = _one_tab_layout()
+    _stub_deploy(monkeypatch, lo, results=[
+        types.SimpleNamespace(window_id="w1", hwnd=None, placed=False),
+    ])
+    monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: {})
+
+    main_mod._deploy_layout(lo, types.SimpleNamespace(
+        unattended=True, dry_run=False))
+
+    assert any("could not identify the new window" in line for line in logged)
+
+
+def test_a_repair_warning_reaches_the_log(logged, monkeypatch):
+    """A torn transcript that could not be repaired changes what the session
+    resumes with. Silence about it is the worst possible report."""
+    lo = _one_tab_layout()
+    _stub_deploy(monkeypatch, lo)
+    monkeypatch.setattr(main_mod.transcript_mod, "repair_all",
+                        lambda paths: [(r"C:\t\a.jsonl", OSError("locked"))])
+    monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: {})
+
+    main_mod._deploy_layout(lo, types.SimpleNamespace(
+        unattended=True, dry_run=False))
+
+    assert any("could not repair" in line for line in logged)
+
+
+def test_the_plan_itself_reaches_the_log(logged, monkeypatch):
+    """What a logon deploy decided to launch, and where. It is the only record
+    of the run."""
+    lo = _one_tab_layout()
+    _stub_deploy(monkeypatch, lo)
+    monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: {})
+
+    main_mod._deploy_layout(lo, types.SimpleNamespace(
+        unattended=True, dry_run=False))
+
+    assert any("untrusted" in line for line in logged)
+
+
+def _one_tab_layout():
+    from conftest import make_layout, make_window
+    from reloaded.layout import Tab
+
+    return make_layout([make_window([0, 0, 800, 600], [
+        Tab(cwd=r"C:\repos\untrusted", title="untrusted", agent="codex"),
+    ])])
+
+
+def _stub_deploy(monkeypatch, lo, results=()):
+    """Everything _deploy_layout reaches for, so only its reporting is under
+    test."""
+    monkeypatch.setattr(main_mod.win32_mod, "list_monitors", lambda: [])
+    monkeypatch.setattr(main_mod.discover_mod, "transcript_index",
+                        lambda *a, **k: {})
+    monkeypatch.setattr(main_mod.deploy_mod, "plan_deploy",
+                        lambda *a, **k: [_entry(lo)])
+    monkeypatch.setattr(main_mod.deploy_mod, "transcripts_to_repair",
+                        lambda *a, **k: [])
+    monkeypatch.setattr(main_mod.transcript_mod, "repair_all", lambda paths: [])
+    monkeypatch.setattr(main_mod.deploy_mod, "execute", lambda plan: list(results))
+
+
 def _entry(lo):
     """One planned window, enough for _deploy_layout to get past the plan."""
     return types.SimpleNamespace(

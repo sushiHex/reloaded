@@ -58,14 +58,17 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod, "RELAUNCH_POLL_SECONDS", 0.01, raising=False)
     monkeypatch.setattr(main_mod, "_live_tab_count", lambda hwnd: 2)
 
-    def session_command(pid):
-        """What psutil actually does: a dead pid has no command line."""
+    def session_launch(pid):
+        """What psutil actually does: a dead pid has neither name nor cmdline.
+
+        Both come back together or not at all - see discover.session_launch.
+        """
         if pid not in w["alive"]:
             w["asked_dead"].append(pid)
-            return ""
-        return SAFE
+            return "", ""
+        return "codex", SAFE
 
-    monkeypatch.setattr(main_mod.discover_mod, "session_command", session_command)
+    monkeypatch.setattr(main_mod.discover_mod, "session_launch", session_launch)
 
     def plan_down(repos_root, **kw):
         return [main_mod.teardown_mod.WindowPlan(
@@ -85,11 +88,11 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod.teardown_mod, "execute_down", execute_down)
     monkeypatch.setattr(
         main_mod, "_type_relaunch",
-        lambda s: w["typed"].append(s.command) or True,
+        lambda s: w["typed"].append(s) or True,
         raising=False)
     monkeypatch.setattr(
         main_mod, "_launch_single_tab",
-        lambda s: w["launched"].append(s.command),
+        lambda s: w["launched"].append(s),
         raising=False)
     return w
 
@@ -97,7 +100,7 @@ def world(monkeypatch, tmp_path):
 def test_the_relaunch_uses_the_command_the_session_was_running(world):
     main_mod.cmd_restart(_args(repos=["safe-codex"]))
 
-    assert world["typed"] == [SAFE]
+    assert [s.command for s in world["typed"]] == [SAFE]
 
 
 def test_no_command_line_is_read_off_a_dead_pid(world):
@@ -116,12 +119,18 @@ def test_the_bypass_flag_is_not_added_to_a_session_that_lacked_it(world):
     passed along to build it. An empty command reads as harmless right up until
     launcher_command turns it into the kind's default - which is the whole
     mechanism, so a test that stops short of it proves nothing.
+
+    Built from the record's OWN agent, not from a hardcoded "codex". Naming the
+    kind here would have let a wrong `s.agent` through, which is precisely the
+    defect this file exists to catch.
     """
     import reloaded.deploy as deploy_mod
 
     main_mod.cmd_restart(_args(repos=["safe-codex"]))
 
     assert world["typed"], "nothing was relaunched"
-    script = deploy_mod.relaunch_script(CWD, 0, "codex", world["typed"][0])
+    s = world["typed"][0]
+    assert s.agent == "codex", "the relaunch was aimed at the wrong CLI"
+    script = deploy_mod.relaunch_script(s.cwd, s.size_bytes, s.agent, s.command)
     assert "--dangerously-bypass-approvals-and-sandbox" not in script
     assert SAFE in script
