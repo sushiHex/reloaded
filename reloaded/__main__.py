@@ -622,6 +622,17 @@ def _snapshot_restarts(plans, args) -> list[_Restarting]:
             key = norm(t.cwd)
             saved_agent, saved_command = saved.get(
                 key, (agents_mod.DEFAULT_KIND, ""))
+            agent = live_kinds.get(key) or saved_agent
+            command = discover_mod.session_command(t.pid)
+            if not command and agent == saved_agent:
+                # Agent and command are one fact, so they fall back together.
+                # Taken separately, a live-read agent could be paired with a
+                # layout-read command from a repo that has since changed CLI -
+                # agent "codex" carrying claude's command line. launcher_command
+                # trusts the command over the agent, so that tab comes back as
+                # the wrong CLI. When the two sources disagree, the command is
+                # left empty and the agent's own default is used instead.
+                command = saved_command
             sessions.append(_Restarting(
                 hwnd=plan.hwnd,
                 item=t.item,
@@ -629,10 +640,8 @@ def _snapshot_restarts(plans, args) -> list[_Restarting]:
                 cwd=t.cwd,
                 pid=t.pid,
                 launcher=discover_mod.launcher_kind(t.pid),
-                # Live process first, saved layout second, kind's default last.
-                # Each fallback knows strictly less than the one before it.
-                agent=live_kinds.get(key, saved_agent),
-                command=discover_mod.session_command(t.pid) or saved_command,
+                agent=agent,
+                command=command,
                 size_bytes=sizes.get(key, 0),
             ))
     return sessions
