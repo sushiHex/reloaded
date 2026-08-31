@@ -177,7 +177,7 @@ def test_execute_down_resends_exit_after_a_partial_wait(monkeypatch):
     monkeypatch.setattr(
         teardown_mod.tabs,
         "send_quit_keystrokes",
-        lambda keys, *, dismiss_overlay=True: send_calls.append(dismiss_overlay),
+        lambda keys, *, dismiss_overlay=True, still_needed=None: send_calls.append(dismiss_overlay),
     )
     # Still "running" until the retry (2nd send) has happened.
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: len(send_calls) < 2)
@@ -204,7 +204,7 @@ def test_execute_down_only_resends_once(monkeypatch):
     monkeypatch.setattr(
         teardown_mod.tabs,
         "send_quit_keystrokes",
-        lambda keys, *, dismiss_overlay=True: send_calls.append(dismiss_overlay),
+        lambda keys, *, dismiss_overlay=True, still_needed=None: send_calls.append(dismiss_overlay),
     )
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)  # never exits
     monkeypatch.setattr(

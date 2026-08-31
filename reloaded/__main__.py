@@ -5,6 +5,7 @@ import argparse
 import os
 import sys
 
+from . import agents as agents_mod
 from . import capture as capture_mod
 from . import deploy as deploy_mod
 from . import discover as discover_mod
@@ -498,6 +499,20 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     }
     agent_kinds = discover_mod.live_agents()
 
+    # Read the command lines HERE, while the processes are still running.
+    # Both places below that need one are past execute_down, where the pid is
+    # already gone: psutil raises, session_command returns "", and the relaunch
+    # falls back to the kind's default flags. For Codex that default carries
+    # --dangerously-bypass-approvals-and-sandbox, so a session started without
+    # it would silently come back with it. A recycled pid is worse still - the
+    # "command" would belong to some unrelated process, and it gets typed into
+    # a terminal. The saved layout is the fallback, because it at least records
+    # what this repo was launched with; the kind's default is the last resort.
+    recorded = {}
+    for _t, cwd, pid, _i in _targets(plans):
+        recorded[norm(cwd)] = (discover_mod.session_command(pid)
+                               or _recorded_agent(args, cwd)[1])
+
     def arm(cwd):
         if launchers.get(norm(cwd)) == discover_mod.RELOADED:
             restart_marker(cwd).write_text("restart", encoding="utf-8")
@@ -506,7 +521,7 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     # Armed per tab, as its turn comes, rather than all up front: targets are
     # exited serially with a wait each, so a marker written now for the last
     # target would spend every earlier target's wait ageing toward its TTL.
-    down = teardown_mod.execute_down(plans, close_windows=False, before_exit=arm,
+    down = teardown_mod.execute_down(plans, close_emptied=False, before_exit=arm,
                                      kinds=agent_kinds)
     _print_down_result(down, timed_out_note=" — not restarted")
 
@@ -547,7 +562,7 @@ def cmd_restart_one(args, repos: list[str]) -> int:
                 if not _type_relaunch(plan.hwnd, item, cwd,
                                       sizes.get(norm(cwd), 0),
                                       agent=agent_kinds.get(norm(cwd), "claude"),
-                                      command=discover_mod.session_command(old_pid)):
+                                      command=recorded.get(norm(cwd), "")):
                     print(f"    [warn] could not reach that tab — start {cwd} by hand")
                     failed = True
                     continue
@@ -591,7 +606,7 @@ def cmd_restart_one(args, repos: list[str]) -> int:
             except OSError:
                 pass
             _launch_single_tab(cwd, agent=agent_kinds.get(norm(cwd), "claude"),
-                               command=discover_mod.session_command(old_pid))
+                               command=recorded.get(norm(cwd), ""))
             if _wait_for_session(cwd) is None:
                 print(f"    [warn] {cwd} did not come back — start it by hand")
                 failed = True
@@ -689,8 +704,15 @@ def cmd_down(args) -> int:
         print("\nDry run — nothing sent, nothing closed.")
         return 0
 
-    print(f"\nSending /exit to {total} session(s) — this will steal keyboard focus...")
-    result = teardown_mod.execute_down(plans, kinds=discover_mod.live_agents())
+    # Named rather than assumed: half these tabs may be quit with an interrupt
+    # rather than /exit, and a line that says otherwise is the user's only
+    # record of what this command did to their desktop.
+    kinds = discover_mod.live_agents()
+    labels = sorted({agents_mod.for_kind(kinds.get(norm(cwd))).quit_label
+                     for _t, cwd, _p, _i in _targets(plans)})
+    print(f"\nSending {' / '.join(labels)} to {total} session(s) — "
+          "this will steal keyboard focus...")
+    result = teardown_mod.execute_down(plans, kinds=kinds)
     print()
     _print_down_result(result)
     return 1 if result["timed_out"] else 0

@@ -35,6 +35,11 @@ class Agent:
     # Claude Code's slash-command menu does not accept an Enter arriving right
     # behind the command, and two interrupts sent together read as one.
     quit_keys: tuple
+    # What to call `quit_keys` in a message to the user. "Sending /exit" is a
+    # lie about a Codex tab, and a teardown that misreports what it did is
+    # worse than a quiet one - the user reads it to decide whether to go
+    # looking.
+    quit_label: str
     # Where this kind keeps its session records.
     sessions_dir: str
 
@@ -47,6 +52,7 @@ CLAUDE = Agent(
     binary="claude",
     launch="claude --dangerously-skip-permissions --continue",
     quit_keys=("/exit", "{Enter}"),
+    quit_label="/exit",
     sessions_dir=os.path.join(os.path.expanduser("~"), ".claude", "projects"),
 )
 
@@ -58,6 +64,7 @@ CODEX = Agent(
     # Verified on a disposable session: the target process died and every
     # other session was untouched. `/quit` did nothing at all.
     quit_keys=("{Ctrl}c", "{Ctrl}c"),
+    quit_label="Ctrl+C",
     sessions_dir=os.path.join(os.path.expanduser("~"), ".codex", "sessions"),
 )
 

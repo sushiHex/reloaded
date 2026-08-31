@@ -59,10 +59,23 @@ def _no_real_desktop_effects(monkeypatch):
     `win32.set_foreground` - moves the real focus via ctypes, without going
     through uiautomation at all.
 
-    Not blocked: select_tab, close_tab, close_window. Those act on the UIA
-    element or hwnd they are handed, so a test passing a fake acts on the fake.
-    Blocking them would put ceremony on ~40 tests that were never dangerous,
-    and a guard that cries wolf stops being read.
+    the four user32 calls that CHANGE a window - close it, move it, show it,
+    focus it. Everything else win32.py calls only reads. Blocking the syscalls
+    rather than the wrappers around them is the same reasoning as poisoning
+    `uiautomation` rather than each sender: a wrapper can be renamed out from
+    under a stub, and `close_window` takes a raw HWND, so a test that passes a
+    real one closes a real window with a real session in it.
+
+    `win32.set_foreground` stays blocked by name as well, purely so the common
+    mistake gets the clearer message.
+
+    Not blocked: select_tab, close_tab. Those act on the UIA element they are
+    handed, so a test passing a fake acts on the fake. Blocking them would put
+    ceremony on ~40 tests that were never dangerous, and a guard that cries
+    wolf stops being read.
+
+    A test that genuinely needs one of these substitutes its own - monkeypatch
+    inside a test runs after this fixture, so it wins.
     """
     monkeypatch.setitem(sys.modules, "uiautomation", _PoisonedUIAutomation())
 
@@ -76,6 +89,20 @@ def _no_real_desktop_effects(monkeypatch):
         )
 
     monkeypatch.setattr(win32_mod, "set_foreground", _blocked_foreground)
+
+    for name, effect in (
+        ("PostMessageW", "posts WM_CLOSE - it closes a real window and every session in it"),
+        ("SetWindowPlacement", "moves and resizes a real window"),
+        ("ShowWindow", "minimizes, maximizes or restores a real window"),
+        ("SetForegroundWindow", "moves the desktop's focus"),
+    ):
+        def _blocked(*a, _name=name, _effect=effect, **k):
+            raise AssertionError(
+                f"user32.{_name} was called for real during a test - it {_effect}. "
+                f"Stub it: monkeypatch.setattr(win32_mod._u32, {_name!r}, fake)."
+            )
+
+        monkeypatch.setattr(win32_mod._u32, name, _blocked)
 
 PRIMARY = r"\\.\DISPLAY1"
 SECONDARY = r"\\.\DISPLAY2"

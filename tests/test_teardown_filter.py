@@ -128,7 +128,7 @@ def test_an_unknown_repo_selects_nothing(monkeypatch):
     assert teardown_mod.plan_down(REPOS, only=[r"C:\Users\k\repos\nope"]) == []
 
 
-# ── execute_down, close_windows ──────────────────────────────────────────
+# ── execute_down, close_emptied ──────────────────────────────────────────
 
 
 def _exit_cleanly(monkeypatch):
@@ -162,7 +162,7 @@ def test_execute_down_still_closes_an_emptied_window_by_default(monkeypatch):
     assert result["closed"] == [1]
 
 
-def test_close_windows_false_leaves_the_window_standing(monkeypatch):
+def test_close_emptied_false_leaves_the_window_standing(monkeypatch):
     """A restarted tab relaunches inside the shell it already had, so its
     window must survive the exit. Left to its default, execute_down sees
     len(targets) == total_tabs on a single-session window and sends WM_CLOSE
@@ -170,33 +170,33 @@ def test_close_windows_false_leaves_the_window_standing(monkeypatch):
     closed = _exit_cleanly(monkeypatch)
 
     result = teardown_mod.execute_down(
-        [_one_tab_window()], log=lambda *_: None, close_windows=False
+        [_one_tab_window()], log=lambda *_: None, close_emptied=False
     )
 
     assert closed == [], "WM_CLOSE was sent to a window that must stay open"
     assert result["closed"] == []
 
 
-def test_close_windows_false_does_not_blame_non_claude_tabs(monkeypatch):
+def test_close_emptied_false_does_not_blame_non_claude_tabs(monkeypatch):
     """The default path explains a surviving window by saying it holds tabs we
-    did not start. Under close_windows=False that reason is invented — the
+    did not start. Under close_emptied=False that reason is invented — the
     window survived because the caller asked it to."""
     _exit_cleanly(monkeypatch)
     lines = []
 
     teardown_mod.execute_down(
-        [_one_tab_window()], log=lines.append, close_windows=False
+        [_one_tab_window()], log=lines.append, close_emptied=False
     )
 
     assert not any("non-Claude tabs" in line for line in lines), lines
 
 
-def test_close_windows_false_still_reports_which_sessions_exited(monkeypatch):
+def test_close_emptied_false_still_reports_which_sessions_exited(monkeypatch):
     """The caller needs the exit result to tell a relaunch from a timeout."""
     _exit_cleanly(monkeypatch)
 
     result = teardown_mod.execute_down(
-        [_one_tab_window()], log=lambda *_: None, close_windows=False
+        [_one_tab_window()], log=lambda *_: None, close_emptied=False
     )
 
     assert result["exited"] == [("app-a", CWD_A)]

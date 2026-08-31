@@ -143,7 +143,7 @@ def test_the_marker_really_exists_on_disk_when_armed(world):
 def test_a_targeted_restart_never_closes_windows(world):
     main_mod.cmd_restart(_args(repos=["app-a"]))
 
-    assert world["down_kwargs"].get("close_windows") is False
+    assert world["down_kwargs"].get("close_emptied") is False
 
 
 def test_a_targeted_restart_selects_only_the_named_repo(world):

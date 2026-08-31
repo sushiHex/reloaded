@@ -1,18 +1,26 @@
-"""Graceful shutdown: send /exit to every live Claude Code tab, then close
-windows that were entirely made up of sessions that exited cleanly.
+"""Graceful shutdown: ask every live agent tab to quit, then close windows that
+were entirely made up of sessions that exited cleanly.
+
+How a tab is asked depends on which CLI is in it - `/exit` for Claude Code, an
+interrupt for Codex. See agents.py; nothing else here differs by kind.
 
 Mirrors capture.py's tab resolution (title -> live cwd) so `down` only ever
-acts on tabs this tool already recognizes as Claude Code sessions - the same
-"Claude tabs only" scope as capture and deploy. A window is only closed if
-every one of its tabs was a recognized Claude session and every one of them
-actually exited; a window with an unrelated manual tab, or a holdout that
-didn't respond to /exit in time, is left open rather than force-closed.
+acts on tabs this tool already recognizes as agent sessions - the same scope as
+capture and deploy. A window is only closed if every one of its tabs was a
+recognized session and every one of them actually exited; a window with an
+unrelated manual tab, or a holdout that didn't quit in time, is left open
+rather than force-closed.
 
-Individual tabs are never closed from here. Each one closes itself once its
-session ends (deploy.CLOSE_TAB_IF_STARTED), which is what keeps a window with
-one holdout from stranding the tabs that did exit - they used to sit at a bare
-shell prompt until the whole window could be closed. It also means a window
-may be gone before the close below runs; see is_wt_window.
+A tab launched by this package closes itself once its session ends
+(deploy.CLOSE_TAB_IF_STARTED), which is what keeps a window with one holdout
+from stranding the tabs that did exit - they used to sit at a bare shell prompt
+until the whole window could be closed. It also means a window may be gone
+before the close below runs; see is_wt_window.
+
+A tab started by hand does not close itself, so close_dead_tabs invokes its
+Close button. Both that and the window close are governed by close_emptied,
+which `restart` turns off: it is about to put a session back into the very tab
+and window that are being emptied.
 """
 from __future__ import annotations
 
@@ -37,7 +45,7 @@ EXIT_RETRY_AFTER_SECONDS = 6.0
 class WindowPlan:
     hwnd: int
     total_tabs: int
-    # (title, cwd, pid, TabItemControl) for the tabs recognized as live Claude sessions.
+    # (title, cwd, pid, TabItemControl) for the tabs recognized as live agent sessions.
     targets: list[tuple] = field(default_factory=list)
 
 
@@ -47,9 +55,10 @@ def plan_down(
     live: dict[str, int] | None = None,
     title_map: dict[str, str] | None = None,
     only: list[str] | None = None,
+    log=print,
 ) -> list[WindowPlan]:
-    """Every WT window with at least one live Claude Code tab, and which of
-    its tabs those are. Read-only: selects, types, and closes nothing.
+    """Every WT window with at least one live agent tab, and which of its tabs
+    those are. Read-only: selects, types, and closes nothing.
 
     ``live``/``title_map`` let a caller that already computed them (restart,
     right after its own capture) pass them straight through instead of
@@ -96,6 +105,10 @@ def plan_down(
             # occupies the window, and execute_down relies on that count to know
             # the window still holds something.
             if norm(cwd) in seen_cwds:
+                log(f"    [warn] a second tab also resolves to {cwd} - acting "
+                    "on the first only. Nothing connects a tab to a pid, so "
+                    "which one this is cannot be established; if the wrong "
+                    "session is left running, close the duplicate tab.")
                 continue
             seen_cwds.add(norm(cwd))
             targets.append((title, cwd, live[norm(cwd)], item))
@@ -105,7 +118,7 @@ def plan_down(
 
 
 def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=None,
-               quit_keys=("/exit", "{Enter}")) -> bool:
+               quit_keys=("/exit", "{Enter}"), pid: int | None = None) -> bool:
     """Foreground `item`'s tab and type its agent's quit keys into it.
 
     Returns whether the tab actually took focus (see tabs.select_tab) - a
@@ -114,7 +127,20 @@ def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=Non
 
     `quit_keys` defaults to Claude Code's, which is what every caller meant
     before a second agent kind existed. See tabs.send_quit_keystrokes for
-    what dismiss_overlay controls."""
+    what dismiss_overlay controls.
+
+    `pid` lets the sequence stop partway. Selection is proved once, before the
+    first key; the keys after it are separated by more than a second each, and
+    that is ample time for the session to end and for the terminal to move on
+    to a different tab. Two conditions are re-checked between keys, and either
+    one failing means the rest of the sequence would land somewhere it was
+    never aimed:
+
+    the session is still running - Codex quits on a single interrupt, so the
+    second one has nothing left to interrupt and is a loose keystroke;
+
+    the tab is still the selected one - which is what makes it loose.
+    """
     if not tabs.select_tab(hwnd, item):
         return False
     # After the tab is focused, before anything is typed. `restart` arms its
@@ -123,7 +149,17 @@ def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=Non
     # user's next manual exit instead.
     if before_send is not None:
         before_send()
-    tabs.send_quit_keystrokes(quit_keys, dismiss_overlay=dismiss_overlay)
+
+    def still_needed() -> bool:
+        if pid is not None:
+            import psutil
+
+            if not psutil.pid_exists(pid):
+                return False
+        return tabs.tab_is_selected(item)
+
+    tabs.send_quit_keystrokes(quit_keys, dismiss_overlay=dismiss_overlay,
+                              still_needed=still_needed)
     return True
 
 
@@ -165,18 +201,25 @@ def execute_down(
     plans: list[WindowPlan],
     log=print,
     *,
-    close_windows: bool = True,
+    close_emptied: bool = True,
     before_exit=None,
     kinds: dict | None = None,
 ) -> dict:
     """Send /exit to every planned tab, wait for each to actually end, then
     close each window whose tabs were all Claude sessions and all exited.
 
-    ``close_windows=False`` skips that last step, for `restart <repo>`: a
-    restarted session comes back inside the very shell that is exiting, so its
-    window has to outlive the exit. A single-session window otherwise satisfies
-    ``len(targets) == total_tabs`` and gets WM_CLOSE'd out from under the tab
-    that is about to reappear in it.
+    ``close_emptied=False`` skips every part of that clean-up, for
+    `restart <repo>`: a restarted session comes back inside the very shell that
+    is exiting, so both its tab and its window have to outlive the exit. A
+    single-session window otherwise satisfies ``len(targets) == total_tabs``
+    and gets WM_CLOSE'd out from under the tab that is about to reappear in it
+    - and the tab itself gets closed by close_dead_tabs before anything can be
+    typed into it.
+
+    One flag, not two, because it is one fact: whether a session is coming back
+    into these tabs. Naming it after only the window is what let the tab
+    clean-up run during a restart unnoticed - the parameter said windows, so
+    nobody looked for what else it governed.
 
     ``before_exit(cwd)`` runs once per target, after its tab is focused and
     before /exit is typed into it. Targets are handled serially with a wait of
@@ -197,9 +240,10 @@ def execute_down(
             # How this session is asked to quit depends on which CLI it is.
             # An unknown cwd is Claude Code, which is what every teardown
             # meant before a second kind existed.
-            quit_keys = agents.for_kind((kinds or {}).get(norm(cwd))).quit_keys
+            agent = agents.for_kind((kinds or {}).get(norm(cwd)))
+            quit_keys = agent.quit_keys
             if not _send_exit(plan.hwnd, item, before_send=arm,
-                              quit_keys=quit_keys):
+                              quit_keys=quit_keys, pid=pid):
                 log(
                     f"    [warn] could not bring window 0x{plan.hwnd:X} to the "
                     f"foreground - skipping {title!r} (exit it manually)"
@@ -208,7 +252,7 @@ def execute_down(
                 all_exited = False
                 continue
 
-            log(f"    sent /exit -> {title}  [{cwd}]")
+            log(f"    sent {agent.quit_label} -> {title}  [{cwd}]")
 
             # Polls the specific pid rather than re-scanning every process via
             # discover.live_sessions() - a full psutil.process_iter() sweep on
@@ -239,15 +283,15 @@ def execute_down(
                     # confirmation - the exact thing this resend exists to
                     # get past. See tabs.send_exit_keystrokes.
                     if _send_exit(plan.hwnd, item, dismiss_overlay=False,
-                                  quit_keys=quit_keys):
+                                  quit_keys=quit_keys, pid=pid):
                         log(
                             f"    {title} still running after "
-                            f"{EXIT_RETRY_AFTER_SECONDS:.0f}s - resending /exit"
+                            f"{EXIT_RETRY_AFTER_SECONDS:.0f}s - resending {agent.quit_label}"
                         )
                     else:
                         log(
                             f"    [warn] could not bring window 0x{plan.hwnd:X} "
-                            f"to the foreground to resend /exit -> {title!r}"
+                            f"to the foreground to resend {agent.quit_label} -> {title!r}"
                         )
                 time.sleep(EXIT_POLL_SECONDS)
             else:
@@ -260,15 +304,17 @@ def execute_down(
         # cannot reach a neighbour. `still_open` is left None: close_tab
         # already reports False for an element that has gone away, which makes
         # a separate liveness probe per tab pure cost.
-        close_dead_tabs([plan], exited, still_open=None, log=log)
+        if close_emptied:
+            close_dead_tabs([plan], exited, still_open=None, log=log)
 
         should_close = (
-            close_windows and all_exited and len(plan.targets) == plan.total_tabs
+            close_emptied and all_exited and len(plan.targets) == plan.total_tabs
         )
         if not should_close:
             left_open.append(plan.hwnd)
-            if all_exited and close_windows:
-                log(f"    left window 0x{plan.hwnd:X} open - it has non-Claude tabs too")
+            if all_exited and close_emptied:
+                log(f"    left window 0x{plan.hwnd:X} open - it has tabs this "
+                    "teardown did not touch")
             continue
 
         if win32.close_window(plan.hwnd):

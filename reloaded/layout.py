@@ -6,6 +6,8 @@ import pathlib
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from .agents import DEFAULT_KIND
+
 LAYOUT_VERSION = 1
 
 
@@ -29,7 +31,7 @@ class Tab:
     # Which agent CLI ran here. Absent from every layout written before a
     # second kind existed, so it defaults rather than being required - that is
     # what makes this a schema addition with no migration.
-    agent: str = "claude"
+    agent: str = DEFAULT_KIND
     # The command this session was actually launched with, read off the live
     # process at capture time. Empty means "use the kind's default". Captured
     # rather than assumed because the flags are the user's choice, and this
@@ -40,7 +42,7 @@ class Tab:
         # A key present but null in the JSON defeats the dataclass default and
         # would put None where every consumer expects a string.
         if not self.agent:
-            self.agent = "claude"
+            self.agent = DEFAULT_KIND
         if not self.command:
             self.command = ""
 
@@ -111,7 +113,7 @@ class Layout:
                             # Both absent from any layout written before a
                             # second agent kind existed; Tab.__post_init__
                             # turns an absent-or-null value into the default.
-                            agent=t.get("agent", "claude"),
+                            agent=t.get("agent", DEFAULT_KIND),
                             command=t.get("command", ""),
                         )
                         for t in w.get("tabs", [])
@@ -133,12 +135,20 @@ def window_id(index: int) -> str:
 
 
 def tab_flags(t: Tab) -> str:
-    """Bracketed suffix describing a tab's flags, or "" when it has none."""
+    """Bracketed suffix describing a tab's flags, or "" when it has none.
+
+    The agent kind shows only when it is not the default. A Codex tab and a
+    Claude Code tab are otherwise indistinguishable everywhere a layout is
+    displayed - `status`, the editor, the dry runs - which is a poor property
+    for the one field that decides how a tab is launched and how it is quit.
+    """
     flags = [
         label
         for present, label in ((t.low_confidence, "basename guess"), (t.pinned, "pinned"))
         if present
     ]
+    if t.agent and t.agent != DEFAULT_KIND:
+        flags.insert(0, t.agent)
     return f"  [{', '.join(flags)}]" if flags else ""
 
 

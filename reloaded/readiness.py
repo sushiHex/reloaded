@@ -86,11 +86,23 @@ def _persisted_path_dirs() -> list[str]:
     return out
 
 
+# What a fresh PowerShell will run, when this process's PATHEXT cannot be
+# trusted to say. `.EXE` alone was the old fallback and is wrong for the exact
+# binaries this checks: an npm-installed `claude` is a `.cmd` shim, not an exe.
+_DEFAULT_PATHEXT = (".COM", ".EXE", ".BAT", ".CMD", ".PS1")
+
+
 def _on_path(binary: str) -> bool:
     """Whether `binary` is resolvable, by this process or by one started now."""
     if shutil.which(binary) is not None:
         return True
-    exts = [e for e in os.environ.get("PATHEXT", ".EXE").split(os.pathsep) if e]
+    # Union, not either-or: this process's PATHEXT is as stale as its PATH, so
+    # a shorter one than the machine now has would hide a binary the launched
+    # tab will resolve without trouble.
+    exts = list(_DEFAULT_PATHEXT)
+    for e in os.environ.get("PATHEXT", "").split(os.pathsep):
+        if e.strip() and e.strip().upper() not in exts:
+            exts.append(e.strip().upper())
     for directory in _persisted_path_dirs():
         for ext in exts:
             if os.path.isfile(os.path.join(directory, binary + ext)):

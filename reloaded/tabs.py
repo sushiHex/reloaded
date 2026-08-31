@@ -212,9 +212,27 @@ def select_tab(hwnd: int, tab_item, attempts: int = 10, settle: float = 0.3) -> 
             return False
         time.sleep(settle)
     else:
-        return False
+        # The loop checks before it acts, so N attempts contain only N-1
+        # readbacks: the last Select() never has its effect read. One more.
+        if not tab_is_selected(tab_item):
+            return False
 
     return win32.set_foreground(hwnd)
+
+
+def tab_is_selected(tab_item) -> bool:
+    """Whether `tab_item` is the active tab right now. False if it cannot say.
+
+    select_tab proves this once, then returns. Everything after that - a
+    settle, a marker written to disk, the pause between two keystrokes - is a
+    window in which the user, another window, or a tab closing itself can move
+    the selection. Re-reading costs one UIA call and is the difference between
+    typing into a confirmed target and typing into its neighbour.
+    """
+    try:
+        return bool(tab_item.GetSelectionItemPattern().IsSelected)
+    except Exception:
+        return False
 
 
 def send_exit_keystrokes(*, dismiss_overlay: bool = True) -> None:
@@ -248,7 +266,8 @@ def send_exit_keystrokes(*, dismiss_overlay: bool = True) -> None:
     send_quit_keystrokes(("/exit", "{Enter}"), dismiss_overlay=dismiss_overlay)
 
 
-def send_quit_keystrokes(keys, dismiss_overlay: bool = True) -> None:
+def send_quit_keystrokes(keys, dismiss_overlay: bool = True,
+                         still_needed=None) -> int:
     """Type one agent kind's quit sequence into whatever terminal has focus.
 
     Each element is sent on its own with MENU_SETTLE_SECONDS between them,
@@ -269,6 +288,14 @@ def send_quit_keystrokes(keys, dismiss_overlay: bool = True) -> None:
     ``dismiss_overlay`` sends Escape first, clearing a transient overlay that
     would otherwise eat the first keystroke. Skipped on a retry, where Escape
     would cancel the very confirmation the retry exists to answer.
+
+    ``still_needed`` is asked before every key after the first, and a False
+    answer stops the sequence. The pause that keeps two interrupts from reading
+    as one is long enough for the session to have quit on the first: a tab this
+    package launched then closes itself, the terminal moves to the next tab,
+    and the second key lands on a neighbour that was working. `/exit` typed
+    into a live session is how six of them died; a stray interrupt is the same
+    mistake with a smaller blast radius. Returns how many keys were sent.
     """
     import time
 
@@ -277,7 +304,12 @@ def send_quit_keystrokes(keys, dismiss_overlay: bool = True) -> None:
     if dismiss_overlay:
         auto.SendKeys("{Esc}")
         time.sleep(0.1)
+    sent = 0
     for i, key in enumerate(keys):
         if i:
             time.sleep(MENU_SETTLE_SECONDS)
+            if still_needed is not None and not still_needed():
+                break
         auto.SendKeys(key)
+        sent += 1
+    return sent

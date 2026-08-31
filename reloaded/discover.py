@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import re
 import unicodedata
 from dataclasses import dataclass
 
@@ -141,7 +142,18 @@ DESKTOP_HOSTS = ("chatgpt.exe",)
 
 
 def _sessions() -> dict[str, tuple]:
-    """Normalized cwd -> (pid, kind) for every live agent session."""
+    """Normalized cwd -> (pid, kind) for every live agent session.
+
+    Keyed by cwd, so two sessions in the same directory collapse to whichever
+    psutil reports last. That is a real limit and not a fixable one here:
+    nothing connects a Windows Terminal tab to the process running inside it,
+    so even a complete list would not say which pid belongs to which tab. What
+    it costs is that teardown can type into one session while waiting on the
+    other's pid, and then report a timeout for a session that did quit, or
+    success for one that did not. teardown.plan_down warns when it sees the
+    matching symptom - two tabs resolving to one cwd - rather than leaving the
+    ambiguity silent.
+    """
     try:
         import psutil
     except ImportError:
@@ -191,6 +203,31 @@ def live_agents() -> dict[str, str]:
     return {cwd: kind for cwd, (_pid, kind) in _sessions().items()}
 
 
+_SAFE_EXE = re.compile(r"[A-Za-z0-9._+-]+")
+
+# Everything PowerShell will not read as syntax: no space, no metacharacter.
+# An allowlist rather than a list of things to escape, because the cost of
+# forgetting one is a captured argument being executed as a command.
+_SAFE_ARG = re.compile(r"[A-Za-z0-9._+=:/\@%-]+")
+
+
+def _ps_arg(arg: str) -> str:
+    """One captured argument, safe to paste into a PowerShell command line.
+
+    A plain token is left alone, which keeps the common case (`resume`,
+    `--last`) readable in a saved layout. Anything else is single-quoted, and a
+    single-quoted PowerShell string is literal all the way through - no
+    variable expansion, no subexpressions, no escapes - so the only thing left
+    to handle inside one is the quote character itself, doubled.
+
+    Double quotes would not do: PowerShell expands `$` inside them, so a
+    captured argument holding `$(...)` would have run rather than been passed.
+    """
+    if arg and _SAFE_ARG.fullmatch(arg):
+        return arg
+    return "'" + arg.replace("'", "''") + "'"
+
+
 def session_command(pid: int) -> str:
     """The command line a live session is running, for a captured tab.
 
@@ -202,6 +239,11 @@ def session_command(pid: int) -> str:
     "use the kind's default" rather than as a failure. A capture that dropped a
     tab because one cmdline was unreadable would be worse than one that
     relaunches it with default flags.
+
+    The result is spliced into a PowerShell command by deploy.launcher_command,
+    so every argument is quoted for PowerShell rather than only the ones with
+    spaces in them. Single quotes, not double: PowerShell expands `$` inside
+    double quotes, so a captured argument holding `$(...)` would have run.
     """
     try:
         import psutil
@@ -212,8 +254,14 @@ def session_command(pid: int) -> str:
     if not argv:
         return ""
 
-    argv[0] = os.path.splitext(os.path.basename(argv[0]))[0]
-    return " ".join(f'"{a}"' if " " in a else a for a in argv)
+    exe = os.path.splitext(os.path.basename(argv[0]))[0]
+    if not exe or not _SAFE_EXE.fullmatch(exe):
+        # argv[0] is the command itself, so it cannot be quoted - quoting it
+        # would make PowerShell print the name rather than run it. An
+        # executable whose name is not a plain word is not something to invoke
+        # on the strength of a guess; the kind's default is the safer answer.
+        return ""
+    return " ".join([exe] + [_ps_arg(a) for a in argv[1:]])
 
 
 def _str_field(obj: dict, key: str) -> bool:
