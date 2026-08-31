@@ -8,6 +8,7 @@ real command in a real shell, with a stub on PATH standing in for `claude`.
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import shutil
 import subprocess
@@ -26,6 +27,33 @@ SHELL = shutil.which("pwsh") or shutil.which("powershell")
 pytestmark = pytest.mark.skipif(SHELL is None, reason="no PowerShell on PATH")
 
 CWD = r"C:\repos\stub-repo"
+
+
+def _refuse_a_shadowed_claude(tmp_path) -> None:
+    """Skip rather than launch the real agent, if the profile shadows the stub.
+
+    The stub works by owning PATH, and that is enough for an executable
+    lookup. It is not enough for a function or an alias: PowerShell resolves
+    those FIRST, so a profile defining `claude` would run the real one - with
+    `--dangerously-skip-permissions --continue`, in a temp directory, for real.
+
+    Nothing on this machine does that today. This exists so that the day
+    someone adds it, the test says so instead of quietly starting an agent.
+    """
+    probe = subprocess.run(
+        [SHELL, "-Command",
+         "$c = Get-Command claude -ErrorAction SilentlyContinue; "
+         "if ($c) { \"$($c.CommandType)|$($c.Source)\" } else { 'none|' }"],
+        capture_output=True, text=True, timeout=60, cwd=str(tmp_path),
+        env={**os.environ, "PATH": str(tmp_path)},
+    )
+    kind, _, source = probe.stdout.strip().partition("|")
+    if kind != "Application" or pathlib.Path(source).parent != tmp_path:
+        pytest.skip(
+            f"the PowerShell profile resolves `claude` to a {kind} ({source!r}) "
+            "rather than this test's stub - running it would launch the real "
+            "agent"
+        )
 
 
 @pytest.fixture
@@ -52,7 +80,6 @@ def run_launcher(monkeypatch, tmp_path):
         if marker_body is not None:
             marker.write_text(marker_body, encoding="utf-8")
             if marker_age_seconds:
-                import os
                 import time
 
                 old = time.time() - marker_age_seconds
@@ -66,6 +93,8 @@ def run_launcher(monkeypatch, tmp_path):
             cmd = new_tab_args(CWD, launcher_command(CWD, 0, 0))[-1].replace("\\;", ";")
         else:
             cmd = launcher_command(CWD, 0, 0)
+        if load_profile:
+            _refuse_a_shadowed_claude(tmp_path)
         argv = [SHELL] + ([] if load_profile else ["-NoProfile"]) + ["-Command", cmd]
         proc = subprocess.run(
             argv, capture_output=True, text=True, timeout=60, cwd=str(tmp_path),
