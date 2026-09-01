@@ -68,6 +68,7 @@ or the unattended runs will fail with an import error.
 | `reloaded down` | Gracefully `/exit` every live Claude Code tab, then close windows that were entirely made up of sessions that exited (`--dry-run` to preview) |
 | `reloaded restart` | Capture the current arrangement, gracefully `/exit` everything, then relaunch it exactly as it was (`--dry-run` to preview) |
 | `reloaded restart <repo>...` | Restart only the named sessions, in place — same window, same tab, same position (`--dry-run` to preview) |
+| `reloaded restart --self` | Arm the session you are calling *from*, then quit it yourself; its tab relaunches it in place (`--cancel` to disarm) |
 | `reloaded install-tasks` | Register the logon launcher and the 5-minute reconcile task |
 | `reloaded uninstall-tasks` | Remove both |
 
@@ -214,6 +215,26 @@ keystrokes, and they did not all arrive when tried. Moving it into a file costs
 one thing — the launcher's closing `exit` runs in script scope, where it need
 not reach the host shell — so the script stops the shell by pid instead, which
 works from any scope and was verified against a real shell.
+
+**`restart --self` arms and steps back.** A session cannot drive its own
+restart the way `restart <repo>` drives someone else's. That path selects the
+tab, types the quit keys, and waits for the session to come back — and pointed
+at yourself, the waiting happens in a process that dies with the session it
+just ended. It would also be typing into a session that is busy running that
+very command, which is not behaviour this package has established.
+
+So `--self` does the only part that can be done from inside: it writes the
+marker the tab's own shell is already looking for, and tells you to quit
+normally. You end the session through its UI, cleanly, and the loop starts it
+again in the same slot. The two-minute TTL applies, so it is arm-then-exit
+rather than arm-and-forget; `--cancel` calls it off.
+
+It refuses in the two cases where arming would be a lie: called from an
+ordinary terminal, where there is no session above it to arm, and called from
+a hand-launched session, whose shell has no loop to read the marker. It finds
+the session by walking the parent process chain rather than by matching the
+current directory — a tool call can run anywhere, and a directory match would
+answer with the wrong session as readily as the right one.
 
 ### Known limits of the named restart
 

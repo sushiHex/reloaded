@@ -781,7 +781,90 @@ def _targets(plans):
         yield from plan.targets
 
 
+def cmd_restart_self(args) -> int:
+    """Arm a restart for the session this command is running inside.
+
+    Every other restart path drives a session from outside it: select its tab,
+    type the quit keys, wait for it to come back. None of that works on
+    yourself. The command would be typing into its own tab and would then die
+    with the session it just ended, before it could watch for the return or
+    report anything - and whether a quit keystroke even lands while the session
+    is busy running that very command is not something this package knows.
+
+    So it does not try. The tab's shell already runs its agent inside a loop
+    that checks for a marker each time the agent exits, and the honest shape of
+    "restart me" is to leave that marker and get out of the way. The session
+    ends when you end it, cleanly, through its own UI.
+    """
+    found = discover_mod.owning_session()
+    if found is None:
+        print("Not running inside an agent session.")
+        print("    `restart --self` arms the session it is called from, so it "
+              "has to be called from inside one —")
+        print("    a Bash tool call in Claude Code, or a shell command in "
+              "Codex. From an ordinary terminal,")
+        print("    name the repo instead: `reloaded restart <repo>`.")
+        return 1
+
+    pid, cwd, kind = found
+    if not cwd:
+        print(f"Found the session (pid {pid}) but cannot read its directory, "
+              "so its marker cannot be addressed.")
+        print(f"    Restart it from another session: `reloaded restart <repo>`.")
+        return 1
+
+    marker = restart_marker(cwd)
+    label = agents_mod.for_kind(kind).quit_label
+
+    if getattr(args, "cancel", False):
+        # Safe here and almost nowhere else: the session asking is still
+        # running, so nothing is about to read this marker. Every other place
+        # that deletes one is guessing about a shell it cannot see.
+        existed = marker.exists()
+        try:
+            marker.unlink(missing_ok=True)
+        except OSError as exc:
+            print(f"[warn] could not remove {marker}: {exc}")
+            return 1
+        print(f"Disarmed {cwd}." if existed
+              else f"Nothing was armed for {cwd}.")
+        return 0
+
+    if discover_mod.launcher_kind(pid) == discover_mod.HAND:
+        print(f"{cwd} was started by hand, so nothing will read a marker.")
+        print("    Its shell is a plain prompt with no restart loop in it — "
+              "arming would leave a file on disk")
+        print("    that no one collects. Restart it once from another session "
+              "with `reloaded restart <repo>`,")
+        print("    which types the launcher into its tab and upgrades it; "
+              "after that this works.")
+        return 1
+
+    if args.dry_run:
+        print(f"Would arm {cwd} (pid {pid}, {kind}) by writing {marker}.")
+        print("\nDry run — nothing written.")
+        return 0
+
+    try:
+        marker.write_text("restart", encoding="utf-8")
+    except OSError as exc:
+        print(f"[warn] could not arm {cwd}: {exc}")
+        return 1
+
+    ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS
+    print(f"Armed {cwd} (pid {pid}, {kind}).")
+    print(f"\n    Now quit this session with {label} — its tab will relaunch "
+          "it in the same slot.")
+    print(f"    The marker goes stale after {ttl // 60} minutes and is "
+          "ignored, so do it now or run")
+    print("    `reloaded restart --self --cancel` to call it off.")
+    return 0
+
+
 def cmd_restart(args) -> int:
+    if getattr(args, "self_", False):
+        return cmd_restart_self(args)
+
     repos = list(getattr(args, "repos", None) or [])
     if repos:
         return cmd_restart_one(args, repos)
@@ -1060,6 +1143,15 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="*",
         help="repo name or path to restart in place, keeping its tab and window "
              "(default: every session, via a full capture and relaunch)",
+    )
+    restart.add_argument(
+        "--self", dest="self_", action="store_true",
+        help="arm the session this is run from, then quit it yourself; the tab "
+             "relaunches it in place (call from inside a session)",
+    )
+    restart.add_argument(
+        "--cancel", action="store_true",
+        help="with --self, disarm instead of arming",
     )
     restart.add_argument(
         "--dry-run", action="store_true", help="print what would be captured/exited/relaunched, do nothing"

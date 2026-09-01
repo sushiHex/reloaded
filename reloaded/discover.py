@@ -112,6 +112,57 @@ def _ps():
     return _psutil
 
 
+def owning_session(pid: int | None = None, depth: int = 12) -> tuple | None:
+    """The agent session this process is running INSIDE: (pid, cwd, kind).
+
+    None when there is no agent above us - reloaded run from an ordinary
+    terminal rather than from inside a session's tool call.
+
+    Found by walking up the parent chain, not by matching the current
+    directory against live_sessions(). A shell a session spawns can be
+    anywhere: a subdirectory of the repo, a sibling, or somewhere else
+    entirely, and a session can be running with a cwd that no longer exists.
+    Matching on directory would then answer with the wrong session, or with
+    none, and be indistinguishable from a correct answer either way. The
+    parent chain is the only thing that actually says "I am inside this one".
+
+    `depth` bounds the walk. A parent chain should be three or four processes
+    here; anything longer is a pid loop or a surprise, and neither is worth
+    hanging on.
+    """
+    from . import agents as agents_mod
+
+    by_process = {a.process: a.kind for a in agents_mod.AGENTS.values()}
+    try:
+        proc = _ps().Process(os.getpid() if pid is None else pid)
+    except Exception:
+        return None
+
+    for _step in range(depth):
+        try:
+            proc = proc.parent()
+        except Exception:
+            return None
+        if proc is None:
+            return None
+        try:
+            kind = by_process.get((proc.name() or "").lower())
+        except Exception:
+            return None
+        if kind is None:
+            continue
+        try:
+            cwd = proc.cwd()
+        except Exception:
+            # Its identity is the part that matters, and losing the cwd here
+            # would be reported as "not inside a session" - a confidently
+            # wrong answer, when the truthful one is "inside one I cannot
+            # fully read".
+            cwd = ""
+        return proc.pid, cwd, kind
+    return None
+
+
 def launcher_kind(pid: int) -> str:
     """Whether the session at `pid` was launched by reloaded or started by hand.
 
