@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import sys
 
+import pytest
+
 import reloaded.discover as discover_mod
 
 
@@ -180,23 +182,50 @@ def test_a_process_that_cannot_be_opened_yields_neither(monkeypatch):
     assert discover_mod.session_launch(7) == ("", "")
 
 
-def test_an_unrelated_process_is_not_claimed_as_an_agent(monkeypatch):
-    """A recycled pid now belonging to something else. Returning a kind for it
-    would let a restart relaunch a stranger's command line."""
+def test_an_unrelated_process_yields_neither_half(monkeypatch):
+    """A recycled pid now belonging to something else.
+
+    Windows reuses pids, so a pid that was the session when the teardown plan
+    was built can be anything by the time the relaunch reads it. Returning the
+    command alone is the dangerous half: the caller's only guard against a
+    stale command is that it comes back empty, so `svchost -k netsvcs` would
+    have gone straight into the relaunch script.
+
+    The earlier version of this test asserted only that the KIND was empty. It
+    passed against exactly the code that returned the command anyway.
+    """
     _stub(monkeypatch, _Proc([r"C:\Windows\svchost.exe", "-k", "netsvcs"],
                              image="svchost.exe"))
 
-    assert discover_mod.session_launch(7)[0] == ""
+    assert discover_mod.session_launch(7) == ("", "")
 
 
-def test_a_command_never_arrives_without_a_kind(monkeypatch):
-    """The invariant, stated directly. Every readable command line here also
-    names its agent, so no caller has to source the two halves separately."""
-    for proc in (
-        _Proc([r"C:\x\codex.exe", "resume"], image="codex.exe"),
-        _Proc([r"C:\x\claude.exe"], name_raises=OSError("x")),
-        _Proc([r"C:\x\codex.exe"], image="CODEX.EXE"),
-    ):
-        _stub(monkeypatch, proc)
-        kind, command = discover_mod.session_launch(7)
-        assert not (command and not kind), (kind, command)
+@pytest.mark.parametrize("proc", [
+    _Proc([r"C:\x\codex.exe", "resume"], image="codex.exe"),
+    _Proc([r"C:\x\claude.exe"], name_raises=OSError("x")),
+    _Proc([r"C:\x\codex.exe"], image="CODEX.EXE"),
+    # An unrelated process, and the two ways it can be unrecognisable.
+    _Proc([r"C:\Windows\svchost.exe", "-k", "netsvcs"], image="svchost.exe"),
+    _Proc([r"C:\tools\node.exe", "cli.js"], name_raises=OSError("x")),
+    _Proc([r"C:\x\wrapper.exe"], image="wrapper.exe"),
+    # Nothing readable at all, from either end.
+    _Proc([], image="codex.exe"),
+    _Proc(raises=PermissionError("d"), name_raises=OSError("x")),
+    # An executable name that is not a plain word, which _format_command
+    # refuses to quote and therefore refuses to return.
+    _Proc([r"C:\x\co dex;evil.exe"], image="co dex;evil.exe"),
+], ids=["codex", "name-unreadable", "uppercase", "svchost", "node-shim",
+        "unknown-exe", "no-argv", "nothing-readable", "unquotable"])
+def test_a_command_never_arrives_without_a_kind(monkeypatch, proc):
+    """The invariant, stated directly and exercised on the cases that break it
+    rather than only on the ones that do not.
+
+    A caller that gets a command without a kind fills the kind in from
+    somewhere else - a cwd-keyed sweep, or a saved layout - and ends up pairing
+    one process's command line with another's identity.
+    """
+    _stub(monkeypatch, proc)
+
+    kind, command = discover_mod.session_launch(7)
+
+    assert not (command and not kind), (kind, command)

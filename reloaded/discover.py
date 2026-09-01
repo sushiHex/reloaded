@@ -274,6 +274,13 @@ def session_launch(pid: int) -> tuple[str, str]:
             or {a.binary: a.kind for a in agents_mod.AGENTS.values()}.get(
                 command.split(" ", 1)[0])
             or "")
+    if not kind:
+        # A command line that belongs to no agent is not a command line worth
+        # keeping. Windows reuses pids, so this pid may have been the session
+        # when the plan was built and be something else entirely by now - and
+        # the caller's only guard against a stale command is that it is empty.
+        # Handing back `node server.js` here gets it typed into a terminal.
+        return "", ""
     return kind, command
 
 
