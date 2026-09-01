@@ -57,6 +57,20 @@ class Target(NamedTuple):
     item: object  # the UIA TabItemControl; never touched outside tabs.py
 
 
+class Sent(NamedTuple):
+    """What one attempt at asking a session to quit actually did.
+
+    Two facts, and they were briefly one return value where a count doubled as
+    a failure signal. That is the same mistake as a flag named after half of
+    what it governs: a stub returning None then meant "could not reach the
+    tab", and a real zero meant "the session had already gone", and nothing
+    could tell them apart.
+    """
+
+    reached: bool  # the tab was confirmed; False means nothing was typed
+    keys: int      # how many quit keys actually went out
+
+
 @dataclass
 class WindowPlan:
     hwnd: int
@@ -133,35 +147,42 @@ def plan_down(
 
 
 def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=None,
-               quit_keys=("/exit", "{Enter}"), pid: int | None = None) -> bool:
+               quit_keys=("/exit", "{Enter}"), pid: int | None = None) -> "Sent":
     """Foreground `item`'s tab and type its agent's quit keys into it.
 
-    Returns whether the tab actually took focus (see tabs.select_tab) - a
-    False return means nothing was typed, so the caller must not assume the
-    session was asked to quit.
+    Returns a `Sent`. `reached` False means the tab could not be confirmed and
+    nothing was typed, so the caller must not assume the session was asked to
+    quit. `keys` is how many of the quit keys actually went out, and zero is a
+    real answer: the target had already gone by the time its turn came.
 
     `quit_keys` defaults to Claude Code's, which is what every caller meant
     before a second agent kind existed. See tabs.send_quit_keystrokes for
     what dismiss_overlay controls.
 
-    `pid` lets the sequence stop partway. Selection is proved once, before the
-    first key; the keys after it are separated by more than a second each, and
-    that is ample time for the session to end and for the terminal to move on
-    to a different tab. Two conditions are re-checked between keys, and either
-    one failing means the rest of the sequence would land somewhere it was
-    never aimed:
+    `pid` is what makes stopping possible. Aim is proved once, before the first
+    key, and the keys are more than a second apart - ample time for the session
+    to end and for something else to take the screen. Three conditions are
+    re-asked before every key, and any of them failing means the rest of the
+    sequence would land somewhere it was never aimed:
 
     the session is still running - Codex quits on a single interrupt, so the
-    second one has nothing left to interrupt and is a loose keystroke;
+    second one has nothing left to interrupt;
 
-    the tab is still the selected one - which is what makes it loose.
+    the tab is still the selected one inside its terminal;
+
+    that terminal still has OS focus - which the tab's own selection says
+    nothing about. A notification, another application, or the user clicking
+    away moves focus while the tab stays exactly as selected as it was, and
+    SendKeys follows focus rather than the element anyone named.
     """
     if not tabs.select_tab(hwnd, item):
-        return False
+        return Sent(reached=False, keys=0)
     # After the tab is focused, before anything is typed. `restart` arms its
     # marker here so a tab that could not be foregrounded is never armed: it
     # will never read the marker, and one left on disk would fire on the
-    # user's next manual exit instead.
+    # user's next manual exit instead. It is also disk I/O between the proof
+    # and the typing, which is exactly why the proof is re-asked below rather
+    # than trusted.
     if before_send is not None:
         before_send()
 
@@ -171,11 +192,24 @@ def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=Non
 
             if not psutil.pid_exists(pid):
                 return False
-        return tabs.tab_is_selected(item)
+        return tabs.tab_is_selected(item) and win32.is_foreground(hwnd)
 
-    tabs.send_quit_keystrokes(quit_keys, dismiss_overlay=dismiss_overlay,
-                              still_needed=still_needed)
-    return True
+    keys = tabs.send_quit_keystrokes(quit_keys, dismiss_overlay=dismiss_overlay,
+                                     still_needed=still_needed)
+    return Sent(reached=True, keys=keys or 0)
+
+
+def _still_has_tabs(hwnd: int) -> bool:
+    """Whether that window still holds any tab, asked right now.
+
+    False when the window is gone, and false when it cannot be read: an
+    unreadable window is not evidence that something is in it, and this only
+    ever gates *not* closing.
+    """
+    try:
+        return bool(tabs.list_tab_items(hwnd))
+    except Exception:
+        return False
 
 
 def close_dead_tabs(plans, exited, still_open=None, log=print) -> int:
@@ -257,8 +291,9 @@ def execute_down(
             # meant before a second kind existed.
             agent = agents.for_kind((kinds or {}).get(norm(cwd)))
             quit_keys = agent.quit_keys
-            if not _send_exit(plan.hwnd, item, before_send=arm,
-                              quit_keys=quit_keys, pid=pid):
+            sent = _send_exit(plan.hwnd, item, before_send=arm,
+                              quit_keys=quit_keys, pid=pid)
+            if not sent.reached:
                 log(
                     f"    [warn] could not bring window 0x{plan.hwnd:X} to the "
                     f"foreground - skipping {title!r} (exit it manually)"
@@ -267,7 +302,15 @@ def execute_down(
                 all_exited = False
                 continue
 
-            log(f"    sent {agent.quit_label} -> {title}  [{cwd}]")
+            if sent.keys:
+                log(f"    sent {agent.quit_label} -> {title}  [{cwd}]")
+            else:
+                # Targets are handled one at a time with a wait on each, so a
+                # session can end on its own well before its turn. Saying
+                # "sent /exit" here would describe something that did not
+                # happen, in the log a user reads to decide whether to go
+                # looking.
+                log(f"    {title} had already gone  [{cwd}]")
 
             # Polls the specific pid rather than re-scanning every process via
             # discover.live_sessions() - a full psutil.process_iter() sweep on
@@ -298,7 +341,9 @@ def execute_down(
                     # confirmation - the exact thing this resend exists to
                     # get past. See tabs.send_exit_keystrokes.
                     if _send_exit(plan.hwnd, item, dismiss_overlay=False,
-                                  quit_keys=quit_keys, pid=pid):
+                                  quit_keys=quit_keys, pid=pid).reached:
+                        # A zero here is the session ending mid-resend, which
+                        # the enclosing loop is about to notice anyway.
                         log(
                             f"    {title} still running after "
                             f"{EXIT_RETRY_AFTER_SECONDS:.0f}s - resending {agent.quit_label}"
@@ -325,9 +370,21 @@ def execute_down(
         should_close = (
             close_emptied and all_exited and len(plan.targets) == plan.total_tabs
         )
+        if should_close and _still_has_tabs(plan.hwnd):
+            # total_tabs was counted when the plan was built, and teardown can
+            # spend EXIT_TIMEOUT_SECONDS on every target since. A tab opened in
+            # that window in the meantime - by the user, by `reloaded open`, by
+            # a concurrent `up` - is in neither `targets` nor `total_tabs`, and
+            # WM_CLOSE would take it and its session with the window. Every tab
+            # this teardown accounted for has closed itself or been closed by
+            # close_dead_tabs above, so anything still there is something else.
+            should_close = False
+            log(f"    [warn] window 0x{plan.hwnd:X} gained a tab during "
+                "teardown - leaving it open rather than closing over it")
+
         if not should_close:
             left_open.append(plan.hwnd)
-            if all_exited and close_emptied:
+            if all_exited and close_emptied and len(plan.targets) != plan.total_tabs:
                 log(f"    left window 0x{plan.hwnd:X} open - it has tabs this "
                     "teardown did not touch")
             continue

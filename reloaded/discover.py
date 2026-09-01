@@ -270,9 +270,14 @@ def session_launch(pid: int) -> tuple[str, str]:
         argv = []
 
     command = _format_command(argv)
+    # Both lookups fold case. `name` is already lowered; argv[0] is whatever
+    # the process was launched with, and `CODEX.EXE` on the command line is
+    # the same program as `codex.exe`. A case-sensitive miss here does not
+    # produce a wrong answer - it produces no answer, and the caller then
+    # relaunches from a default instead of from what was actually running.
     kind = ({a.process: a.kind for a in agents_mod.AGENTS.values()}.get(name)
             or {a.binary: a.kind for a in agents_mod.AGENTS.values()}.get(
-                command.split(" ", 1)[0])
+                command.split(" ", 1)[0].lower())
             or "")
     if not kind:
         # A command line that belongs to no agent is not a command line worth

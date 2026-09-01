@@ -289,6 +289,19 @@ def set_foreground(hwnd: int) -> bool:
     return _u32.GetForegroundWindow() == hwnd
 
 
+def is_foreground(hwnd: int) -> bool:
+    """Whether `hwnd` has OS focus at this instant.
+
+    set_foreground proves this once, and returns. Keystrokes sent a second
+    later go to whatever has focus THEN - a notification that stole it, another
+    application, the user clicking away. A caller typing a sequence with pauses
+    in it has to re-ask between the keys, because the tab staying selected
+    inside its terminal says nothing about whether that terminal is still the
+    window receiving input.
+    """
+    return _u32.GetForegroundWindow() == hwnd
+
+
 def is_wt_window(hwnd: int) -> bool:
     """Whether `hwnd` is still a live Windows Terminal window.
 

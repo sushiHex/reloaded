@@ -718,8 +718,20 @@ def _reopen_in_a_new_tab(s: _Restarting) -> bool:
     print(f"    {s.cwd} did not relaunch in place — its tab closed; reopening it")
     try:
         restart_marker(s.cwd).unlink(missing_ok=True)
-    except OSError:
-        pass
+    except OSError as exc:
+        # Swallowing this used to be safe-looking and was not. The tab opened
+        # below DOES carry the restart loop, so a marker that survives here
+        # outlives the tab that ignored it and fires on the user's next /exit,
+        # restarting a session they meant to close. The docstring above says
+        # deleting it is necessary; a failed delete has to be treated as
+        # exactly that, not as a shrug.
+        print(f"    [warn] could not clear {s.cwd}'s restart marker: {exc}")
+        print("        Not reopening it here — the new tab would inherit that "
+              "marker and restart on your next /exit.")
+        repo = os.path.basename(s.cwd.rstrip("\\/")) or s.cwd
+        print(f"        Delete {restart_marker(s.cwd)} and run "
+              f"`reloaded open {repo}`.")
+        return False
     _launch_single_tab(s)
     if _wait_for_session(s.cwd) is None:
         print(f"    [warn] {s.cwd} did not come back — start it by hand")
@@ -736,6 +748,32 @@ def _reopen_in_a_new_tab(s: _Restarting) -> bool:
 # exit". The rest of staleness is handled where being wrong costs nothing:
 # deploy's TTL makes an old marker inert, and _sweep_stale_markers clears the
 # directory on the next run.
+
+
+def _agent_kinds(plans) -> dict[str, str]:
+    """Which CLI each planned target is, asked of that target's own process.
+
+    `live_agents()` answers the same question by sweeping every process on the
+    machine and keying the result by directory. That is a second enumeration,
+    taken at a different moment, and a target it misses - because the sweep
+    raced the process, or because two sessions share a directory and one
+    overwrote the other - falls back to Claude Code. A Codex tab then gets
+    `/exit` typed into it.
+
+    A plan already holds each target's pid. Asking it directly is both cheaper
+    and incapable of disagreeing with itself. The sweep remains the fallback
+    for a pid that will not answer, and the kind's own default after that.
+    """
+    kinds: dict[str, str] = {}
+    sweep = None
+    for t in _targets(plans):
+        kind, _command = discover_mod.session_launch(t.pid)
+        if not kind:
+            if sweep is None:
+                sweep = discover_mod.live_agents()
+            kind = sweep.get(norm(t.cwd), agents_mod.DEFAULT_KIND)
+        kinds[norm(t.cwd)] = kind
+    return kinds
 
 
 def _targets(plans):
@@ -818,10 +856,15 @@ def cmd_down(args) -> int:
         print("\nDry run — nothing sent, nothing closed.")
         return 0
 
+    # Read off each target's OWN pid, not from a second cwd-keyed sweep of
+    # every process on the machine. The sweep can miss a session that is in
+    # this plan - it is a separate enumeration, taken later - and a target
+    # missing from it gets Claude's /exit sent to a Codex tab. The pid is
+    # right here; asking it directly cannot disagree with itself.
+    kinds = _agent_kinds(plans)
     # Named rather than assumed: half these tabs may be quit with an interrupt
     # rather than /exit, and a line that says otherwise is the user's only
     # record of what this command did to their desktop.
-    kinds = discover_mod.live_agents()
     labels = sorted({agents_mod.for_kind(kinds.get(norm(t.cwd))).quit_label
                      for t in _targets(plans)})
     print(f"\nSending {' / '.join(labels)} to {total} session(s) — "

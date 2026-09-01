@@ -90,6 +90,13 @@ def _no_real_desktop_effects(monkeypatch):
 
     monkeypatch.setattr(win32_mod, "set_foreground", _blocked_foreground)
 
+    # Not a block - a deterministic answer. is_foreground compares a hwnd
+    # against the REAL desktop's focused window, so under test it reports
+    # whatever the developer happened to be looking at, and the suite behaves
+    # one way here and another in CI. Tests get a desktop where the window
+    # they asked for has focus; a test about LOSING focus says so itself.
+    monkeypatch.setattr(win32_mod, "is_foreground", lambda hwnd: True)
+
     for name, effect in (
         ("PostMessageW", "posts WM_CLOSE - it closes a real window and every session in it"),
         ("SetWindowPlacement", "moves and resizes a real window"),

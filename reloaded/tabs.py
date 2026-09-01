@@ -166,19 +166,27 @@ def close_tab(tab_item) -> bool:
     except Exception:
         return False
 
-    for child in children:
-        # The control type matters as much as the name: a label or tooltip
-        # reading "Close Tab" would otherwise be invoked instead.
-        if getattr(child, "ControlTypeName", "") != "ButtonControl":
-            continue
-        if "close" not in (getattr(child, "Name", "") or "").lower():
-            continue
-        try:
-            child.GetInvokePattern().Invoke()
-            return True
-        except Exception:
-            return False
-    return False
+    # The control type matters as much as the name: a label or tooltip reading
+    # "Close Tab" would otherwise be invoked instead.
+    buttons = [c for c in children
+               if getattr(c, "ControlTypeName", "") == "ButtonControl"]
+    named = [c for c in buttons
+             if "close" in (getattr(c, "Name", "") or "").lower()]
+
+    # The name is English. Windows Terminal localizes it, so on a German or
+    # Japanese install the match finds nothing and a hand-launched tab is left
+    # sitting dead in the strip with no warning. A tab has one button, so when
+    # the name cannot decide, being the only button can. Two or more unnamed
+    # buttons stays a refusal - guessing which one closes a tab is not the kind
+    # of guess this package makes.
+    target = named[0] if named else (buttons[0] if len(buttons) == 1 else None)
+    if target is None:
+        return False
+    try:
+        target.GetInvokePattern().Invoke()
+        return True
+    except Exception:
+        return False
 
 
 def select_tab(hwnd: int, tab_item, attempts: int = 10, settle: float = 0.3) -> bool:
@@ -289,18 +297,30 @@ def send_quit_keystrokes(keys, dismiss_overlay: bool = True,
     would otherwise eat the first keystroke. Skipped on a retry, where Escape
     would cancel the very confirmation the retry exists to answer.
 
-    ``still_needed`` is asked before every key after the first, and a False
-    answer stops the sequence. The pause that keeps two interrupts from reading
-    as one is long enough for the session to have quit on the first: a tab this
-    package launched then closes itself, the terminal moves to the next tab,
-    and the second key lands on a neighbour that was working. `/exit` typed
-    into a live session is how six of them died; a stray interrupt is the same
-    mistake with a smaller blast radius. Returns how many keys were sent.
+    ``still_needed`` is asked before EVERY key, including the first, and a
+    False answer stops the sequence there. Two different windows close on it.
+
+    Before the first key: teardown handles its targets serially, waiting up to
+    twenty seconds on each, so a session can end on its own long before its
+    turn arrives. Typing then puts `/exit` into a shell with nothing in it -
+    which is not hypothetical, it is a terminal found holding about fifty
+    copies of the word.
+
+    Between the keys: the pause that stops two interrupts reading as one is
+    ample for the session to have quit on the first. The tab closes itself, the
+    terminal moves to the next one, and the remaining key lands on a neighbour
+    that was working.
+
+    Returns how many keys were actually sent, which is not the same as how many
+    were asked for - a caller that reports "sent /exit" without looking is
+    describing something that may not have happened.
     """
     import time
 
     import uiautomation as auto
 
+    if still_needed is not None and not still_needed():
+        return 0
     if dismiss_overlay:
         auto.SendKeys("{Esc}")
         time.sleep(0.1)

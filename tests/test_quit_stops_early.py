@@ -42,20 +42,30 @@ def test_the_whole_sequence_is_sent_while_it_is_still_wanted(keys):
 
 def test_the_second_interrupt_is_withheld_once_the_session_is_gone(keys):
     """The one that would land on the next tab."""
-    tabs_mod.send_quit_keystrokes(("{Ctrl}c", "{Ctrl}c"), still_needed=lambda: False)
+    alive = [True, False]
+    tabs_mod.send_quit_keystrokes(("{Ctrl}c", "{Ctrl}c"),
+                                  still_needed=lambda: alive.pop(0))
 
     assert keys == ["{Esc}", "{Ctrl}c"]
 
 
-def test_the_first_key_is_never_withheld(keys):
-    """Nothing has happened yet when it is sent - select_tab has just proved
-    the target. Asking before the first key would only re-litigate that."""
-    calls = []
-    tabs_mod.send_quit_keystrokes(("/exit", "{Enter}"),
-                                  still_needed=lambda: calls.append(1) or False)
+def test_nothing_at_all_is_sent_when_the_target_has_already_gone(keys):
+    """The first key is withheld too, and this used to be the opposite rule.
 
-    assert keys == ["{Esc}", "/exit"]
-    assert len(calls) == 1
+    The old reasoning was that select_tab had just proved the target, so
+    asking again before the first key only re-litigated it. That confused two
+    questions. Selection proves WHERE a keystroke goes. It says nothing about
+    whether there is still anything there to receive it, and teardown handles
+    its targets one at a time with a twenty-second wait on each - so a session
+    can end on its own long before its turn arrives.
+
+    A terminal was found holding about fifty copies of the word `/exit`,
+    typed into a shell whose session had already ended. Escape is withheld on
+    the same grounds: it is a keystroke like any other.
+    """
+    tabs_mod.send_quit_keystrokes(("/exit", "{Enter}"), still_needed=lambda: False)
+
+    assert keys == []
 
 
 def test_no_predicate_means_send_everything(keys):

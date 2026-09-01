@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -159,12 +160,35 @@ def window_header(w: Window) -> str:
 
 
 def save(lo: Layout, path) -> None:
-    """Write atomically — a torn layout file would break unattended deploy."""
+    """Write atomically — a torn layout file would break unattended deploy.
+
+    The temp file is per-process. Every writer used to share one
+    `default.json.tmp`, and there are several: the reconcile task saves every
+    five minutes, forever, while `capture`, `restart` and the interactive
+    editor all save on demand. Two of them overlapping wrote into the same
+    handle, or one replaced the file the other was about to move, and the
+    "atomic" rename then made a half-written layout the real one. A pid in the
+    name costs nothing and makes the two writes independent.
+
+    It does not make them ordered. Two writers still race to be last, and the
+    loser's changes are gone - an editor session open for ten minutes saves an
+    in-memory layout that the reconcile has rewritten twice underneath it. This
+    stops corruption, not lost updates. Fixing that needs a lock, and a lock
+    needs a stale-lock story on a machine that crashes; not attempted here.
+    """
     p = pathlib.Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(lo.to_dict(), indent=2) + "\n", encoding="utf-8")
-    tmp.replace(p)
+    tmp = p.with_suffix(f"{p.suffix}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(lo.to_dict(), indent=2) + "\n", encoding="utf-8")
+        tmp.replace(p)
+    finally:
+        # A crash between write and replace would otherwise leave one temp file
+        # per run, forever, in a directory nobody looks at.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def load(path) -> Layout:
