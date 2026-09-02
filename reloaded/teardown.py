@@ -331,7 +331,18 @@ def execute_down(
                 now = time.time()
                 if now >= deadline:
                     timed_out.append((title, cwd))
-                    log(f"    [warn] {title} did not exit within {EXIT_TIMEOUT_SECONDS:.0f}s")
+                    # Nothing is escalated here, ever. This package types and
+                    # waits; it does not kill. So a target that outlasts the
+                    # timeout is almost always one whose keystrokes went
+                    # somewhere that swallowed them - a confirmation, a
+                    # permission prompt, a mode where the quit chord means
+                    # something else. reloaded cannot read that screen, and
+                    # guessing at an answer to type into an unknown prompt is
+                    # how a package like this does real damage. Point at the
+                    # tab instead.
+                    log(f"    [warn] {title} did not exit within "
+                        f"{EXIT_TIMEOUT_SECONDS:.0f}s - look at that tab, it "
+                        "may be waiting on a prompt that ate the keys")
                     all_exited = False
                     break
                 if not retried and now >= retry_at:

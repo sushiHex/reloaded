@@ -62,7 +62,17 @@ CODEX = Agent(
     binary="codex",
     launch="codex resume --last --dangerously-bypass-approvals-and-sandbox",
     # Verified on a disposable session: the target process died and every
-    # other session was untouched. `/quit` did nothing at all.
+    # other session was untouched. `/quit` did nothing at all. The binary
+    # carries "again to quit" (tui/src/bottom_pane/textarea.rs), which is the
+    # chord these two presses answer.
+    #
+    # Ctrl+C is context-sensitive, though, and not every context is quitting.
+    # The same binary carries "Press Ctrl+C now to cancel the review" and
+    # "Press Ctrl+C to return to the main thread first" - so in a review or a
+    # side conversation the first press does that instead, and the second only
+    # raises the quit chord rather than answering it. The session survives, and
+    # teardown's single resend six seconds later is what completes the quit.
+    # If that is also eaten, it times out and says so. Nothing is forced.
     quit_keys=("{Ctrl}c", "{Ctrl}c"),
     quit_label="Ctrl+C",
     sessions_dir=os.path.join(os.path.expanduser("~"), ".codex", "sessions"),
