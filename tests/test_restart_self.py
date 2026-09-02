@@ -166,6 +166,25 @@ def test_a_marker_that_cannot_be_written_is_reported(session, capsys, monkeypatc
     assert "could not arm" in capsys.readouterr().out
 
 
+def test_naming_a_repo_alongside_self_is_refused(session, capsys):
+    """`--self` is checked first, so naming both would arm the calling session
+    and ignore what was named - a different restart than the one asked for,
+    reported as success.
+
+    Not hypothetical: a slash command passes its arguments through, and an
+    argument that fails to interpolate arrives as the literal `$ARGUMENTS`.
+    Refusing turns that into a message; picking would turn it into a restart
+    nobody asked for.
+    """
+    rc = main_mod.cmd_restart(_args(repos=["other-repo"]))
+
+    assert rc == 1
+    assert not session["marker"].exists()
+    out = capsys.readouterr().out
+    assert "other-repo" in out
+    assert "cannot also take a repo name" in out
+
+
 def test_naming_a_repo_still_takes_the_normal_path(session, monkeypatch):
     """`--self` is a different command wearing the same verb. It must not
     swallow the one people already use."""

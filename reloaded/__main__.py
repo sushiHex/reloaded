@@ -796,6 +796,17 @@ def cmd_restart_self(args) -> int:
     "restart me" is to leave that marker and get out of the way. The session
     ends when you end it, cleanly, through its own UI.
     """
+    repos = list(getattr(args, "repos", None) or [])
+    if repos:
+        # `--self` is checked before `repos`, so naming both would arm the
+        # calling session and silently ignore what was named - the caller
+        # asking for one restart and getting a different one, reported as
+        # success. Refuse rather than pick.
+        print(f"`--self` restarts the session you are calling from, so it "
+              f"cannot also take a repo name ({', '.join(repos)}).")
+        print("    Drop `--self` to restart those, or drop them to restart this one.")
+        return 1
+
     found = discover_mod.owning_session()
     if found is None:
         print("Not running inside an agent session.")
