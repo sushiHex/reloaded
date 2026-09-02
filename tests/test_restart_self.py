@@ -28,7 +28,8 @@ CWD = r"C:\repos\app"
 
 def _args(**kw):
     d = {"layout": "default", "repos_root": r"C:\repos", "unattended": False,
-         "dry_run": False, "repos": [], "self_": True, "cancel": False}
+         "dry_run": False, "repos": [], "self_": True, "cancel": False,
+         "arm_only": True, "after": 0.0}
     d.update(kw)
     return types.SimpleNamespace(**d)
 
@@ -210,6 +211,105 @@ def test_naming_a_repo_still_takes_the_normal_path(session, monkeypatch):
     main_mod.cmd_restart(_args(self_=False, repos=["app"]))
 
     assert called == [["app"]]
+
+
+# ── dispatching, which is what --self does by default ────────────────────
+#
+# The whole difficulty of restarting yourself is that the command doing it dies
+# with the session it ends. So it does not do it. It hands the job to a process
+# that is not inside the session at all, and that process runs the ordinary
+# named-restart path - the same one used from another tab, with the same
+# guards on where its keystrokes land.
+
+
+@pytest.fixture
+def dispatched(monkeypatch, session):
+    """Capture the delegate instead of spawning it."""
+    calls = []
+    monkeypatch.setattr(main_mod, "_dispatch_restart",
+                        lambda repo, layout, after: calls.append(
+                            (repo, layout, after)) or 4242)
+    return calls
+
+
+def test_by_default_it_hands_the_job_to_a_detached_process(dispatched, session):
+    main_mod.cmd_restart(_args(arm_only=False))
+
+    assert dispatched == [("app", "default", main_mod.SELF_RESTART_DELAY_SECONDS)]
+
+
+def test_it_does_not_arm_the_marker_itself(dispatched, session):
+    """The delegate runs the ordinary restart, which arms as part of its own
+    flow, at the moment it is about to send the quit keys. Arming here as well
+    would put a marker on disk early and leave it there if the delegate never
+    ran."""
+    main_mod.cmd_restart(_args(arm_only=False))
+
+    assert not session["marker"].exists()
+
+
+def test_it_says_the_helper_outlives_this_session(dispatched, capsys):
+    """A user who thinks the restart dies with the session will type /exit to
+    "help", which is the one thing that breaks it."""
+    main_mod.cmd_restart(_args(arm_only=False))
+
+    out = capsys.readouterr().out
+    assert "4242" in out, "the helper pid is not named"
+    assert "outside this session" in out
+    assert "Nothing further to do" in out
+
+
+def test_the_delay_is_passed_through(dispatched, session):
+    main_mod.cmd_restart(_args(arm_only=False, after=12.0))
+
+    assert dispatched[0][2] == 12.0
+
+
+def test_a_spawn_that_fails_names_the_fallback(session, capsys, monkeypatch):
+    """Losing the delegate silently would leave a user waiting for a restart
+    that has no process behind it."""
+    def boom(repo, layout, after):
+        raise OSError("breakaway refused and detach failed")
+
+    monkeypatch.setattr(main_mod, "_dispatch_restart", boom)
+
+    rc = main_mod.cmd_restart(_args(arm_only=False))
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "--arm-only" in out, "no way to fall back is offered"
+
+
+def test_the_dry_run_spawns_nothing(session, capsys, monkeypatch):
+    monkeypatch.setattr(main_mod, "_dispatch_restart",
+                        lambda *a: pytest.fail("spawned during a dry run"))
+
+    rc = main_mod.cmd_restart(_args(arm_only=False, dry_run=True))
+
+    assert rc == 0
+    assert "Dry run" in capsys.readouterr().out
+
+
+def test_the_refusals_still_apply_before_dispatching(capsys, monkeypatch):
+    """Handing a hand-launched session to the delegate is not wrong - the
+    named restart handles those by typing the launcher into the idle shell.
+    But `--self` refuses it, because that path replaces what the tab runs, and
+    doing that to yourself on the strength of one keystroke deserves the
+    explicit command."""
+    monkeypatch.setattr(discover_mod, "owning_session", lambda: None)
+    monkeypatch.setattr(main_mod, "_dispatch_restart",
+                        lambda *a: pytest.fail("dispatched with no session"))
+
+    assert main_mod.cmd_restart(_args(arm_only=False)) == 1
+
+
+def test_cancel_admits_it_cannot_recall_a_dispatched_restart(session, capsys):
+    """"Disarmed" would otherwise read as "stopped". The delegate is a separate
+    process doing its own arming; nothing in here can call it back."""
+    main_mod.cmd_restart(_args(cancel=True))
+
+    out = capsys.readouterr().out
+    assert "cannot be called off" in out
 
 
 # ── finding the session you are inside ───────────────────────────────────

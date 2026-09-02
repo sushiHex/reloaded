@@ -68,7 +68,7 @@ or the unattended runs will fail with an import error.
 | `reloaded down` | Gracefully `/exit` every live Claude Code tab, then close windows that were entirely made up of sessions that exited (`--dry-run` to preview) |
 | `reloaded restart` | Capture the current arrangement, gracefully `/exit` everything, then relaunch it exactly as it was (`--dry-run` to preview) |
 | `reloaded restart <repo>...` | Restart only the named sessions, in place — same window, same tab, same position (`--dry-run` to preview) |
-| `reloaded restart --self` | Arm the session you are calling *from*, then quit it yourself; its tab relaunches it in place (`--cancel` to disarm) |
+| `reloaded restart --self` | Restart the session you are calling *from*, in place — hands it to a detached process that outlives the exit (`--arm-only` to just leave a marker) |
 | `reloaded install-tasks` | Register the logon launcher and the 5-minute reconcile task |
 | `reloaded uninstall-tasks` | Remove both |
 
@@ -216,18 +216,31 @@ one thing — the launcher's closing `exit` runs in script scope, where it need
 not reach the host shell — so the script stops the shell by pid instead, which
 works from any scope and was verified against a real shell.
 
-**`restart --self` arms and steps back.** A session cannot drive its own
+**`restart --self` hands the job outside.** A session cannot drive its own
 restart the way `restart <repo>` drives someone else's. That path selects the
 tab, types the quit keys, and waits for the session to come back — and pointed
 at yourself, the waiting happens in a process that dies with the session it
-just ended. It would also be typing into a session that is busy running that
-very command, which is not behaviour this package has established.
+just ended.
 
-So `--self` does the only part that can be done from inside: it writes the
-marker the tab's own shell is already looking for, and tells you to quit
-normally. You end the session through its UI, cleanly, and the loop starts it
-again in the same slot. The two-minute TTL applies, so it is arm-then-exit
-rather than arm-and-forget; `--cancel` calls it off.
+So `--self` does not try. It spawns a detached process running the ordinary
+`restart <repo>`, and returns. That process is not inside the session, so it
+survives the exit and reports nothing to a console nobody is reading; it uses
+the same tab resolution and the same guards on where its keystrokes land as
+any other named restart. `--after` (5s by default) gives the calling session
+time to finish the turn it is in the middle of before anything types into it.
+
+`DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB`, because Claude Code runs its
+tool calls inside a job object and a plain child is killed when the call ends.
+Verified by spawning one that wrote a file eight seconds after its parent
+exited. Breakaway is refused on some systems; the fallback is a plain detached
+spawn, and if that does not survive either, the marker the delegate writes
+still gets the restart done.
+
+`--arm-only` is the older, quieter shape: write the marker and tell you to quit
+the session yourself. Nothing is spawned, the two-minute TTL applies, and
+`--cancel` calls it off. `--cancel` only clears a waiting marker — a restart
+already dispatched runs outside the session and cannot be recalled from within
+it.
 
 It refuses in the two cases where arming would be a lie: called from an
 ordinary terminal, where there is no session above it to arm, and called from

@@ -506,6 +506,18 @@ def _sweep_stale_markers() -> None:
 
 def cmd_restart_one(args, repos: list[str]) -> int:
     """Restart only the named sessions, in place, without closing their tabs."""
+    after = float(getattr(args, "after", 0) or 0)
+    if after > 0:
+        # Only `--self` sets this, and only for the session that dispatched
+        # this process. It has to finish the turn it is in the middle of before
+        # anything types into it - the tool call that spawned us has to return,
+        # and the reply after it has to land. Typing early is not fatal (the
+        # resend in execute_down covers it) but it is a keystroke aimed at a
+        # session that is still writing.
+        import time
+
+        time.sleep(after)
+
     cwds = [resolve_repo(r, args.repos_root) for r in repos]
     live = discover_mod.live_sessions()
 
@@ -781,6 +793,53 @@ def _targets(plans):
         yield from plan.targets
 
 
+SELF_RESTART_DELAY_SECONDS = 5.0
+
+
+def _dispatch_restart(repo: str, layout: str, after: float) -> int:
+    """Start `restart <repo>` in a process that outlives this session.
+
+    The whole difficulty of restarting yourself is that the command doing it
+    dies with the session it ends. So it does not do it - it hands the job to a
+    process that is not inside the session at all, and that process runs the
+    ordinary named-restart path, the same one used from another tab.
+
+    DETACHED_PROCESS with CREATE_BREAKAWAY_FROM_JOB, because Claude Code runs
+    its tool calls inside a job object: a plain child is killed when the tool
+    call ends, long before it could do anything. Verified by spawning one that
+    wrote a file eight seconds after its parent exited. Breakaway is refused on
+    some systems, so a plain detached spawn is the fallback - it may not
+    survive, and the marker the delegate writes still gets the restart done if
+    it does not.
+
+    Bootstrapped through sys.path rather than the `reloaded` shim: the package
+    is not importable from an arbitrary directory here, and the shim depends on
+    a PATH this process may not share with the one it spawns.
+    """
+    import pathlib
+    import subprocess
+
+    package_dir = str(pathlib.Path(__file__).resolve().parents[1])
+    bootstrap = (
+        f"import sys; sys.path.insert(0, {package_dir!r}); "
+        f"from reloaded.__main__ import main; "
+        f"raise SystemExit(main({['--layout', layout, 'restart', repo, '--after', str(after)]!r}))"
+    )
+
+    DETACHED_PROCESS = 0x00000008
+    CREATE_NEW_PROCESS_GROUP = 0x00000200
+    CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+    base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    argv = [sys.executable, "-c", bootstrap]
+    kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+              stderr=subprocess.DEVNULL, close_fds=True)
+    try:
+        return subprocess.Popen(
+            argv, creationflags=base | CREATE_BREAKAWAY_FROM_JOB, **kw).pid
+    except OSError:
+        return subprocess.Popen(argv, creationflags=base, **kw).pid
+
+
 def cmd_restart_self(args) -> int:
     """Arm a restart for the session this command is running inside.
 
@@ -839,6 +898,14 @@ def cmd_restart_self(args) -> int:
             return 1
         print(f"Disarmed {cwd}." if existed
               else f"Nothing was armed for {cwd}.")
+        # Only the marker is recallable. A restart already handed to a detached
+        # process is running outside this session, does its own arming, and
+        # cannot be called back from in here - saying nothing about that would
+        # let "Disarmed" read as "stopped", which it is not.
+        print("    (This clears a waiting marker only. A restart already "
+              "dispatched by `--self`")
+        print("     runs outside this session and cannot be called off from "
+              "inside it.)")
         return 0
 
     if discover_mod.launcher_kind(pid) == discover_mod.HAND:
@@ -851,6 +918,32 @@ def cmd_restart_self(args) -> int:
               "after that this works.")
         return 1
 
+    ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS
+    repo = os.path.basename(cwd.rstrip("\\/")) or cwd
+    after = float(getattr(args, "after", 0) or 0) or SELF_RESTART_DELAY_SECONDS
+    arm_only = getattr(args, "arm_only", False)
+
+    if not arm_only:
+        if args.dry_run:
+            print(f"Would hand {repo} to a detached `reloaded restart {repo}` "
+                  f"starting in {after:.0f}s.")
+            print("\nDry run — nothing spawned.")
+            return 0
+        try:
+            helper = _dispatch_restart(repo, args.layout, after)
+        except Exception as exc:
+            print(f"[warn] could not start the restart: {exc}")
+            print(f"    Fall back to `reloaded restart --self --arm-only` and "
+                  f"quit with {label}.")
+            return 1
+        print(f"Restarting {cwd} (pid {pid}, {kind}).")
+        print(f"\n    Handed to pid {helper}, which starts in {after:.0f}s — "
+              "it lives outside this session,")
+        print(f"    so it survives the exit. It will steal focus, send "
+              f"{label}, and bring the session")
+        print("    back in this same tab. Nothing further to do.")
+        return 0
+
     if args.dry_run:
         print(f"Would arm {cwd} (pid {pid}, {kind}) by writing {marker}.")
         print("\nDry run — nothing written.")
@@ -862,8 +955,6 @@ def cmd_restart_self(args) -> int:
         print(f"[warn] could not arm {cwd}: {exc}")
         return 1
 
-    ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS
-    repo = os.path.basename(cwd.rstrip("\\/")) or cwd
     print(f"Armed {cwd} (pid {pid}, {kind}).")
     print(f"\n    Quit with {label} in the next {ttl // 60} minutes and its "
           "tab relaunches it in the same slot.")
@@ -1164,12 +1255,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     restart.add_argument(
         "--self", dest="self_", action="store_true",
-        help="arm the session this is run from, then quit it yourself; the tab "
-             "relaunches it in place (call from inside a session)",
+        help="restart the session this is run from, in place; hands the job to "
+             "a detached process that outlives the exit (call from inside a "
+             "session)",
+    )
+    restart.add_argument(
+        "--arm-only", dest="arm_only", action="store_true",
+        help="with --self, only leave the marker — you quit the session "
+             "yourself, nothing is spawned",
     )
     restart.add_argument(
         "--cancel", action="store_true",
-        help="with --self, disarm instead of arming",
+        help="with --self --arm-only, disarm instead of arming",
+    )
+    restart.add_argument(
+        "--after", type=float, default=0.0, metavar="SECONDS",
+        help="wait this long before starting; --self uses it to let the "
+             "calling session finish its turn",
     )
     restart.add_argument(
         "--dry-run", action="store_true", help="print what would be captured/exited/relaunched, do nothing"
