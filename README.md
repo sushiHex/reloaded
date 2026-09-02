@@ -236,6 +236,27 @@ the session by walking the parent process chain rather than by matching the
 current directory — a tool call can run anywhere, and a directory match would
 answer with the wrong session as readily as the right one.
 
+It also refuses a repo name alongside `--self`. `--self` is checked first, so
+naming both would arm the calling session and ignore what was named — and a
+slash command that fails to interpolate its arguments hands over the literal
+`$ARGUMENTS`, which would have been read as a repo.
+
+As a Claude Code slash command, `~/.claude/commands/relaunch.md`:
+
+```markdown
+---
+allowed-tools: Bash(reloaded restart --self:*)
+description: "Arm this session to relaunch in its own tab; then /exit."
+---
+!`reloaded restart --self $ARGUMENTS`
+```
+
+The `!` runs at load time, so `/relaunch` arms on the keystroke rather than
+waiting for a tool call. **Do not name it `/restart`** — that is a built-in
+alias for `/update` ("Switch to the latest version"), shipped disabled in
+2.1.x. A user command with that name works today only because the built-in's
+`isEnabled` returns false, and an update can flip it.
+
 ### Known limits of the named restart
 
 *Placement on the fallback path is best-effort.* `wt -w 0` means Windows
