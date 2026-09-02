@@ -65,6 +65,21 @@ def test_it_says_how_to_finish_the_job(session, capsys):
     assert "2 minutes" in out, "it never says the marker expires"
 
 
+def test_it_says_what_missing_the_window_costs(session, capsys):
+    """It used to say the stale marker was "ignored", which reads as "nothing
+    happens". Something happens: the loop breaks and the tab closes, exactly
+    like an ordinary quit. The slot is gone and the session comes back at the
+    end of the strip.
+
+    A deadline is only a deadline if the reader knows the penalty.
+    """
+    main_mod.cmd_restart(_args())
+
+    out = capsys.readouterr().out
+    assert "closes the tab" in out, "it never says the tab closes"
+    assert "reloaded open app" in out, "it never says how to get it back"
+
+
 def test_a_codex_session_is_told_to_use_its_own_quit_keys(session, capsys):
     """`/exit` does nothing in Codex. Printing it would send the user off to
     type something that cannot work."""

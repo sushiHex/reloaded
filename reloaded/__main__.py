@@ -863,12 +863,19 @@ def cmd_restart_self(args) -> int:
         return 1
 
     ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS
+    repo = os.path.basename(cwd.rstrip("\\/")) or cwd
     print(f"Armed {cwd} (pid {pid}, {kind}).")
-    print(f"\n    Now quit this session with {label} — its tab will relaunch "
-          "it in the same slot.")
-    print(f"    The marker goes stale after {ttl // 60} minutes and is "
-          "ignored, so do it now or run")
-    print("    `reloaded restart --self --cancel` to call it off.")
+    print(f"\n    Quit with {label} in the next {ttl // 60} minutes and its "
+          "tab relaunches it in the same slot.")
+    # Naming the consequence rather than saying the marker is "ignored". It is
+    # ignored, and the tab still closes - the loop breaks and the shell exits
+    # like any ordinary quit. A user who read "ignored" as "nothing happens"
+    # would be surprised by an empty slot.
+    print(f"    Later than that the marker is stale, and quitting just closes "
+          "the tab as usual —")
+    print(f"    you would reopen it with `reloaded open {repo}`, at the end "
+          "of the strip.")
+    print("\n    `reloaded restart --self --cancel` calls it off.")
     return 0
 
 
