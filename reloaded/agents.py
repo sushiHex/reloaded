@@ -40,8 +40,29 @@ class Agent:
     # worse than a quiet one - the user reads it to decide whether to go
     # looking.
     quit_label: str
+    # Substrings that mean an invocation picks its conversation back up rather
+    # than starting a fresh one. See `resumes`.
+    resume_tokens: tuple
     # Where this kind keeps its session records.
+    #
+    # Nothing reads this yet, and it is not the interface that should. A Codex
+    # rollout's first line records how a thread was CREATED, not what hosts it
+    # now - a terminal can resume a thread `codex exec` or the desktop app
+    # started, and that line is never rewritten - so no field in this directory
+    # answers "is this a tab?". Codex's own answer is the app-server
+    # `thread/list` API. Kept because it is true, and marked because a plausible
+    # index built on it would be confidently wrong.
     sessions_dir: str
+
+
+def _codex_home() -> str:
+    """Codex's state directory, which is not always ~/.codex.
+
+    CODEX_HOME moves it, and a session started under one has a different
+    thread store and a different name index entirely.
+    """
+    return os.environ.get("CODEX_HOME") or os.path.join(
+        os.path.expanduser("~"), ".codex")
 
 
 DEFAULT_KIND = "claude"
@@ -53,6 +74,7 @@ CLAUDE = Agent(
     launch="claude --dangerously-skip-permissions --continue",
     quit_keys=("/exit", "{Enter}"),
     quit_label="/exit",
+    resume_tokens=("--continue", "-c", "--resume"),
     sessions_dir=os.path.join(os.path.expanduser("~"), ".claude", "projects"),
 )
 
@@ -75,10 +97,34 @@ CODEX = Agent(
     # If that is also eaten, it times out and says so. Nothing is forced.
     quit_keys=("{Ctrl}c", "{Ctrl}c"),
     quit_label="Ctrl+C",
-    sessions_dir=os.path.join(os.path.expanduser("~"), ".codex", "sessions"),
+    resume_tokens=("resume",),
+    sessions_dir=os.path.join(_codex_home(), "sessions"),
 )
 
 AGENTS = {a.kind: a for a in (CLAUDE, CODEX)}
+
+
+def resumes(kind, command: str) -> bool:
+    """Whether `command` brings a conversation back, or starts an empty one.
+
+    An empty command means the kind's own default, and both defaults resume.
+
+    This matters because capture records what a session was actually running
+    and the relaunch replays it verbatim. Someone who started a tab by typing
+    plain `codex` gets plain `codex` back - a new thread, at the same
+    directory, with none of the conversation in it. `restart` then reports
+    success, having thrown the thing away that it exists to preserve.
+
+    Deliberately not fixed by rewriting the command. The flags are the user's,
+    and a launcher that quietly appends `resume` to what someone typed is
+    guessing at intent. Saying so before anything is exited is the honest
+    version, and leaves the choice where it belongs.
+    """
+    if not command:
+        return True
+    lowered = f" {command.lower()} "
+    return any(f" {t} " in lowered or lowered.rstrip().endswith(f" {t}")
+               for t in for_kind(kind).resume_tokens)
 
 
 def for_kind(kind) -> Agent:

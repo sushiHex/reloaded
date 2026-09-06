@@ -550,6 +550,8 @@ def cmd_restart_one(args, repos: list[str]) -> int:
         if s is not None and s.launcher == discover_mod.RELOADED:
             restart_marker(cwd).write_text("restart", encoding="utf-8")
 
+    _warn_about_empty_relaunches(sessions)
+
     print("Exiting the named sessions — this will steal keyboard focus...")
     # Armed per tab, as its turn comes, rather than all up front: targets are
     # exited serially with a wait each, so a marker written now for the last
@@ -656,6 +658,36 @@ def _snapshot_restarts(plans, args) -> list[_Restarting]:
                 size_bytes=sizes.get(key, 0),
             ))
     return sessions
+
+
+def _warn_about_empty_relaunches(sessions) -> None:
+    """Say, before anything is exited, which sessions will come back empty.
+
+    `restart` replays the command a session was actually running. Someone who
+    started a tab by typing plain `codex`, or plain `claude` with no
+    `--continue`, gets that back: a new conversation at the same directory,
+    with none of the old one in it. Nothing errors, and the run reports success
+    for having discarded exactly what it exists to preserve.
+
+    A warning rather than a rewrite. The flags are the user's, and appending
+    `resume` to something they typed is a guess about intent. This is the last
+    moment the choice is still theirs, so it belongs here rather than in the
+    summary afterwards.
+    """
+    empty = [s for s in sessions
+             if not agents_mod.resumes(s.agent, s.command)]
+    if not empty:
+        return
+    print(f"[warn] {len(empty)} session(s) will come back EMPTY — the command "
+          "they are running does not resume:")
+    for s in empty:
+        print(f"    - {s.cwd}")
+        print(f"        running: {s.command}")
+    print("    Restarting these starts a fresh conversation at the same "
+          "directory. Ctrl+C now if")
+    print("    that is not what you want; relaunch them by hand with the "
+          "resume flag and they will")
+    print("    be captured with it from then on.\n")
 
 
 def _report_never_exited(s: _Restarting) -> bool:
