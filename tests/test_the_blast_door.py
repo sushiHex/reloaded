@@ -87,6 +87,44 @@ def test_a_test_that_needs_one_can_still_have_it(monkeypatch):
     assert posted == [12345]
 
 
+def test_launching_a_terminal_is_refused():
+    """This one got out. A test whose wait loop fell through to the reopen
+    fallback called Popen on `wt` for real, once per suite run, and opened
+    terminal tabs on the user's desktop trying to start a session in a
+    fixture's imaginary directory. The user noticed before the suite did."""
+    import subprocess
+
+    with pytest.raises(AssertionError, match="opens a window"):
+        subprocess.Popen(["wt", "-w", "0", "new-tab"])
+
+
+def test_launching_an_agent_is_refused():
+    import subprocess
+
+    with pytest.raises(AssertionError, match="starts an agent"):
+        subprocess.Popen([r"C:\Users\k\bin\claude.exe", "--continue"])
+
+
+def test_a_full_path_to_a_terminal_is_still_caught():
+    """Blocked on the basename, so an absolute path does not slip past."""
+    import subprocess
+
+    with pytest.raises(AssertionError):
+        subprocess.Popen([r"C:\Program Files\WindowsApps\wt.exe", "-w", "0"])
+
+
+def test_powershell_is_still_allowed():
+    """The suite deliberately runs real PowerShell to exercise the launcher
+    loop and the relaunch script. Blocking spawning outright would cost more
+    than it saves; what nothing may do is open a window or start an agent."""
+    import subprocess
+
+    proc = subprocess.Popen(
+        ["cmd.exe", "/c", "exit 0"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    assert proc.wait(timeout=30) == 0
+
+
 def test_reading_a_window_is_not_blocked():
     """Only the four calls that change something are refused. A guard that
     also blocked reads would put ceremony on tests that were never dangerous,

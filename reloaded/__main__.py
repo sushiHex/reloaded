@@ -292,7 +292,7 @@ def _deploy_layout(lo, args) -> int:
     launched = sum(len(e.tabs) for e in plan)
     say(f"Launched {launched} session(s) in {len(plan)} window(s).", blank=True)
 
-    silent = _never_started(lo, discover_mod.live_sessions())
+    silent = _never_started(plan, discover_mod.live_sessions())
     if silent:
         say(f"[reloaded] {len(silent)} tab(s) opened but no session started:",
             blank=True)
@@ -305,8 +305,8 @@ def _deploy_layout(lo, args) -> int:
     return 1 if failures else 0
 
 
-def _never_started(lo, live) -> list[str]:
-    """Tabs the deploy launched that have no live session behind them.
+def _never_started(plan, live) -> list[str]:
+    """Tabs THIS deploy opened that have no live session behind them.
 
     Usually Codex asking whether to trust a directory it has not seen: the tab
     opens, the prompt waits, and no session ever appears. Reported rather than
@@ -315,8 +315,14 @@ def _never_started(lo, live) -> list[str]:
 
     Not Codex-specific. A session that failed to start for any reason is worth
     naming, because the tab looks perfectly healthy either way.
+
+    Scoped to the plan, not to the whole layout. Taking the layout meant a repo
+    whose directory is missing - which plan_deploy had already skipped and
+    reported as missing, correctly - came back here as "opened but no session
+    started", under an explanation about a trust prompt that had nothing to do
+    with it. A tab that was never opened cannot have failed to start.
     """
-    return [t.cwd for w in lo.windows for t in w.tabs if norm(t.cwd) not in live]
+    return [t.cwd for entry in plan for t in entry.tabs if norm(t.cwd) not in live]
 
 
 def cmd_up(args) -> int:
@@ -1319,6 +1325,41 @@ def main(argv: list[str] | None = None) -> int:
     _configure_stdout()
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:
+        return _dispatch(args, parser)
+    except SystemExit:
+        raise
+    except BaseException:
+        return _report_crash(args)
+
+
+def _report_crash(args) -> int:
+    """Put a traceback somewhere it can be found.
+
+    An unattended run is started by Task Scheduler through pythonw, where
+    stdout and stderr have no destination at all. An uncaught exception there
+    printed a traceback into nothing: the logon deploy restored no sessions,
+    every morning, with no record anywhere of why. The one run nobody watches
+    is the one that most needs a durable report.
+
+    Logged either way, because a traceback in the log costs nothing and is
+    worth having. Re-raised only when someone is watching, so an interactive
+    user still gets the console traceback they expect - swallowing it there
+    would trade one silence for another.
+    """
+    import traceback
+
+    detail = traceback.format_exc().rstrip()
+    try:
+        _log(f"[reloaded] {args.command or 'edit'} failed:\n{detail}")
+    except Exception:
+        pass
+    if not getattr(args, "unattended", False):
+        raise
+    return 1
+
+
+def _dispatch(args, parser) -> int:
     if args.command == "capture":
         return cmd_capture(args)
     if args.command == "up":

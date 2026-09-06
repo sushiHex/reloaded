@@ -17,7 +17,9 @@ Every entry point that touches the desktop is therefore blocked at the module
 boundary for the whole suite. A test that needs one must stub it deliberately,
 and a test that forgets gets a loud error instead of a wrecked desktop.
 """
+import os
 import pathlib
+import subprocess
 import sys
 
 import pytest
@@ -96,6 +98,33 @@ def _no_real_desktop_effects(monkeypatch):
     # one way here and another in CI. Tests get a desktop where the window
     # they asked for has focus; a test about LOSING focus says so itself.
     monkeypatch.setattr(win32_mod, "is_foreground", lambda hwnd: True)
+
+    # Spawning is a desktop effect too, and this one got out. A test whose
+    # wait loop fell through to the reopen fallback called Popen on `wt` for
+    # real, once per suite run, and opened terminal tabs on the user's desktop
+    # trying to start a session in a fixture's imaginary directory.
+    #
+    # Blocked by what is being launched rather than by Popen itself: the suite
+    # deliberately runs real PowerShell to exercise the launcher loop and the
+    # relaunch script, and blocking that would cost more than it saves. What
+    # nothing may do is open a terminal window or start an agent.
+    _real_popen = subprocess.Popen
+    _forbidden = ("wt.exe", "wt", "claude.exe", "claude",
+                  "codex.exe", "codex", "wscript.exe", "pyw.exe")
+
+    def _guarded_popen(argv, *a, **kw):
+        head = argv[0] if isinstance(argv, (list, tuple)) and argv else argv
+        name = os.path.basename(str(head)).lower()
+        if name in _forbidden or os.path.splitext(name)[0] in _forbidden:
+            raise AssertionError(
+                f"a test tried to launch {name!r} for real. That opens a "
+                "window on the user's desktop, or starts an agent. Stub the "
+                "function that spawns it - _launch_single_tab, deploy.execute, "
+                "or whatever called Popen."
+            )
+        return _real_popen(argv, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", _guarded_popen)
 
     for name, effect in (
         ("PostMessageW", "posts WM_CLOSE - it closes a real window and every session in it"),

@@ -125,6 +125,13 @@ def test_the_warning_comes_before_anything_is_exited(monkeypatch, capsys):
     monkeypatch.setattr(main_mod, "_snapshot_restarts", lambda p, a: [_session()])
     monkeypatch.setattr(main_mod, "_sweep_stale_markers", lambda: None)
     monkeypatch.setattr(main_mod, "resolve_repo", lambda r, root: r"C:\repos\app")
+    # Without this the wait loop falls through to the reopen fallback, which
+    # calls subprocess.Popen on `wt` for real. That opened actual terminal
+    # tabs on the user's desktop, once per suite run, trying to start a
+    # session in the fixture's imaginary C:\repos\app. Stubbed at the outcome
+    # rather than deeper: this test is about the ORDER of two prints, and it
+    # has no business reaching the relaunch machinery at all.
+    monkeypatch.setattr(main_mod, "_await_relaunch", lambda s, tabs_before: True)
 
     main_mod.cmd_restart(types.SimpleNamespace(
         layout="default", repos_root=r"C:\repos", unattended=False,
