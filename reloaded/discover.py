@@ -191,6 +191,51 @@ def launcher_kind(pid: int) -> str:
 # them.
 DESKTOP_HOSTS = ("chatgpt.exe",)
 
+# How far up to look for a host. The observed nesting is three hops
+# (codex.exe <- python.exe <- hardline-mcp.exe <- claude.exe); a tab's agent
+# has its shell as the immediate parent. Bounded because a pid loop is cheaper
+# to survive than to diagnose.
+_HOST_SEARCH_DEPTH = 8
+
+
+def _hosted_elsewhere(proc, agent_images: set) -> bool:
+    """Whether this agent process is running inside something that is not a tab.
+
+    Two shapes, one rule: an agent nested inside another program is that
+    program's, not a tab of its own.
+
+    The desktop app hosts its own codex.exe. And an agent running a tool call
+    spawns another agent - `ask_codex` from a Claude Code session is a
+    `codex exec` whose ancestors include claude.exe. Neither has a tab, and
+    counting either as a managed session is a claim about the desktop that is
+    simply false.
+
+    Measured here rather than reasoned about: of five live codex.exe processes
+    on this machine, three were ephemeral `codex exec` runs nested under Claude
+    Code sessions, and discovery reported all three as Codex sessions in repos
+    with no Codex tab. One shared a directory with a real Claude session, where
+    keying by cwd let last-writer-wins decide what kind that directory was -
+    and a Codex verdict there sends Ctrl+C to a Claude session.
+
+    An unreadable ancestor ends the walk and the process is kept. The common
+    cause is a permissions error, and dropping a real session over one is the
+    worse failure - the same trade the desktop-host check has always made.
+    """
+    for _hop in range(_HOST_SEARCH_DEPTH):
+        try:
+            proc = proc.parent()
+        except Exception:
+            return False
+        if proc is None:
+            return False
+        try:
+            name = (proc.name() or "").lower()
+        except Exception:
+            return False
+        if name in DESKTOP_HOSTS or name in agent_images:
+            return True
+    return False
+
 
 def _sessions() -> dict[str, tuple]:
     """Normalized cwd -> (pid, kind) for every live agent session.
@@ -218,15 +263,8 @@ def _sessions() -> dict[str, tuple]:
         kind = by_process.get((proc.info.get("name") or "").lower())
         if kind is None:
             continue
-        try:
-            parent = psutil.Process(proc.info.get("ppid"))
-            if (parent.name() or "").lower() in DESKTOP_HOSTS:
-                continue
-        except Exception:
-            # An unreadable parent is not grounds to drop a session that is
-            # otherwise a normal match - the common case for that is a
-            # permissions error, not a desktop-hosted process.
-            pass
+        if _hosted_elsewhere(proc, set(by_process)):
+            continue
         try:
             cwd = proc.cwd()
         except Exception:
