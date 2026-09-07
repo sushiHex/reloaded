@@ -123,8 +123,11 @@ def test_wt_argv_places_the_window_and_orders_tabs():
     assert argv[:4] == ["wt", "-w", "-1", "--pos=221,228"]
     assert argv.count("new-tab") == 2
     assert argv.count(";") == 1
-    assert argv[argv.index("new-tab") + 1] == "-d"
-    assert argv[argv.index("new-tab") + 2] == r"C:\repos\demo-app"
+    first = argv.index("new-tab")
+    assert argv[first + 1:first + 4] == [
+        "--title", "demo-app", "--suppressApplicationTitle"]
+    assert argv[first + 4] == "-d"
+    assert argv[first + 5] == r"C:\repos\demo-app"
     # Second tab's directory comes after the separator, preserving order.
     sep = argv.index(";")
     assert r"C:\repos\lb" in argv[sep:]
@@ -133,12 +136,17 @@ def test_wt_argv_places_the_window_and_orders_tabs():
 def test_wt_argv_golden_string_for_a_single_tab():
     tabs = [Tab(cwd=r"C:\repos\demo-app", title="demo-app")]
     argv = wt_argv([10, 20, 800, 600], tabs, [0], [1024])
-    assert argv[:8] == [
+    assert argv[:11] == [
         "wt", "-w", "-1", "--pos=10,20",
-        "new-tab", "-d", r"C:\repos\demo-app", "pwsh",
+        "new-tab",
+        # Named at launch. A tab reloaded did not name shows the running
+        # program - `claude` - which matches no repo and no recorded title, so
+        # the tab it just opened is one it cannot find again.
+        "--title", "demo-app", "--suppressApplicationTitle",
+        "-d", r"C:\repos\demo-app", "pwsh",
     ]
-    assert argv[8:10] == ["-NoExit", "-Command"]
-    assert len(argv) == 11
+    assert argv[11:13] == ["-NoExit", "-Command"]
+    assert len(argv) == 14
 
 
 def test_wt_argv_uses_the_equals_form_for_pos_so_a_negative_x_is_not_misparsed():

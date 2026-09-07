@@ -167,7 +167,7 @@ def launcher_command(cwd: str, delay: int, size_bytes: int,
     from . import agents as agents_mod
 
     invocation = command or agents_mod.for_kind(agent).launch
-    name = os.path.basename(cwd.rstrip("\\/")) or cwd
+    name = tab_title(cwd)
     parts = [CHILD_SESSION_CLEAR, RESUME_SUPPRESSOR]
 
     if size_bytes >= SIZE_WARN_BYTES:
@@ -211,15 +211,49 @@ def relaunch_script(cwd: str, size_bytes: int,
     ) + "\n"
 
 
+def tab_title(cwd: str) -> str:
+    """What reloaded calls a tab it launched.
+
+    The repo's own directory name - which is also what resolve_tab's
+    repos-root guess looks for, and what every recorded title on a real
+    machine turned out to be. One definition, used for the tab itself, for the
+    banner the shell prints, and, through the guess, for finding the tab again
+    afterwards.
+    """
+    return os.path.basename(cwd.rstrip("\\/")) or cwd
+
+
 def new_tab_args(cwd: str, command: str) -> list[str]:
     """The `new-tab` fragment of a wt command line, with escaping applied.
 
     Every wt argv in the package is assembled from this, so escaping is a
     property of the boundary rather than something each call site has to
     remember. Callers never need `_wt_escape` themselves.
+
+    The tab is NAMED here, and that is what makes it findable. Reloaded
+    resolves a tab by its title, and a tab it had not named showed the running
+    program instead - `claude` - which matches no repo and no recorded title.
+    Measured: a freshly opened session stayed unresolvable for the full two
+    minutes it was watched, so `open` handed back a tab that `down` and
+    `restart` could not touch until the user had talked to it and Claude Code
+    had written a transcript to take a title from.
+
+    `--suppressApplicationTitle` is required, not belt-and-braces. With
+    `--title` alone the running program overwrote it inside five seconds and it
+    never came back - watched at 5, 15, 30, 60 and 90 seconds, `claude` every
+    time.
+
+    The cost is real and worth naming: a session the user renames will not show
+    that name in the tab strip, because reloaded is holding the title. On the
+    machine this was measured on, every recorded title was already its repo's
+    directory name, so nothing changed visually - but a person who renames
+    sessions loses that, and the fix is to drop this one flag.
     """
     return [
-        "new-tab", "-d", _wt_escape(cwd),
+        "new-tab",
+        "--title", _wt_escape(tab_title(cwd)),
+        "--suppressApplicationTitle",
+        "-d", _wt_escape(cwd),
         shell_executable(), "-NoExit", "-Command", _wt_escape(command),
     ]
 

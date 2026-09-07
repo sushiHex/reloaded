@@ -77,6 +77,11 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod.teardown_mod, "plan_down", plan_down)
 
     def execute_down(plans, log=print, **kw):
+        # Record the kind map rather than ignoring it. This fake stood in for
+        # the one argument that decides which keystrokes a tab receives, so a
+        # Codex tab being handed Claude's `/exit` would have passed every test
+        # in this file.
+        w["kinds"] = dict(kw.get("kinds") or {})
         for plan in plans:
             for _title, cwd, _pid, _i in plan.targets:
                 if kw.get("before_exit"):
@@ -101,6 +106,15 @@ def test_the_relaunch_uses_the_command_the_session_was_running(world):
     main_mod.cmd_restart(_args(repos=["safe-codex"]))
 
     assert [s.command for s in world["typed"]] == [SAFE]
+
+
+def test_teardown_is_told_this_is_a_codex_tab(world):
+    """The map that picks the quit keystrokes. Without asserting it, a Codex
+    tab handed Claude's `/exit` passes every other test in this file - the
+    fake swallowed the argument and nothing downstream noticed."""
+    main_mod.cmd_restart(_args(repos=["safe-codex"]))
+
+    assert world["kinds"] == {norm(CWD): "codex"}
 
 
 def test_no_command_line_is_read_off_a_dead_pid(world):

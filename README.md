@@ -216,6 +216,26 @@ one thing — the launcher's closing `exit` runs in script scope, where it need
 not reach the host shell — so the script stops the shell by pid instead, which
 works from any scope and was verified against a real shell.
 
+**Reloaded names the tabs it launches.** `new-tab --title <repo>
+--suppressApplicationTitle`, so a tab it opened is one it can find again.
+
+Without it, a tab shows whatever the running program calls itself — `claude` —
+which matches no repo and no recorded title. Measured: a freshly opened session
+stayed unresolvable for the full two minutes it was watched, because reloaded
+resolves a tab by its title and Claude Code only writes one into its transcript
+once the session has been used. So `open` handed back a tab that `down` and
+`restart` could not touch until you had talked to it.
+
+`--suppressApplicationTitle` is required rather than cautious: with `--title`
+alone the program overwrote it inside five seconds and it never came back —
+watched at 5, 15, 30, 60 and 90 seconds, `claude` every time.
+
+The cost, stated plainly: a session you rename will not show that name in the
+tab strip, because reloaded is holding the title. Every recorded title on the
+machine this was measured on was already its repo's directory name, so nothing
+changed visually there — but if you do rename sessions and want that in the
+strip, drop the one flag in `deploy.new_tab_args`.
+
 **`restart --self` hands the job outside.** A session cannot drive its own
 restart the way `restart <repo>` drives someone else's. That path selects the
 tab, types the quit keys, and waits for the session to come back — and pointed

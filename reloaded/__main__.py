@@ -262,10 +262,13 @@ def _deploy_layout(lo, args) -> int:
         for tab in entry.missing:
             say(f"      --   {tab.title}  [warn] directory not found: {tab.cwd}")
         if args.dry_run:
-            print("    argv: " + " ".join(repr(a) for a in entry.argv))
+            say("    argv: " + " ".join(repr(a) for a in entry.argv))
 
     if args.dry_run:
-        print("\nDry run — nothing launched.")
+        # `--dry-run` and `--unattended` are independent flags, so they can be
+        # combined - and then the preview, which is the entire output of that
+        # run, went to a console that does not exist.
+        say("Dry run — nothing launched.", blank=True)
         return 0
 
     # Repair before launching; reporting lives here, where the rest of the
@@ -326,12 +329,24 @@ def _never_started(plan, live) -> list[str]:
 
 
 def cmd_up(args) -> int:
+    say = _reporter(args)
     path = layout_path(args.layout)
     if not path.exists():
-        print(f"No layout at {path}. Run `reloaded capture` first.")
+        # Through the reporter, not print. This is the first thing a logon
+        # deploy can fail on and the least visible: under pythonw there is no
+        # console, so the whole run said nothing at all about why it restored
+        # nothing.
+        say(f"No layout at {path}. Run `reloaded capture` first.")
         return 1
 
-    lo = layout_mod.load(path)
+    try:
+        lo = layout_mod.load(path)
+    except Exception as exc:
+        # A layout torn by a crash, or half-written by a concurrent save. The
+        # traceback would reach the top-level handler, but naming the file is
+        # what makes it actionable.
+        say(f"[reloaded] could not read the layout at {path}: {exc}")
+        return 1
 
     if args.unattended:
         ready, reason = readiness_mod.wait_for_ready(lo)

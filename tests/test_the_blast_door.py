@@ -82,6 +82,10 @@ def test_a_test_that_needs_one_can_still_have_it(monkeypatch):
                         lambda hwnd: win32_mod.WT_CLASS)
     monkeypatch.setattr(win32_mod._u32, "PostMessageW",
                         lambda hwnd, msg, w, l: posted.append(int(hwnd.value)) or True)
+    # close_window now confirms the window actually went, so the fake has to
+    # model a window that goes. Reporting success on a queued message is what
+    # it used to do, and what it printed about windows still on screen.
+    monkeypatch.setattr(win32_mod, "is_wt_window", lambda hwnd: not posted)
 
     assert win32_mod.close_window(12345) is True
     assert posted == [12345]
