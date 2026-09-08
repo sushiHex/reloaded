@@ -20,12 +20,24 @@ import pytest
 import reloaded.win32 as win32_mod
 
 
-def test_even_importing_uiautomation_is_refused():
-    """Stricter than intended and better for it. `import uiautomation` reads
-    __spec__ off the poisoned module, so production code that reaches for it
-    fails at the import line rather than at the keystroke."""
-    with pytest.raises(AssertionError, match="types into"):
-        import uiautomation  # noqa: F401
+def test_nothing_usable_comes_out_of_the_poisoned_module():
+    """The guarantee, stated so it holds on every Python this package supports.
+
+    An earlier version asserted that `import uiautomation` itself raises. It
+    does on 3.14, where the import machinery probes `__spec__` on a non-module
+    entry in sys.modules. It does not on 3.12 - which CI runs, and which caught
+    it. That was an assertion about CPython's internals wearing the costume of
+    a safety guarantee.
+
+    Either behaviour is safe, and neither is the point. The point is that
+    production reaching for this module gets nothing it can type with, whether
+    the refusal arrives at the import or at the first attribute.
+    """
+    poison = sys.modules["uiautomation"]
+
+    for attribute in ("SendKeys", "GetRootControl", "ControlFromHandle"):
+        with pytest.raises(AssertionError, match="types into"):
+            getattr(poison, attribute)
 
 
 def test_any_uiautomation_attribute_is_refused():
