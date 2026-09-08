@@ -1,6 +1,7 @@
 """Path normalization and state-directory resolution."""
 from __future__ import annotations
 
+import hashlib
 import os
 import pathlib
 
@@ -37,3 +38,36 @@ def layout_path(name: str = "default") -> pathlib.Path:
 
 def log_path() -> pathlib.Path:
     return state_dir() / "reloaded.log"
+
+
+def restart_marker_dir() -> pathlib.Path:
+    """Where restart markers live. Swept by directory, so it has a name of its
+    own rather than being reached through some arbitrary marker's parent."""
+    d = state_dir() / "restart"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def relaunch_script_path(cwd: str) -> pathlib.Path:
+    """Where the launcher is written for typing into a hand-launched tab.
+
+    Named by the same digest as the marker, so the filename holds no character
+    SendKeys would read as syntax - the whole point of using a file is that the
+    line typed into the shell is short and literal.
+    """
+    d = state_dir() / "relaunch"
+    d.mkdir(parents=True, exist_ok=True)
+    digest = hashlib.sha256(norm(cwd).encode("utf-8")).hexdigest()[:16]
+    return d / f"{digest}.ps1"
+
+
+def restart_marker(cwd: str) -> pathlib.Path:
+    """The file `restart` drops to tell one tab's own shell to relaunch.
+
+    Keyed by the hash of `norm(cwd)` rather than the path itself: a cwd is not
+    a legal filename, and the two spellings that have to agree on this file —
+    the user's argument and the path baked into the running tab's command —
+    only match after normalization.
+    """
+    digest = hashlib.sha256(norm(cwd).encode("utf-8")).hexdigest()[:16]
+    return restart_marker_dir() / f"{digest}.marker"

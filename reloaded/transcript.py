@@ -13,6 +13,20 @@ _SCAN_BYTES = 1024 * 1024  # enough to contain any single record
 TORN_BACKUP_MAX_AGE_DAYS = 30
 
 
+# Which agent kinds have a verified torn-tail guard. Claude Code's transcript
+# format and its failure mode are known here. Codex keeps its own rollout
+# files, and nothing in this module has been checked against them - repair
+# ends in a truncation, so running it on an unverified format is a guess with
+# a destructive edit on the end.
+_GUARDED_KINDS = {"claude"}
+
+
+def guards_for(kind) -> bool:
+    """Whether `kind` has a torn-transcript guard. Absent reads as Claude,
+    matching the layout's own back-compat rule."""
+    return str(kind or "claude").strip().lower() in _GUARDED_KINDS
+
+
 def human_size(n: int) -> str:
     mb = n / (1024 * 1024)
     if mb >= 1024:

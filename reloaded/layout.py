@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 from dataclasses import asdict, dataclass, field
 from typing import Any
+
+from .agents import DEFAULT_KIND
 
 LAYOUT_VERSION = 1
 
@@ -26,6 +29,23 @@ class Tab:
     # reconcile rebuilds the layout from live reality, so without this flag an
     # edit like "also launch `sample-repo` next time" would be erased within minutes.
     pinned: bool = False
+    # Which agent CLI ran here. Absent from every layout written before a
+    # second kind existed, so it defaults rather than being required - that is
+    # what makes this a schema addition with no migration.
+    agent: str = DEFAULT_KIND
+    # The command this session was actually launched with, read off the live
+    # process at capture time. Empty means "use the kind's default". Captured
+    # rather than assumed because the flags are the user's choice, and this
+    # package's whole premise is putting things back as they were.
+    command: str = ""
+
+    def __post_init__(self):
+        # A key present but null in the JSON defeats the dataclass default and
+        # would put None where every consumer expects a string.
+        if not self.agent:
+            self.agent = DEFAULT_KIND
+        if not self.command:
+            self.command = ""
 
 
 @dataclass
@@ -91,6 +111,11 @@ class Layout:
                             title=t.get("title", ""),
                             low_confidence=bool(t.get("low_confidence", False)),
                             pinned=bool(t.get("pinned", False)),
+                            # Both absent from any layout written before a
+                            # second agent kind existed; Tab.__post_init__
+                            # turns an absent-or-null value into the default.
+                            agent=t.get("agent", DEFAULT_KIND),
+                            command=t.get("command", ""),
                         )
                         for t in w.get("tabs", [])
                     ],
@@ -111,12 +136,20 @@ def window_id(index: int) -> str:
 
 
 def tab_flags(t: Tab) -> str:
-    """Bracketed suffix describing a tab's flags, or "" when it has none."""
+    """Bracketed suffix describing a tab's flags, or "" when it has none.
+
+    The agent kind shows only when it is not the default. A Codex tab and a
+    Claude Code tab are otherwise indistinguishable everywhere a layout is
+    displayed - `status`, the editor, the dry runs - which is a poor property
+    for the one field that decides how a tab is launched and how it is quit.
+    """
     flags = [
         label
         for present, label in ((t.low_confidence, "basename guess"), (t.pinned, "pinned"))
         if present
     ]
+    if t.agent and t.agent != DEFAULT_KIND:
+        flags.insert(0, t.agent)
     return f"  [{', '.join(flags)}]" if flags else ""
 
 
@@ -127,12 +160,35 @@ def window_header(w: Window) -> str:
 
 
 def save(lo: Layout, path) -> None:
-    """Write atomically — a torn layout file would break unattended deploy."""
+    """Write atomically — a torn layout file would break unattended deploy.
+
+    The temp file is per-process. Every writer used to share one
+    `default.json.tmp`, and there are several: the reconcile task saves every
+    five minutes, forever, while `capture`, `restart` and the interactive
+    editor all save on demand. Two of them overlapping wrote into the same
+    handle, or one replaced the file the other was about to move, and the
+    "atomic" rename then made a half-written layout the real one. A pid in the
+    name costs nothing and makes the two writes independent.
+
+    It does not make them ordered. Two writers still race to be last, and the
+    loser's changes are gone - an editor session open for ten minutes saves an
+    in-memory layout that the reconcile has rewritten twice underneath it. This
+    stops corruption, not lost updates. Fixing that needs a lock, and a lock
+    needs a stale-lock story on a machine that crashes; not attempted here.
+    """
     p = pathlib.Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(p.suffix + ".tmp")
-    tmp.write_text(json.dumps(lo.to_dict(), indent=2) + "\n", encoding="utf-8")
-    tmp.replace(p)
+    tmp = p.with_suffix(f"{p.suffix}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps(lo.to_dict(), indent=2) + "\n", encoding="utf-8")
+        tmp.replace(p)
+    finally:
+        # A crash between write and replace would otherwise leave one temp file
+        # per run, forever, in a directory nobody looks at.
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def load(path) -> Layout:

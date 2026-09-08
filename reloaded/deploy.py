@@ -12,7 +12,7 @@ from . import tabs as tabs_mod
 from . import win32
 from .discover import TranscriptInfo
 from .layout import Layout, Monitor, Tab, clamp_rect, window_id
-from .paths import norm
+from .paths import norm, restart_marker
 from .transcript import SIZE_WARN_BYTES, human_size
 
 STAGGER_SECONDS = 4
@@ -71,6 +71,55 @@ CLOSE_TAB_IF_STARTED = (
     f"if (((Get-Date)-$rlStart).TotalSeconds -gt {STARTUP_GRACE_SECONDS}) {{ exit }}"
 )
 
+# How long a restart marker stays good for. `restart` writes one, then has at
+# most teardown.EXIT_TIMEOUT_SECONDS to get the session to end, so anything
+# beyond a couple of minutes means the restart never reached its tab - the
+# window would not come to the foreground, or reloaded itself died. The marker
+# outlives the attempt either way, and obeying it later would relaunch a
+# session the user had just deliberately exited by hand.
+RESTART_MARKER_TTL_SECONDS = 120
+
+
+def restart_loop(cwd: str, invocation: str = CLAUDE_COMMAND) -> str:
+    """Wrap `invocation` so `restart <repo>` can relaunch a session without the
+    tab ever closing.
+
+    `invocation` is whatever this tab runs - the agent kind's default, or the
+    command capture read off the live process. Everything around it is a
+    property of the shell rather than of the agent, so it is identical for
+    every kind.
+
+    A tab's slot in the window is lost the moment it closes, and Windows
+    Terminal ships no keybinding for moving a tab to an index - so the only way
+    to keep a restarted session where it was is to not let the tab go. The
+    shell that already owns the tab runs claude again instead.
+
+    `$rlStart` is reset per iteration so CLOSE_TAB_IF_STARTED still measures
+    the *relaunched* session's lifetime. Measured from the original launch it
+    would always look successful, and a relaunch that died on startup would
+    close its tab and take the error with it.
+    """
+    m = _ps_quote(str(restart_marker(cwd)))
+    body = "; ".join((
+        invocation,
+        f"if (-not (Test-Path '{m}')) {{ break }}",
+        # Read the age before deleting, but delete either way - a stale marker
+        # left on disk would be found again by the next exit.
+        f"$rlAge=((Get-Date)-(Get-Item '{m}').LastWriteTime).TotalSeconds",
+        f"Remove-Item '{m}' -Force -ErrorAction SilentlyContinue",
+        # Consuming the marker is what makes one request produce one restart,
+        # so a delete that failed must stop the loop rather than be ignored.
+        # Remove-Item is silenced, and a marker that survives is still there
+        # and still fresh on the next pass: claude relaunches, exits, finds it
+        # again, forever. Verified - a directory at the marker path (which
+        # -Force cannot remove without -Recurse) spun until the test's 60s
+        # subprocess timeout.
+        f"if (Test-Path '{m}') {{ break }}",
+        f"if ($rlAge -gt {RESTART_MARKER_TTL_SECONDS}) {{ break }}",
+        "$rlStart=Get-Date",
+    ))
+    return f"while ($true) {{ {body} }}"
+
 
 @functools.lru_cache(maxsize=1)
 def shell_executable() -> str:
@@ -106,9 +155,19 @@ def _wt_escape(s: str) -> str:
     return s.replace(";", "\\;")
 
 
-def launcher_command(cwd: str, delay: int, size_bytes: int) -> str:
-    """The PowerShell command run inside one tab."""
-    name = os.path.basename(cwd.rstrip("\\/")) or cwd
+def launcher_command(cwd: str, delay: int, size_bytes: int,
+                     agent: str = "claude", command: str = "") -> str:
+    """The PowerShell command run inside one tab.
+
+    `command` is what capture read off the live process; empty falls back to
+    the kind's default. Only that invocation differs between agent kinds - the
+    environment hygiene around it, the restart loop and the self-closing guard
+    are properties of the shell and apply to every tab.
+    """
+    from . import agents as agents_mod
+
+    invocation = command or agents_mod.for_kind(agent).launch
+    name = tab_title(cwd)
     parts = [CHILD_SESSION_CLEAR, RESUME_SUPPRESSOR]
 
     if size_bytes >= SIZE_WARN_BYTES:
@@ -121,9 +180,47 @@ def launcher_command(cwd: str, delay: int, size_bytes: int) -> str:
         parts.append(f"Start-Sleep {delay}")
 
     parts.append(CLAUDE_STARTED_AT)
-    parts.append(CLAUDE_COMMAND)
+    parts.append(restart_loop(cwd, invocation))
     parts.append(CLOSE_TAB_IF_STARTED)
     return "; ".join(parts)
+
+
+def relaunch_script(cwd: str, size_bytes: int,
+                    agent: str = "claude", command: str = "") -> str:
+    """The launcher, as a script to run inside a shell that already exists.
+
+    `restart <repo>` uses this on a session started by hand rather than by
+    reloaded: /exit leaves its plain interactive shell sitting at a prompt in a
+    tab nothing will close, so the launcher is put into that shell instead and
+    the tab comes out behaving like any reloaded-launched one.
+
+    It is a file rather than typed text because SendKeys reads `{` and `(` as
+    syntax; escaped, the launcher is 838 keystrokes, and they did not arrive
+    intact when tried. One short line runs the file instead.
+
+    The one thing that cannot survive the move is `exit`. Inside a called
+    script it ends the script, and the tab would be left open where a reloaded
+    tab closes - so the shell is stopped by pid, which works from any scope. A
+    PowerShell script runs in the calling process, so $PID is that shell.
+    """
+    body = launcher_command(cwd, 0, size_bytes, agent, command)
+    return body.replace(
+        CLOSE_TAB_IF_STARTED,
+        f"if (((Get-Date)-$rlStart).TotalSeconds -gt {STARTUP_GRACE_SECONDS}) "
+        f"{{ Stop-Process -Id $PID }}",
+    ) + "\n"
+
+
+def tab_title(cwd: str) -> str:
+    """What reloaded calls a tab it launched.
+
+    The repo's own directory name - which is also what resolve_tab's
+    repos-root guess looks for, and what every recorded title on a real
+    machine turned out to be. One definition, used for the tab itself, for the
+    banner the shell prints, and, through the guess, for finding the tab again
+    afterwards.
+    """
+    return os.path.basename(cwd.rstrip("\\/")) or cwd
 
 
 def new_tab_args(cwd: str, command: str) -> list[str]:
@@ -132,16 +229,40 @@ def new_tab_args(cwd: str, command: str) -> list[str]:
     Every wt argv in the package is assembled from this, so escaping is a
     property of the boundary rather than something each call site has to
     remember. Callers never need `_wt_escape` themselves.
+
+    The tab is NAMED here, and that is what makes it findable. Reloaded
+    resolves a tab by its title, and a tab it had not named showed the running
+    program instead - `claude` - which matches no repo and no recorded title.
+    Measured: a freshly opened session stayed unresolvable for the full two
+    minutes it was watched, so `open` handed back a tab that `down` and
+    `restart` could not touch until the user had talked to it and Claude Code
+    had written a transcript to take a title from.
+
+    `--suppressApplicationTitle` is required, not belt-and-braces. With
+    `--title` alone the running program overwrote it inside five seconds and it
+    never came back - watched at 5, 15, 30, 60 and 90 seconds, `claude` every
+    time.
+
+    The cost is real and worth naming: a session the user renames will not show
+    that name in the tab strip, because reloaded is holding the title. On the
+    machine this was measured on, every recorded title was already its repo's
+    directory name, so nothing changed visually - but a person who renames
+    sessions loses that, and the fix is to drop this one flag.
     """
     return [
-        "new-tab", "-d", _wt_escape(cwd),
+        "new-tab",
+        "--title", _wt_escape(tab_title(cwd)),
+        "--suppressApplicationTitle",
+        "-d", _wt_escape(cwd),
         shell_executable(), "-NoExit", "-Command", _wt_escape(command),
     ]
 
 
-def wt_argv_single_tab(cwd: str, size_bytes: int = 0) -> list[str]:
+def wt_argv_single_tab(cwd: str, size_bytes: int = 0,
+                       agent: str = "claude", command: str = "") -> list[str]:
     """Open one repo as a tab in the current window (`-w 0`)."""
-    return ["wt", "-w", "0"] + new_tab_args(cwd, launcher_command(cwd, 0, size_bytes))
+    return ["wt", "-w", "0"] + new_tab_args(
+        cwd, launcher_command(cwd, 0, size_bytes, agent, command))
 
 
 def wt_argv(rect: list[int], tabs: list[Tab], delays: list[int], sizes: list[int]) -> list[str]:
@@ -159,7 +280,8 @@ def wt_argv(rect: list[int], tabs: list[Tab], delays: list[int], sizes: list[int
     for i, tab in enumerate(tabs):
         if i:
             argv.append(";")  # structural separator — must stay unescaped
-        argv += new_tab_args(tab.cwd, launcher_command(tab.cwd, delays[i], sizes[i]))
+        argv += new_tab_args(tab.cwd, launcher_command(
+            tab.cwd, delays[i], sizes[i], tab.agent, tab.command))
     return argv
 
 
@@ -307,8 +429,21 @@ def launch_window(argv: list[str], tabs: list[Tab], timeout: float = 20.0, settl
 
 
 def transcripts_to_repair(plan: list[PlanEntry], index: dict[str, TranscriptInfo]) -> list[str]:
-    """Transcript paths for the sessions this plan will launch."""
-    wanted = {norm(t.cwd) for entry in plan for t in entry.tabs}
+    """Transcript paths for the sessions this plan will launch.
+
+    Only for kinds with a verified torn-tail guard. `index` is Claude Code's
+    transcript corpus, so a Codex tab is mostly safe by accident - but a repo
+    that used to run Claude and now runs Codex has an entry in there, and
+    repairing it on that tab's behalf would truncate a file for a session that
+    is not going to read it.
+    """
+    from .transcript import guards_for
+
+    wanted = {
+        norm(t.cwd)
+        for entry in plan for t in entry.tabs
+        if guards_for(t.agent)
+    }
     return [info.path for key, info in index.items() if key in wanted]
 
 

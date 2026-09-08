@@ -39,6 +39,7 @@ def build_layout(
     live: dict[str, int],
     repos_root: str,
     now_iso: str,
+    kinds: dict[str, str] | None = None,
 ) -> Layout:
     windows: list[Window] = []
     # One repo, one tab, across the whole layout. Two titles can resolve to the
@@ -57,7 +58,17 @@ def build_layout(
             if norm(cwd) in seen_cwds:
                 continue
             seen_cwds.add(norm(cwd))
-            tab_objs.append(Tab(cwd=cwd, title=title, low_confidence=low))
+            # A cwd absent from `kinds` captures as Claude Code, which is what
+            # every layout written before a second kind existed meant. The
+            # command is read off the live process so the tab comes back with
+            # the flags it was actually running.
+            tab_objs.append(Tab(
+                cwd=cwd,
+                title=title,
+                low_confidence=low,
+                agent=(kinds or {}).get(norm(cwd), "claude"),
+                command=discover.session_command(live[norm(cwd)]),
+            ))
         if not tab_objs:
             continue
         windows.append(
@@ -119,7 +130,19 @@ def merge_pinned(fresh: Layout, previous: Layout | None) -> Layout:
             else:
                 continue
             target.tabs.append(
-                Tab(cwd=tab.cwd, title=tab.title, low_confidence=tab.low_confidence, pinned=True)
+                Tab(
+                    cwd=tab.cwd,
+                    title=tab.title,
+                    low_confidence=tab.low_confidence,
+                    pinned=True,
+                    # Carried across, not rebuilt. A pinned tab is by
+                    # definition not running, so nothing can re-derive these -
+                    # dropping them would silently revert a pinned Codex tab to
+                    # Claude, and the reconcile that rebuilds this runs every
+                    # five minutes.
+                    agent=tab.agent,
+                    command=tab.command,
+                )
             )
             present.add(norm(tab.cwd))
     return fresh
@@ -144,6 +167,10 @@ def capture_live(
         live = discover.live_sessions()
     if title_map is None:
         title_map = discover.title_to_cwd(discover.transcript_index())
+    # Which kind each live session is. A separate scan rather than a richer
+    # live_sessions() because nine call sites depend on that returning
+    # cwd -> pid.
+    kinds = discover.live_agents()
 
     windows_data: list[dict] = []
     for hwnd in win32.list_wt_windows():
@@ -163,5 +190,6 @@ def capture_live(
         )
 
     now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    fresh = build_layout(windows_data, monitors, title_map, live, repos_root, now_iso)
+    fresh = build_layout(windows_data, monitors, title_map, live, repos_root,
+                         now_iso, kinds=kinds)
     return merge_pinned(fresh, previous)

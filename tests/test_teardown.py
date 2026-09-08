@@ -141,7 +141,7 @@ def test_execute_down_closes_a_window_once_all_its_tabs_exit(monkeypatch):
     monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", lambda *a, **k: None)
     # The pid no longer exists on the first poll, simulating a clean exit.
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
     closed_hwnds = []
@@ -149,7 +149,7 @@ def test_execute_down_closes_a_window_once_all_its_tabs_exit(monkeypatch):
         teardown_mod.win32, "close_window", lambda hwnd: closed_hwnds.append(hwnd) or True
     )
 
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert result["exited"] == [("app-a", CWD_A)]
@@ -176,14 +176,14 @@ def test_execute_down_resends_exit_after_a_partial_wait(monkeypatch):
     send_calls = []
     monkeypatch.setattr(
         teardown_mod.tabs,
-        "send_exit_keystrokes",
-        lambda *, dismiss_overlay=True: send_calls.append(dismiss_overlay),
+        "send_quit_keystrokes",
+        lambda keys, *, dismiss_overlay=True, still_needed=None: send_calls.append(dismiss_overlay),
     )
     # Still "running" until the retry (2nd send) has happened.
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: len(send_calls) < 2)
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
 
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     # Initial send dismisses an overlay; the resend must not.
@@ -203,8 +203,8 @@ def test_execute_down_only_resends_once(monkeypatch):
     send_calls = []
     monkeypatch.setattr(
         teardown_mod.tabs,
-        "send_exit_keystrokes",
-        lambda *, dismiss_overlay=True: send_calls.append(dismiss_overlay),
+        "send_quit_keystrokes",
+        lambda keys, *, dismiss_overlay=True, still_needed=None: send_calls.append(dismiss_overlay),
     )
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)  # never exits
     monkeypatch.setattr(
@@ -213,7 +213,7 @@ def test_execute_down_only_resends_once(monkeypatch):
         lambda hwnd: (_ for _ in ()).throw(AssertionError("must not close a holdout window")),
     )
 
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert send_calls == [True, False]  # initial + exactly one resend, never more
@@ -234,11 +234,11 @@ def test_execute_down_logs_when_the_resend_cannot_foreground(monkeypatch):
         return len(select_calls) == 1  # succeeds initially, fails on the retry
 
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", fake_select)
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", lambda *a, **k: None)
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
 
     logs = []
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     teardown_mod.execute_down([plan], log=logs.append)
 
     assert any("resend" in line and "app-a" in line for line in logs)
@@ -248,7 +248,7 @@ def test_execute_down_leaves_window_open_when_a_tab_times_out(monkeypatch):
     monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.05)
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", lambda *a, **k: None)
     # The pid never goes away -> the tab never "exits".
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
     monkeypatch.setattr(
@@ -257,7 +257,7 @@ def test_execute_down_leaves_window_open_when_a_tab_times_out(monkeypatch):
         lambda hwnd: (_ for _ in ()).throw(AssertionError("must not close a window with a holdout")),
     )
 
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert result["timed_out"] == [("app-a", CWD_A)]
@@ -270,7 +270,7 @@ def test_execute_down_never_closes_a_window_with_a_non_claude_tab(monkeypatch):
     monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", lambda *a, **k: None)
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)  # the Claude tab exits
     monkeypatch.setattr(
         teardown_mod.win32,
@@ -279,7 +279,7 @@ def test_execute_down_never_closes_a_window_with_a_non_claude_tab(monkeypatch):
     )
 
     # total_tabs=2 but only 1 target: a manual/plain tab shares this window.
-    plan = _plan(1, total_tabs=2, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=2, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert result["exited"] == [("app-a", CWD_A)]
@@ -305,7 +305,7 @@ def test_execute_down_never_types_into_a_window_that_did_not_actually_foreground
         lambda hwnd: (_ for _ in ()).throw(AssertionError("must not close on a foreground failure")),
     )
 
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert sent == []
@@ -317,14 +317,14 @@ def test_execute_down_reports_close_failure_without_crashing(monkeypatch):
     monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", lambda *a, **k: None)
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: False)
     # Still a live window - it refused WM_CLOSE rather than having vanished,
     # which is what makes this a reportable failure instead of a self-close.
     monkeypatch.setattr(teardown_mod.win32, "is_wt_window", lambda hwnd: True)
 
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert result["closed"] == []
@@ -342,12 +342,12 @@ def test_execute_down_counts_a_self_closed_window_as_closed(monkeypatch):
     monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.2)
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: None)
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", lambda *a, **k: None)
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: False)
     monkeypatch.setattr(teardown_mod.win32, "is_wt_window", lambda hwnd: False)
 
-    plan = _plan(1, total_tabs=1, targets=[("app-a", CWD_A, 111, _Item())])
+    plan = _plan(1, total_tabs=1, targets=[teardown_mod.Target("app-a", CWD_A, 111, _Item())])
     result = teardown_mod.execute_down([plan], log=lambda *_: None)
 
     assert result["closed"] == [1]

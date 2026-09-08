@@ -75,6 +75,8 @@ def test_claude_not_on_path_blocks_readiness_until_timeout(tmp_path, monkeypatch
         readiness_mod.shutil, "which",
         lambda name: r"C:\wt.exe" if name == "wt" else None,
     )
+    # Not on the stored PATH either, or _on_path would find the real one.
+    monkeypatch.setattr(readiness_mod, "_persisted_path_dirs", lambda: [])
     monkeypatch.setattr(readiness_mod.win32, "list_monitors", lambda: [MONITOR])
     lo = _layout(str(tmp_path))
     ready, reason = wait_for_ready(lo, timeout=0.3, poll=0.1)

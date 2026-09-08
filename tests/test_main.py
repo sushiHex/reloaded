@@ -67,7 +67,8 @@ def _fake_plan(hwnd=0x100, total_tabs=1, targets=None):
     return main_mod.teardown_mod.WindowPlan(
         hwnd=hwnd,
         total_tabs=total_tabs,
-        targets=targets or [("app-a", r"C:\repos\app-a", 111, object())],
+        targets=targets or [main_mod.teardown_mod.Target(
+            "app-a", r"C:\repos\app-a", 111, object())],
     )
 
 
@@ -104,7 +105,7 @@ def test_cmd_down_executes_and_summarizes_results(monkeypatch, capsys):
     monkeypatch.setattr(
         main_mod.teardown_mod,
         "execute_down",
-        lambda plans: {
+        lambda plans, **kw: {
             "exited": [("app-a", r"C:\repos\app-a")],
             "timed_out": [],
             "closed": [0x100],
@@ -125,7 +126,7 @@ def test_cmd_down_nonzero_exit_when_a_session_times_out(monkeypatch, capsys):
     monkeypatch.setattr(
         main_mod.teardown_mod,
         "execute_down",
-        lambda plans: {
+        lambda plans, **kw: {
             "exited": [],
             "timed_out": [("app-a", r"C:\repos\app-a")],
             "closed": [],
@@ -250,7 +251,7 @@ def test_cmd_restart_relaunches_from_the_captured_layout_even_if_a_session_times
     monkeypatch.setattr(
         main_mod.teardown_mod,
         "execute_down",
-        lambda plans: {
+        lambda plans, **kw: {
             "exited": [],
             "timed_out": [("app-a", r"C:\repos\app-a")],
             "closed": [],

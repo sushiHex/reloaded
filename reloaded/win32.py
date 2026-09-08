@@ -289,6 +289,19 @@ def set_foreground(hwnd: int) -> bool:
     return _u32.GetForegroundWindow() == hwnd
 
 
+def is_foreground(hwnd: int) -> bool:
+    """Whether `hwnd` has OS focus at this instant.
+
+    set_foreground proves this once, and returns. Keystrokes sent a second
+    later go to whatever has focus THEN - a notification that stole it, another
+    application, the user clicking away. A caller typing a sequence with pauses
+    in it has to re-ask between the keys, because the tab staying selected
+    inside its terminal says nothing about whether that terminal is still the
+    window receiving input.
+    """
+    return _u32.GetForegroundWindow() == hwnd
+
+
 def is_wt_window(hwnd: int) -> bool:
     """Whether `hwnd` is still a live Windows Terminal window.
 
@@ -306,10 +319,38 @@ def close_window(hwnd: int) -> bool:
 
     Re-checks the window class first, same HWND-reuse rationale as
     set_foreground/set_geometry.
+
+    Returns whether the window is actually GONE, not whether the message was
+    accepted. PostMessageW only proves WM_CLOSE reached a queue - the window
+    can ignore it, and Windows Terminal does exactly that when it raises its
+    own "close all tabs?" prompt. Reporting the queueing as the outcome made
+    `down` print "closed window 0x205A8" about a window still on screen with a
+    dialog waiting on it.
     """
     if _class_name(hwnd).upper() != WT_CLASS:
         return False
-    return bool(_u32.PostMessageW(wintypes.HWND(hwnd), WM_CLOSE, 0, 0))
+    if not _u32.PostMessageW(wintypes.HWND(hwnd), WM_CLOSE, 0, 0):
+        return False
+    return not _survives(hwnd)
+
+
+# How long to give a window to act on WM_CLOSE before calling it a refusal.
+# A window that is going to close does so promptly; one holding a confirmation
+# prompt never will, and waiting longer only delays an accurate answer.
+CLOSE_SETTLE_SECONDS = 1.0
+CLOSE_POLL_SECONDS = 0.1
+
+
+def _survives(hwnd: int) -> bool:
+    """Whether the window is still there shortly after being asked to close."""
+    import time
+
+    deadline = time.time() + CLOSE_SETTLE_SECONDS
+    while time.time() < deadline:
+        if not is_wt_window(hwnd):
+            return False
+        time.sleep(CLOSE_POLL_SECONDS)
+    return is_wt_window(hwnd)
 
 
 def _apply_geometry(hwnd: int, rect: list[int], state: str) -> bool:

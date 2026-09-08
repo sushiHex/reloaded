@@ -229,17 +229,40 @@ def test_set_foreground_refuses_a_hwnd_that_is_no_longer_a_wt_window(monkeypatch
     assert set_foreground(12345) is False
 
 
-def test_close_window_sends_wm_close(monkeypatch):
-    monkeypatch.setattr(win32_mod, "_class_name", lambda hwnd: win32_mod.WT_CLASS)
+def test_close_window_sends_wm_close_and_confirms_the_window_went(monkeypatch):
+    """Success means GONE, not "the message was accepted".
+
+    PostMessageW only proves WM_CLOSE reached a queue. The window can ignore
+    it, and Windows Terminal does exactly that while its own "close all tabs?"
+    prompt is up - so reporting the queueing as the outcome printed
+    "closed window 0x205A8" about a window still on screen.
+    """
     calls = []
+    gone = []
 
     def fake_post(hwnd, msg, w, l):
         calls.append((hwnd.value, msg))
+        gone.append(True)   # this window does what it was asked
         return True
 
+    monkeypatch.setattr(win32_mod, "_class_name", lambda hwnd: win32_mod.WT_CLASS)
     monkeypatch.setattr(win32_mod._u32, "PostMessageW", fake_post)
+    monkeypatch.setattr(win32_mod, "is_wt_window", lambda hwnd: not gone)
+
     assert close_window(12345) is True
     assert calls == [(12345, win32_mod.WM_CLOSE)]
+
+
+def test_a_window_that_ignores_wm_close_is_not_reported_as_closed(monkeypatch):
+    """The Windows Terminal confirmation-prompt case. The message is accepted
+    and the window stays exactly where it was."""
+    monkeypatch.setattr(win32_mod, "_class_name", lambda hwnd: win32_mod.WT_CLASS)
+    monkeypatch.setattr(win32_mod._u32, "PostMessageW", lambda h, m, w, l: True)
+    monkeypatch.setattr(win32_mod, "is_wt_window", lambda hwnd: True)
+    monkeypatch.setattr(win32_mod, "CLOSE_SETTLE_SECONDS", 0.02)
+    monkeypatch.setattr(win32_mod, "CLOSE_POLL_SECONDS", 0.01)
+
+    assert close_window(12345) is False
 
 
 def test_close_window_reports_failure(monkeypatch):

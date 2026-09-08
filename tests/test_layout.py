@@ -197,7 +197,8 @@ def test_every_field_survives_a_roundtrip(tmp_path):
     reverting to its default on every load.
     """
     monitor = Monitor(device=r"\\.\DISPLAY9", primary=True, work=[1, 2, 3, 4], dpi=192)
-    tab = Tab(cwd=r"C:\x", title="t", low_confidence=True, pinned=True)
+    tab = Tab(cwd=r"C:\x", title="t", low_confidence=True, pinned=True,
+              agent="codex", command="codex resume --last")
     window = Window(
         monitor=r"\\.\DISPLAY9",
         rect=[5, 6, 7, 8],

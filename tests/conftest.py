@@ -17,7 +17,9 @@ Every entry point that touches the desktop is therefore blocked at the module
 boundary for the whole suite. A test that needs one must stub it deliberately,
 and a test that forgets gets a loud error instead of a wrecked desktop.
 """
+import os
 import pathlib
+import subprocess
 import sys
 
 import pytest
@@ -59,10 +61,23 @@ def _no_real_desktop_effects(monkeypatch):
     `win32.set_foreground` - moves the real focus via ctypes, without going
     through uiautomation at all.
 
-    Not blocked: select_tab, close_tab, close_window. Those act on the UIA
-    element or hwnd they are handed, so a test passing a fake acts on the fake.
-    Blocking them would put ceremony on ~40 tests that were never dangerous,
-    and a guard that cries wolf stops being read.
+    the four user32 calls that CHANGE a window - close it, move it, show it,
+    focus it. Everything else win32.py calls only reads. Blocking the syscalls
+    rather than the wrappers around them is the same reasoning as poisoning
+    `uiautomation` rather than each sender: a wrapper can be renamed out from
+    under a stub, and `close_window` takes a raw HWND, so a test that passes a
+    real one closes a real window with a real session in it.
+
+    `win32.set_foreground` stays blocked by name as well, purely so the common
+    mistake gets the clearer message.
+
+    Not blocked: select_tab, close_tab. Those act on the UIA element they are
+    handed, so a test passing a fake acts on the fake. Blocking them would put
+    ceremony on ~40 tests that were never dangerous, and a guard that cries
+    wolf stops being read.
+
+    A test that genuinely needs one of these substitutes its own - monkeypatch
+    inside a test runs after this fixture, so it wins.
     """
     monkeypatch.setitem(sys.modules, "uiautomation", _PoisonedUIAutomation())
 
@@ -76,6 +91,54 @@ def _no_real_desktop_effects(monkeypatch):
         )
 
     monkeypatch.setattr(win32_mod, "set_foreground", _blocked_foreground)
+
+    # Not a block - a deterministic answer. is_foreground compares a hwnd
+    # against the REAL desktop's focused window, so under test it reports
+    # whatever the developer happened to be looking at, and the suite behaves
+    # one way here and another in CI. Tests get a desktop where the window
+    # they asked for has focus; a test about LOSING focus says so itself.
+    monkeypatch.setattr(win32_mod, "is_foreground", lambda hwnd: True)
+
+    # Spawning is a desktop effect too, and this one got out. A test whose
+    # wait loop fell through to the reopen fallback called Popen on `wt` for
+    # real, once per suite run, and opened terminal tabs on the user's desktop
+    # trying to start a session in a fixture's imaginary directory.
+    #
+    # Blocked by what is being launched rather than by Popen itself: the suite
+    # deliberately runs real PowerShell to exercise the launcher loop and the
+    # relaunch script, and blocking that would cost more than it saves. What
+    # nothing may do is open a terminal window or start an agent.
+    _real_popen = subprocess.Popen
+    _forbidden = ("wt.exe", "wt", "claude.exe", "claude",
+                  "codex.exe", "codex", "wscript.exe", "pyw.exe")
+
+    def _guarded_popen(argv, *a, **kw):
+        head = argv[0] if isinstance(argv, (list, tuple)) and argv else argv
+        name = os.path.basename(str(head)).lower()
+        if name in _forbidden or os.path.splitext(name)[0] in _forbidden:
+            raise AssertionError(
+                f"a test tried to launch {name!r} for real. That opens a "
+                "window on the user's desktop, or starts an agent. Stub the "
+                "function that spawns it - _launch_single_tab, deploy.execute, "
+                "or whatever called Popen."
+            )
+        return _real_popen(argv, *a, **kw)
+
+    monkeypatch.setattr(subprocess, "Popen", _guarded_popen)
+
+    for name, effect in (
+        ("PostMessageW", "posts WM_CLOSE - it closes a real window and every session in it"),
+        ("SetWindowPlacement", "moves and resizes a real window"),
+        ("ShowWindow", "minimizes, maximizes or restores a real window"),
+        ("SetForegroundWindow", "moves the desktop's focus"),
+    ):
+        def _blocked(*a, _name=name, _effect=effect, **k):
+            raise AssertionError(
+                f"user32.{_name} was called for real during a test - it {_effect}. "
+                f"Stub it: monkeypatch.setattr(win32_mod._u32, {_name!r}, fake)."
+            )
+
+        monkeypatch.setattr(win32_mod._u32, name, _blocked)
 
 PRIMARY = r"\\.\DISPLAY1"
 SECONDARY = r"\\.\DISPLAY2"

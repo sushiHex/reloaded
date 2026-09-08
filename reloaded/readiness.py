@@ -51,8 +51,83 @@ def _missing_repos(lo: Layout) -> list[str]:
     return sorted(set(missing))
 
 
+def _persisted_path_dirs() -> list[str]:
+    """PATH directories as Windows has them stored, not as this process
+    inherited them.
+
+    A process keeps the PATH it started with. An installer that adds a
+    directory afterwards is invisible to everything already running - so a
+    long-lived session asking `is codex installed?` gets the wrong answer, and
+    the tabs it goes on to launch, which DO get a fresh environment, would have
+    resolved it fine. Seen exactly that: codex on the user PATH, absent from
+    the session doing the checking, and the logon deploy would have waited out
+    its whole timeout for a binary that was installed.
+
+    Registry rather than `setx` or a subprocess: this runs on the logon path
+    where spawning a shell to read an environment variable is its own hazard.
+    """
+    import winreg
+
+    out: list[str] = []
+    for hive, key in (
+        (winreg.HKEY_CURRENT_USER, r"Environment"),
+        (winreg.HKEY_LOCAL_MACHINE,
+         r"SYSTEM\CurrentControlSet\Control\Session Manager\Environment"),
+    ):
+        try:
+            with winreg.OpenKey(hive, key) as handle:
+                value, _kind = winreg.QueryValueEx(handle, "Path")
+        except OSError:
+            continue
+        out.extend(
+            os.path.expandvars(part).strip('"')
+            for part in str(value).split(os.pathsep) if part.strip()
+        )
+    return out
+
+
+# What a fresh PowerShell will run, when this process's PATHEXT cannot be
+# trusted to say. `.EXE` alone was the old fallback and is wrong for the exact
+# binaries this checks: an npm-installed `claude` is a `.cmd` shim, not an exe.
+_DEFAULT_PATHEXT = (".COM", ".EXE", ".BAT", ".CMD", ".PS1")
+
+
+def _on_path(binary: str) -> bool:
+    """Whether `binary` is resolvable, by this process or by one started now."""
+    if shutil.which(binary) is not None:
+        return True
+    # Union, not either-or: this process's PATHEXT is as stale as its PATH, so
+    # a shorter one than the machine now has would hide a binary the launched
+    # tab will resolve without trouble.
+    exts = list(_DEFAULT_PATHEXT)
+    for e in os.environ.get("PATHEXT", "").split(os.pathsep):
+        if e.strip() and e.strip().upper() not in exts:
+            exts.append(e.strip().upper())
+    for directory in _persisted_path_dirs():
+        for ext in exts:
+            if os.path.isfile(os.path.join(directory, binary + ext)):
+                return True
+    return False
+
+
+def required_binaries(lo: Layout) -> list[str]:
+    """Which agent binaries this layout's tabs actually need on PATH.
+
+    Waiting unconditionally for `claude` made a Codex-only layout sit out its
+    whole timeout for a binary it never uses, then report that as the reason
+    it was not ready - which sends people looking in the wrong place.
+    """
+    from . import agents as agents_mod
+
+    return sorted({
+        agents_mod.for_kind(t.agent).binary
+        for w in lo.windows for t in w.tabs
+    })
+
+
 def wait_for_ready(lo: Layout, timeout: float = 120.0, poll: float = 2.0) -> tuple[bool, str]:
-    """Block until wt.exe, claude, and the saved monitors are available.
+    """Block until wt.exe, the layout's agent binaries, and the saved
+    monitors are available.
 
     Returns (ready, reason). A False result still allows deploy to proceed with
     clamping — it reports what was never satisfied. Missing repo directories
@@ -61,18 +136,18 @@ def wait_for_ready(lo: Layout, timeout: float = 120.0, poll: float = 2.0) -> tup
     deadline = time.time() + timeout
     reason = ""
     have_wt = False
-    have_claude = False
+    # Only what this layout's tabs actually need.
+    missing = set(required_binaries(lo))
     while True:
         # PATH does not shrink while we wait, so once found stop re-scanning.
         if not have_wt:
             have_wt = shutil.which("wt") is not None
-        if not have_claude:
-            have_claude = shutil.which("claude") is not None
+        missing = {b for b in missing if not _on_path(b)}
 
         if not have_wt:
             reason = "wt.exe not on PATH"
-        elif not have_claude:
-            reason = "claude not on PATH"
+        elif missing:
+            reason = f"{', '.join(sorted(missing))} not on PATH"
         else:
             missing_mon = _missing_monitors(lo)
             if missing_mon:

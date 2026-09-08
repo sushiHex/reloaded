@@ -147,6 +147,48 @@ def tab_titles(hwnd: int) -> list[str]:
     return [title for title, _item in list_tab_items(hwnd) if title]
 
 
+def close_tab(tab_item) -> bool:
+    """Close one tab by invoking its own Close Tab button.
+
+    Needs no focus, no foreground and no synthesized keystroke, so unlike
+    send_quit_keystrokes it cannot land on the wrong tab - the failure mode
+    select_tab exists to guard against. Verified by hand against a wedged tab
+    that Ctrl+D would not close, with three live sessions in the same window
+    left untouched.
+
+    For a tab that must be GONE and whose session has already ended. A live
+    session is still asked to quit through its own UI, so that it gets the
+    chance to shut down cleanly rather than have its tab pulled out from
+    under it.
+    """
+    try:
+        children = tab_item.GetChildren()
+    except Exception:
+        return False
+
+    # The control type matters as much as the name: a label or tooltip reading
+    # "Close Tab" would otherwise be invoked instead.
+    buttons = [c for c in children
+               if getattr(c, "ControlTypeName", "") == "ButtonControl"]
+    named = [c for c in buttons
+             if "close" in (getattr(c, "Name", "") or "").lower()]
+
+    # The name is English. Windows Terminal localizes it, so on a German or
+    # Japanese install the match finds nothing and a hand-launched tab is left
+    # sitting dead in the strip with no warning. A tab has one button, so when
+    # the name cannot decide, being the only button can. Two or more unnamed
+    # buttons stays a refusal - guessing which one closes a tab is not the kind
+    # of guess this package makes.
+    target = named[0] if named else (buttons[0] if len(buttons) == 1 else None)
+    if target is None:
+        return False
+    try:
+        target.GetInvokePattern().Invoke()
+        return True
+    except Exception:
+        return False
+
+
 def select_tab(hwnd: int, tab_item, attempts: int = 10, settle: float = 0.3) -> bool:
     """Select `tab_item`, confirm it actually took, and foreground its window.
 
@@ -178,9 +220,27 @@ def select_tab(hwnd: int, tab_item, attempts: int = 10, settle: float = 0.3) -> 
             return False
         time.sleep(settle)
     else:
-        return False
+        # The loop checks before it acts, so N attempts contain only N-1
+        # readbacks: the last Select() never has its effect read. One more.
+        if not tab_is_selected(tab_item):
+            return False
 
     return win32.set_foreground(hwnd)
+
+
+def tab_is_selected(tab_item) -> bool:
+    """Whether `tab_item` is the active tab right now. False if it cannot say.
+
+    select_tab proves this once, then returns. Everything after that - a
+    settle, a marker written to disk, the pause between two keystrokes - is a
+    window in which the user, another window, or a tab closing itself can move
+    the selection. Re-reading costs one UIA call and is the difference between
+    typing into a confirmed target and typing into its neighbour.
+    """
+    try:
+        return bool(tab_item.GetSelectionItemPattern().IsSelected)
+    except Exception:
+        return False
 
 
 def send_exit_keystrokes(*, dismiss_overlay: bool = True) -> None:
@@ -211,17 +271,65 @@ def send_exit_keystrokes(*, dismiss_overlay: bool = True) -> None:
 
     import uiautomation as auto
 
+    send_quit_keystrokes(("/exit", "{Enter}"), dismiss_overlay=dismiss_overlay)
+
+
+def send_quit_keystrokes(keys, dismiss_overlay: bool = True,
+                         still_needed=None) -> int:
+    """Type one agent kind's quit sequence into whatever terminal has focus.
+
+    Each element is sent on its own with MENU_SETTLE_SECONDS between them,
+    never joined. Two separate reasons, one rule:
+
+    Typing `/` opens Claude Code's slash-command menu, and sending
+    "/exit{Enter}" as a single string puts Enter about ten milliseconds after
+    the final character - while that menu is still filtering, where it does not
+    submit. Diagnosed by reading the terminal buffer back between the two
+    keystrokes: the menu was on screen with `/exit` sitting unsent in the
+    prompt. The same keys with a pause exited the session first time. That is
+    why `down` and `restart` timed out on session after session while appearing
+    to type correctly.
+
+    And two interrupts sent back to back read as one, which leaves a Codex
+    session running.
+
+    ``dismiss_overlay`` sends Escape first, clearing a transient overlay that
+    would otherwise eat the first keystroke. Skipped on a retry, where Escape
+    would cancel the very confirmation the retry exists to answer.
+
+    ``still_needed`` is asked before EVERY key, including the first, and a
+    False answer stops the sequence there. Two different windows close on it.
+
+    Before the first key: teardown handles its targets serially, waiting up to
+    twenty seconds on each, so a session can end on its own long before its
+    turn arrives. Typing then puts `/exit` into a shell with nothing in it -
+    which is not hypothetical, it is a terminal found holding about fifty
+    copies of the word.
+
+    Between the keys: the pause that stops two interrupts reading as one is
+    ample for the session to have quit on the first. The tab closes itself, the
+    terminal moves to the next one, and the remaining key lands on a neighbour
+    that was working.
+
+    Returns how many keys were actually sent, which is not the same as how many
+    were asked for - a caller that reports "sent /exit" without looking is
+    describing something that may not have happened.
+    """
+    import time
+
+    import uiautomation as auto
+
+    if still_needed is not None and not still_needed():
+        return 0
     if dismiss_overlay:
         auto.SendKeys("{Esc}")
         time.sleep(0.1)
-    # Typed and submitted separately, with a pause. Typing `/` opens Claude
-    # Code's slash-command menu, and sending "/exit{Enter}" as one string puts
-    # Enter about ten milliseconds after the final character - while that menu
-    # is still filtering, where it does not submit the command. Diagnosed by
-    # reading the terminal buffer back between the two keystrokes: the menu was
-    # on screen with `/exit` sitting unsent in the prompt. The same keys with a
-    # pause exited the session first time. This is why `down` and `restart`
-    # timed out on session after session while appearing to type correctly.
-    auto.SendKeys("/exit")
-    time.sleep(MENU_SETTLE_SECONDS)
-    auto.SendKeys("{Enter}")
+    sent = 0
+    for i, key in enumerate(keys):
+        if i:
+            time.sleep(MENU_SETTLE_SECONDS)
+            if still_needed is not None and not still_needed():
+                break
+        auto.SendKeys(key)
+        sent += 1
+    return sent

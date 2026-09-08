@@ -15,6 +15,30 @@ from .layout import Layout, Tab, Window
 from .paths import resolve_repo
 
 
+def _live_agent(cwd: str) -> tuple[str, str]:
+    """The (agent, command) of a session running at `cwd` right now.
+
+    Falls back to the default kind and no command when nothing is running
+    there, which is the ordinary case for a pinned repo: `a` exists precisely
+    so a repo that is NOT open can be added. Discovery is imported here rather
+    than at module scope because it needs psutil, and the editor otherwise runs
+    on the standard library alone.
+    """
+    from . import agents as agents_mod
+    from . import discover as discover_mod
+    from .paths import norm
+
+    try:
+        key = norm(cwd)
+        kind = discover_mod.live_agents().get(key)
+        if kind is None:
+            return agents_mod.DEFAULT_KIND, ""
+        return kind, discover_mod.session_command(
+            discover_mod.live_sessions().get(key, -1))
+    except Exception:
+        return agents_mod.DEFAULT_KIND, ""
+
+
 def _render(lo: Layout) -> None:
     print("\n" + "=" * 64)
     print(f"layout saved {lo.saved_ts}   {len(lo.windows)} window(s)")
@@ -183,10 +207,17 @@ def run(lo: Layout, layout_file, repos_root: str) -> int:
             if not os.path.isdir(cwd):
                 print(f"not a directory: {cwd}")
                 continue
+            # If something is running here right now, that is the best evidence
+            # of what this tab should launch. Without asking, every repo added
+            # by hand is recorded as Claude Code - including a Codex one that
+            # is running in front of the user as they type the command.
+            agent, command = _live_agent(cwd)
             # Pinned: this repo may not be running, and a capture only sees live
             # sessions. Without the flag the next reconcile would erase it.
-            lo.windows[wi].tabs.append(Tab(cwd=cwd, title=os.path.basename(cwd), pinned=True))
-            print(f"added {cwd}  [pinned]")
+            tab = Tab(cwd=cwd, title=os.path.basename(cwd), pinned=True,
+                      agent=agent, command=command)
+            lo.windows[wi].tabs.append(tab)
+            print(f"added {cwd}{layout_mod.tab_flags(tab)}")
             dirty = True
             continue
 
