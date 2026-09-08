@@ -12,6 +12,12 @@ import threading
 from . import win32
 from .discover import strip_glyph
 
+# How long to let Claude Code's slash-command menu settle after `/exit` is
+# typed, before Enter is pressed. Measured, not guessed: reading the terminal
+# buffer back mid-keystroke showed the menu still filtering with `/exit`
+# unsent, and 1.2s was the interval at which the session exited first time.
+MENU_SETTLE_SECONDS = 1.2
+
 # list_tab_items runs on a 5-minute scheduler forever via the reconcile task
 # (through capture.py's tab_titles) and is also on down/restart's interactive
 # path - either way, one wedged window must be skipped, not hang the caller
@@ -141,34 +147,39 @@ def tab_titles(hwnd: int) -> list[str]:
     return [title for title, _item in list_tab_items(hwnd) if title]
 
 
-def select_tab(hwnd: int, tab_item) -> bool:
-    """Select `tab_item` and bring its window to the foreground so it can
-    receive real keyboard input. Returns whether the window actually ended up
-    foreground (see win32.set_foreground) - SendKeys goes to whatever has OS
-    focus, not to whatever UIA element was merely selected, so a caller must
-    not send keystrokes on a False return.
+def select_tab(hwnd: int, tab_item, attempts: int = 10, settle: float = 0.3) -> bool:
+    """Select `tab_item`, confirm it actually took, and foreground its window.
 
-    Known gap: this verifies which *window* has focus, not which *tab* is
-    active within it. Select() is best-effort (swallowed on failure below);
-    if it silently fails while a different tab in the same window is
-    already active, keystrokes go to that tab instead. The failure mode
-    stays bounded either way - the caller polls for the intended session's
-    pid and reports a timeout if it never reacts - but this does not
-    guarantee the keystrokes landed on the intended tab specifically.
-    teardown's mid-timeout resend calls this a second time on the same
-    `tab_item`, which doubles exposure to this race for exactly the holdout
-    sessions it targets - not made worse by the resend, but not reduced by
-    it either. A real fix would need a cheap way to verify the tab, not just
-    the window, actually took focus (e.g. reading the item's selection state
-    back after Select()) - not attempted here since the exact uiautomation
-    API for that isn't confirmed against this codebase's pinned version, and
-    getting it wrong risks a worse failure (an exception) than the current
-    documented gap.
+    Returns False unless BOTH happened, because SendKeys goes to whatever has
+    OS focus rather than to whatever UIA element was asked for. A caller that
+    cannot confirm which tab it is about to type into must not type.
+
+    Confirming the tab is the whole point, and used to be the gap. Select() was
+    best-effort and swallowed, with only the window's foreground state checked,
+    so a silently failed Select() sent every keystroke to whichever tab was
+    already active. That is not theoretical: a tab read back selected=False
+    immediately after this returned True, and the same {Enter} that had done
+    nothing three times running landed the moment selection was verified. It
+    accounts for every unexplained /exit failure in this package - a target
+    that was not the active tab never received anything, while the tab that
+    *was* active silently did.
     """
-    try:
-        tab_item.GetSelectionItemPattern().Select()
-    except Exception:
-        pass
+    import time
+
+    for _attempt in range(attempts):
+        try:
+            pattern = tab_item.GetSelectionItemPattern()
+            if pattern.IsSelected:
+                break
+            pattern.Select()
+        except Exception:
+            # No selection pattern at all: nothing about this tab can be
+            # confirmed, and typing blind is exactly what this prevents.
+            return False
+        time.sleep(settle)
+    else:
+        return False
+
     return win32.set_foreground(hwnd)
 
 
@@ -203,4 +214,14 @@ def send_exit_keystrokes(*, dismiss_overlay: bool = True) -> None:
     if dismiss_overlay:
         auto.SendKeys("{Esc}")
         time.sleep(0.1)
-    auto.SendKeys("/exit{Enter}")
+    # Typed and submitted separately, with a pause. Typing `/` opens Claude
+    # Code's slash-command menu, and sending "/exit{Enter}" as one string puts
+    # Enter about ten milliseconds after the final character - while that menu
+    # is still filtering, where it does not submit the command. Diagnosed by
+    # reading the terminal buffer back between the two keystrokes: the menu was
+    # on screen with `/exit` sitting unsent in the prompt. The same keys with a
+    # pause exited the session first time. This is why `down` and `restart`
+    # timed out on session after session while appearing to type correctly.
+    auto.SendKeys("/exit")
+    time.sleep(MENU_SETTLE_SECONDS)
+    auto.SendKeys("{Enter}")
