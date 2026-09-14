@@ -1,7 +1,7 @@
 [project]
 name = "reloaded"
 version = "0.1.0"
-description = "A Windows Terminal launcher for Claude Code."
+description = "A Windows Terminal launcher for Claude Code and Codex CLI."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.9"

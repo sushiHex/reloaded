@@ -1264,7 +1264,7 @@ def cmd_edit(args) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="reloaded", description="Windows Terminal launcher for Claude Code."
+        prog="reloaded", description="Windows Terminal launcher for Claude Code and Codex CLI."
     )
     p.add_argument("--layout", default="default", help="layout name (default: default)")
     p.add_argument("--repos-root", default=DEFAULT_REPOS_ROOT, help="root directory holding repos")
@@ -1291,14 +1291,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     down = sub.add_parser(
         "down",
-        help="gracefully /exit every live Claude Code tab (waits up to 20s each), then close emptied windows",
+        help="gracefully quit every recognized live agent session (waits up to 20s each), then close emptied windows",
     )
     down.add_argument("--dry-run", action="store_true", help="print what would be exited/closed, send nothing")
 
     restart = sub.add_parser(
         "restart",
         help="restart named sessions in place; with no names, capture the current "
-             "arrangement, gracefully /exit everything, then relaunch it exactly as it was",
+             "arrangement, gracefully quit recognized agent sessions, then relaunch it exactly as it was",
     )
     restart.add_argument(
         "repos",
