@@ -103,7 +103,7 @@ def cmd_capture(args) -> int:
         print(f"[reloaded] pruned {len(pruned)} stale .torn backup(s)")
 
     if not lo.windows:
-        print("No Claude Code tabs found — nothing captured, existing layout untouched.")
+        print("No agent sessions found — nothing captured, existing layout untouched.")
         return 1
 
     unresolved = _unresolved_live_repos(lo, live)
@@ -1037,7 +1037,7 @@ def cmd_restart(args) -> int:
         return _report_uia_unavailable(exc)
 
     if not lo.windows:
-        print("No Claude Code tabs found — nothing to restart.")
+        print("No agent sessions found — nothing to restart.")
         return 1
 
     total = sum(len(w.tabs) for w in lo.windows)
@@ -1077,7 +1077,7 @@ def cmd_down(args) -> int:
         return _report_uia_unavailable(exc)
 
     if not plans:
-        print("No live Claude Code tabs found — nothing to exit.")
+        print("No live agent sessions found — nothing to exit.")
         return 0
 
     total = sum(len(p.targets) for p in plans)
@@ -1257,7 +1257,7 @@ def cmd_edit(args) -> int:
         except tabs_mod.UIAUnavailable as exc:
             return _report_uia_unavailable(exc)
         if not lo.windows:
-            print("No Claude Code tabs found. Open some sessions first.")
+            print("No agent sessions found. Open some sessions first.")
             return 1
     return editor_mod.run(lo, path, args.repos_root)
 
