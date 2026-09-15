@@ -266,9 +266,17 @@ def agent_kinds(plans) -> dict[str, str]:
     one overwrote the other - falls back to Claude Code. A Codex tab then gets
     `/exit` typed into it.
 
-    A plan already holds each target's pid. Asking it directly is both cheaper
-    and incapable of disagreeing with itself. The sweep remains the fallback
-    for a pid that will not answer, and the kind's own default after that.
+    A plan already holds each target's pid. Asking it directly cannot disagree
+    with itself - at the moment it is read, which is not the moment it is used;
+    every target's kind is resolved up front, so the last one's answer is as
+    old as every earlier target's exit wait. The sweep remains the fallback for
+    a pid that will not answer, and the kind's own default after that.
+
+    One caveat for anything building a WindowPlan from elsewhere: unlike the
+    sweep, `session_launch` applies no `_hosted_elsewhere` filter, so it will
+    confidently name a `codex exec` nested inside a Claude Code session - a
+    case discover.py records as measured, not theorised. Every pid here comes
+    from `live_sessions()`, which does filter, so that is unreachable today.
     """
     kinds: dict[str, str] = {}
     sweep = None
@@ -313,13 +321,6 @@ def execute_down(
     how `restart`'s marker TTL used to be a function of batch size rather than
     of one tab's exit.
     """
-    # None means "you did not say", and the honest answer to that is to ask
-    # each target's own process - not to assume the kind that predates there
-    # being more than one. An explicit map still wins, including an empty one:
-    # a caller holding a map this cwd is absent from has already answered.
-    if kinds is None:
-        kinds = agent_kinds(plans)
-
     exited: list[tuple[str, str]] = []
     timed_out: list[tuple[str, str]] = []
     closed: list[int] = []
@@ -332,7 +333,12 @@ def execute_down(
             # How this session is asked to quit depends on which CLI it is.
             # An unknown cwd is Claude Code, which is what every teardown
             # meant before a second kind existed.
-            agent = agents.for_kind(kinds.get(norm(cwd)))
+            # Omission still means Claude Code, and deliberately so. Resolving
+            # it here instead would put a psutil read - and, on a miss, a sweep
+            # of every process on the machine - behind a parameter every caller
+            # can forget. Callers that care say so; `agent_kinds` is right
+            # above, and all three in this package use it.
+            agent = agents.for_kind((kinds or {}).get(norm(cwd)))
             quit_keys = agent.quit_keys
             sent = _send_exit(plan.hwnd, item, before_send=arm,
                               quit_keys=quit_keys, pid=pid)

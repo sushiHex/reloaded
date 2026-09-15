@@ -114,26 +114,37 @@ def test_a_claude_target_is_sent_exit(monkeypatch):
 
 
 def test_an_unknown_target_is_treated_as_claude(monkeypatch):
-    """Which is what every teardown before agent kinds assumed.
-
-    An empty map is an answer, not the absence of one: a caller holding a map
-    this cwd is simply not in has already looked. Contrast the next test, where
-    nothing was passed at all.
-    """
+    """Which is what every teardown before agent kinds assumed."""
     assert _run(monkeypatch, {}) == [("/exit", "{Enter}")]
 
 
-def test_omitted_kinds_are_read_from_each_targets_own_process(monkeypatch):
-    """Omission used to mean "assume Claude Code", and that default is what
-    made the bug in `cmd_restart` invisible: it passed a sweep that could come
-    back without a given cwd, which lands in the same place as passing nothing.
+def test_kinds_may_be_omitted_entirely(monkeypatch):
+    assert _run(monkeypatch, None) == [("/exit", "{Enter}")]
 
-    Now the absence of an answer is a question, asked of the pid in the plan.
-    A caller who says nothing gets the truth rather than the kind that happened
-    to predate there being more than one.
+
+def test_omitting_kinds_asks_nothing_of_the_machine(monkeypatch):
+    """The reason `execute_down` does not resolve kinds itself.
+
+    Making omission mean "read each target's pid" is the tempting fix, and it
+    is wrong here: ~30 call sites across this suite omit `kinds`, so every one
+    of them would reach `discover.session_launch` on a fixture pid like 111 and
+    then fall through to `live_agents()`, a psutil sweep of every process on
+    the developer's machine. Measured when it was briefly done that way: three
+    teardown files went from 0.70s to 28.40s, and they still passed - fixture
+    cwds are not on the machine, so the sweep missed and the Claude default
+    came back anyway.
+
+    Passing for an accidental reason, slowly, against live machine state is
+    precisely the failure conftest.py was written about: "the only symptom at
+    the time was the suite getting slower, which was written off as the real
+    function's sleeps."
     """
+    asked = []
     monkeypatch.setattr(teardown_mod.discover, "session_launch",
-                        lambda pid: ("codex", "codex resume"))
-    monkeypatch.setattr(teardown_mod.discover, "live_agents", lambda: {})
+                        lambda pid: asked.append(pid) or ("", ""))
+    monkeypatch.setattr(teardown_mod.discover, "live_agents",
+                        lambda: asked.append("sweep") or {})
 
-    assert _run(monkeypatch, None) == [("{Ctrl}c", "{Ctrl}c")]
+    _run(monkeypatch, None)
+
+    assert asked == [], "execute_down reached discovery for a caller that omitted kinds"

@@ -79,13 +79,21 @@ def _announce_quit(plans) -> dict[str, str]:
     rather than `/exit`, and this line is the user's only record of what the
     command did to their desktop.
 
-    Returns the map so `execute_down` is not asked to work the same answer out
-    a second time - resolving it costs one psutil lookup per target, and the
-    caller that reports it is the caller that already paid.
+    Returns the map so `execute_down` is handed the same answer rather than
+    being left to its Claude-Code default - which is the whole bug this exists
+    to close, since a sweep that came back short landed in the same place.
+
+    Says nothing when there is nothing to send. `cmd_restart` reaches here
+    through a `plan_down` separate from its capture, so a window that closed in
+    between leaves a non-empty layout and an empty plan - which used to print
+    "Sending  to 0 session(s)", an empty label list and a threat to steal focus
+    for no reason.
     """
     kinds = teardown_mod.agent_kinds(plans)
     labels = sorted({agents_mod.for_kind(kinds.get(norm(t.cwd))).quit_label
                      for t in teardown_mod.targets(plans)})
+    if not labels:
+        return kinds
     total = sum(len(p.targets) for p in plans)
     print(f"\nSending {' / '.join(labels)} to {total} session(s) — "
           "this will steal keyboard focus...")
