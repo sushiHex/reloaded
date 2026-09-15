@@ -72,6 +72,34 @@ def _print_down_result(result: dict, *, timed_out_note: str = "") -> None:
         print(f"{len(result['left_open'])} window(s) left open (see warnings above).")
 
 
+def _announce_quit(plans) -> dict[str, str]:
+    """Name the keystrokes about to be sent, and return the map they came from.
+
+    Named rather than assumed: half these tabs may be quit with an interrupt
+    rather than `/exit`, and this line is the user's only record of what the
+    command did to their desktop.
+
+    Returns the map so `execute_down` is handed the same answer rather than
+    being left to its Claude-Code default - which is the whole bug this exists
+    to close, since a sweep that came back short landed in the same place.
+
+    Says nothing when there is nothing to send. `cmd_restart` reaches here
+    through a `plan_down` separate from its capture, so a window that closed in
+    between leaves a non-empty layout and an empty plan - which used to print
+    "Sending  to 0 session(s)", an empty label list and a threat to steal focus
+    for no reason.
+    """
+    kinds = teardown_mod.agent_kinds(plans)
+    labels = sorted({agents_mod.for_kind(kinds.get(norm(t.cwd))).quit_label
+                     for t in teardown_mod.targets(plans)})
+    if not labels:
+        return kinds
+    total = sum(len(p.targets) for p in plans)
+    print(f"\nSending {' / '.join(labels)} to {total} session(s) — "
+          "this will steal keyboard focus...")
+    return kinds
+
+
 def _capture_layout(args):
     """Load the previous layout (if any) and capture the current live
     arrangement. Returns (Layout, path, live, title_map) - the last two are
@@ -614,7 +642,7 @@ def _no_tab_to_type_into(cwds, plans) -> str:
     skip the rest without a word, and still return 0 - leaving the skipped
     repos' markers armed on disk.
     """
-    planned = {norm(t.cwd) for t in _targets(plans)}
+    planned = {norm(t.cwd) for t in teardown_mod.targets(plans)}
     unresolved = [c for c in cwds if norm(c) not in planned]
     if not unresolved:
         return ""
@@ -629,7 +657,7 @@ def _no_tab_to_type_into(cwds, plans) -> str:
 
 def _preview_restart(plans) -> None:
     """`--dry-run`: what would happen, and the one consequence worth previewing."""
-    for t in _targets(plans):
+    for t in teardown_mod.targets(plans):
         print(f"Would restart {t.cwd} (pid {t.pid}) in place, leaving its window open.")
         if discover_mod.launcher_kind(t.pid) == discover_mod.HAND:
             # Restarting a hand-launched session rewrites what its tab runs,
@@ -815,42 +843,34 @@ def _reopen_in_a_new_tab(s: _Restarting) -> bool:
 # directory on the next run.
 
 
-def _agent_kinds(plans) -> dict[str, str]:
-    """Which CLI each planned target is, asked of that target's own process.
-
-    `live_agents()` answers the same question by sweeping every process on the
-    machine and keying the result by directory. That is a second enumeration,
-    taken at a different moment, and a target it misses - because the sweep
-    raced the process, or because two sessions share a directory and one
-    overwrote the other - falls back to Claude Code. A Codex tab then gets
-    `/exit` typed into it.
-
-    A plan already holds each target's pid. Asking it directly is both cheaper
-    and incapable of disagreeing with itself. The sweep remains the fallback
-    for a pid that will not answer, and the kind's own default after that.
-    """
-    kinds: dict[str, str] = {}
-    sweep = None
-    for t in _targets(plans):
-        kind, _command = discover_mod.session_launch(t.pid)
-        if not kind:
-            if sweep is None:
-                sweep = discover_mod.live_agents()
-            kind = sweep.get(norm(t.cwd), agents_mod.DEFAULT_KIND)
-        kinds[norm(t.cwd)] = kind
-    return kinds
-
-
-def _targets(plans):
-    for plan in plans:
-        yield from plan.targets
-
-
 SELF_RESTART_DELAY_SECONDS = 5.0
 
 
-def _dispatch_restart(repo: str, layout: str, after: float) -> int:
+def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> int:
     """Start `restart <repo>` in a process that outlives this session.
+
+    `repo` is an absolute path, not a name. The helper is a fresh process with
+    its own working directory and its own idea of a default root, so a name is
+    only as good as the root it is resolved against - and two checkouts called
+    `app` under different roots are the same name. The path is the identity.
+
+    `repos_root` is a separate need, and the caller's own `--repos-root` is the
+    wrong value for it. Routing is settled by the absolute path, but the helper
+    still has to find the session's TAB, and `capture.resolve_tab` falls back to
+    matching a title against a root - a Codex tab is never in the transcript
+    title map, so that fallback is its only route.
+
+    Someone running `--self` from outside the default root has no reason to have
+    typed `--repos-root`: they are not naming a repo. Forwarding their flag
+    hands the helper `~/repos` in precisely the case this exists for, and the
+    failure is silent - the target is unambiguous, the tab is unfindable,
+    `_no_tab_to_type_into` refuses the batch, and the refusal goes to the
+    helper's DEVNULL after the dispatching session has said "Nothing further to
+    do."
+
+    So the caller passes `os.path.dirname(cwd)`: the path already in hand
+    reconstructs the guess exactly, for a session under the default root and one
+    anywhere else alike.
 
     The whole difficulty of restarting yourself is that the command doing it
     dies with the session it ends. So it does not do it - it hands the job to a
@@ -876,7 +896,7 @@ def _dispatch_restart(repo: str, layout: str, after: float) -> int:
     bootstrap = (
         f"import sys; sys.path.insert(0, {package_dir!r}); "
         f"from reloaded.__main__ import main; "
-        f"raise SystemExit(main({['--layout', layout, 'restart', repo, '--after', str(after)]!r}))"
+        f"raise SystemExit(main({['--layout', layout, '--repos-root', repos_root, 'restart', repo, '--after', str(after)]!r}))"
     )
 
     DETACHED_PROCESS = 0x00000008
@@ -972,18 +992,25 @@ def cmd_restart_self(args) -> int:
         return 1
 
     ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS
-    repo = os.path.basename(cwd.rstrip("\\/")) or cwd
     after = float(getattr(args, "after", 0) or 0) or SELF_RESTART_DELAY_SECONDS
     arm_only = getattr(args, "arm_only", False)
 
+    # The root the helper resolves tab titles against, derived from the session
+    # itself rather than from this process's flag. See _dispatch_restart.
+    helper_root = os.path.dirname(cwd.rstrip("\\/")) or args.repos_root
+
     if not arm_only:
         if args.dry_run:
-            print(f"Would hand {repo} to a detached `reloaded restart {repo}` "
+            # The command as it will really run, not a readable summary of it:
+            # this preview is the last chance to notice the helper has been
+            # aimed at a different `app`, and the root is half of that aim.
+            print(f"Would hand {cwd} to a detached "
+                  f"`reloaded --repos-root \"{helper_root}\" restart \"{cwd}\"` "
                   f"starting in {after:.0f}s.")
             print("\nDry run — nothing spawned.")
             return 0
         try:
-            helper = _dispatch_restart(repo, args.layout, after)
+            helper = _dispatch_restart(cwd, args.layout, after, helper_root)
         except Exception as exc:
             print(f"[warn] could not start the restart: {exc}")
             print(f"    Fall back to `reloaded restart --self --arm-only` and "
@@ -1017,7 +1044,7 @@ def cmd_restart_self(args) -> int:
     # would be surprised by an empty slot.
     print(f"    Later than that the marker is stale, and quitting just closes "
           "the tab as usual —")
-    print(f"    you would reopen it with `reloaded open {repo}`, at the end "
+    print(f"    you would reopen it with `reloaded open \"{cwd}\"`, at the end "
           "of the strip.")
     print("\n    `reloaded restart --self --cancel` calls it off.")
     return 0
@@ -1052,14 +1079,12 @@ def cmd_restart(args) -> int:
     layout_mod.save(lo, path)
     _print_capture_summary(lo, path)
 
-    print("\nExiting current sessions — this will steal keyboard focus...")
     try:
         plans = teardown_mod.plan_down(args.repos_root, live=live, title_map=title_map)
     except tabs_mod.UIAUnavailable as exc:
         return _report_uia_unavailable(exc)
 
-    down_result = teardown_mod.execute_down(
-        plans, kinds=discover_mod.live_agents())
+    down_result = teardown_mod.execute_down(plans, kinds=_announce_quit(plans))
     _print_down_result(
         down_result,
         timed_out_note=" — the relaunch below will skip them rather than duplicate them",
@@ -1101,20 +1126,7 @@ def cmd_down(args) -> int:
         print("\nDry run — nothing sent, nothing closed.")
         return 0
 
-    # Read off each target's OWN pid, not from a second cwd-keyed sweep of
-    # every process on the machine. The sweep can miss a session that is in
-    # this plan - it is a separate enumeration, taken later - and a target
-    # missing from it gets Claude's /exit sent to a Codex tab. The pid is
-    # right here; asking it directly cannot disagree with itself.
-    kinds = _agent_kinds(plans)
-    # Named rather than assumed: half these tabs may be quit with an interrupt
-    # rather than /exit, and a line that says otherwise is the user's only
-    # record of what this command did to their desktop.
-    labels = sorted({agents_mod.for_kind(kinds.get(norm(t.cwd))).quit_label
-                     for t in _targets(plans)})
-    print(f"\nSending {' / '.join(labels)} to {total} session(s) — "
-          "this will steal keyboard focus...")
-    result = teardown_mod.execute_down(plans, kinds=kinds)
+    result = teardown_mod.execute_down(plans, kinds=_announce_quit(plans))
     print()
     _print_down_result(result)
     return 1 if result["timed_out"] else 0
