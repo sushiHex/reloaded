@@ -78,6 +78,17 @@ class WindowPlan:
     targets: list[Target] = field(default_factory=list)
 
 
+def targets(plans):
+    """Every Target across every plan, in order.
+
+    Lives beside WindowPlan rather than beside any one caller: several places
+    walk a plan list this way, in both modules, and a plan's shape is this
+    module's to know.
+    """
+    for plan in plans:
+        yield from plan.targets
+
+
 def plan_down(
     repos_root: str,
     *,
@@ -234,16 +245,49 @@ def close_dead_tabs(plans, exited, still_open=None, log=print) -> int:
 
     ended = {cwd for _title, cwd in exited}
     closed = 0
-    for plan in plans:
-        for t in plan.targets:
-            if t.cwd not in ended:
-                continue
-            if still_open is not None and not still_open(t.item):
-                continue
-            if tabs_mod.close_tab(t.item):
-                log(f"    closed the empty tab left by {t.title}")
-                closed += 1
+    for t in targets(plans):
+        if t.cwd not in ended:
+            continue
+        if still_open is not None and not still_open(t.item):
+            continue
+        if tabs_mod.close_tab(t.item):
+            log(f"    closed the empty tab left by {t.title}")
+            closed += 1
     return closed
+
+
+def agent_kinds(plans) -> dict[str, str]:
+    """Which CLI each planned target is, asked of that target's own process.
+
+    `discover.live_agents()` answers the same question by sweeping every
+    process on the machine and keying the result by directory. That is a second
+    enumeration, taken at a different moment, and a target it misses - because
+    the sweep raced the process, or because two sessions share a directory and
+    one overwrote the other - falls back to Claude Code. A Codex tab then gets
+    `/exit` typed into it.
+
+    A plan already holds each target's pid. Asking it directly cannot disagree
+    with itself - at the moment it is read, which is not the moment it is used;
+    every target's kind is resolved up front, so the last one's answer is as
+    old as every earlier target's exit wait. The sweep remains the fallback for
+    a pid that will not answer, and the kind's own default after that.
+
+    One caveat for anything building a WindowPlan from elsewhere: unlike the
+    sweep, `session_launch` applies no `_hosted_elsewhere` filter, so it will
+    confidently name a `codex exec` nested inside a Claude Code session - a
+    case discover.py records as measured, not theorised. Every pid here comes
+    from `live_sessions()`, which does filter, so that is unreachable today.
+    """
+    kinds: dict[str, str] = {}
+    sweep = None
+    for t in targets(plans):
+        kind, _command = discover.session_launch(t.pid)
+        if not kind:
+            if sweep is None:
+                sweep = discover.live_agents()
+            kind = sweep.get(norm(t.cwd), agents.DEFAULT_KIND)
+        kinds[norm(t.cwd)] = kind
+    return kinds
 
 
 def execute_down(
@@ -289,6 +333,11 @@ def execute_down(
             # How this session is asked to quit depends on which CLI it is.
             # An unknown cwd is Claude Code, which is what every teardown
             # meant before a second kind existed.
+            # Omission still means Claude Code, and deliberately so. Resolving
+            # it here instead would put a psutil read - and, on a miss, a sweep
+            # of every process on the machine - behind a parameter every caller
+            # can forget. Callers that care say so; `agent_kinds` is right
+            # above, and all three in this package use it.
             agent = agents.for_kind((kinds or {}).get(norm(cwd)))
             quit_keys = agent.quit_keys
             sent = _send_exit(plan.hwnd, item, before_send=arm,
