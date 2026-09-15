@@ -857,10 +857,23 @@ def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> 
     only as good as the root it is resolved against - and two checkouts called
     `app` under different roots are the same name. The path is the identity.
 
-    `repos_root` is forwarded even so: routing is settled by the absolute path,
-    but the helper still has to find the session's TAB, and resolve_tab falls
-    back to matching a title against `repos_root`. A Codex tab has no
-    transcript to match on first, so that fallback is the only route it has.
+    `repos_root` is a separate need, and the caller's own `--repos-root` is the
+    wrong value for it. Routing is settled by the absolute path, but the helper
+    still has to find the session's TAB, and `capture.resolve_tab` falls back to
+    matching a title against a root - a Codex tab is never in the transcript
+    title map, so that fallback is its only route.
+
+    Someone running `--self` from outside the default root has no reason to have
+    typed `--repos-root`: they are not naming a repo. Forwarding their flag
+    hands the helper `~/repos` in precisely the case this exists for, and the
+    failure is silent - the target is unambiguous, the tab is unfindable,
+    `_no_tab_to_type_into` refuses the batch, and the refusal goes to the
+    helper's DEVNULL after the dispatching session has said "Nothing further to
+    do."
+
+    So the caller passes `os.path.dirname(cwd)`: the path already in hand
+    reconstructs the guess exactly, for a session under the default root and one
+    anywhere else alike.
 
     The whole difficulty of restarting yourself is that the command doing it
     dies with the session it ends. So it does not do it - it hands the job to a
@@ -985,16 +998,22 @@ def cmd_restart_self(args) -> int:
     after = float(getattr(args, "after", 0) or 0) or SELF_RESTART_DELAY_SECONDS
     arm_only = getattr(args, "arm_only", False)
 
+    # The root the helper resolves tab titles against, derived from the session
+    # itself rather than from this process's flag. See _dispatch_restart.
+    helper_root = os.path.dirname(cwd.rstrip("\\/")) or args.repos_root
+
     if not arm_only:
         if args.dry_run:
-            # The full path, not a basename: this preview is the last chance to
-            # notice the helper has been aimed at a different `app`.
-            print(f"Would hand {cwd} to a detached `reloaded restart \"{cwd}\"` "
+            # The command as it will really run, not a readable summary of it:
+            # this preview is the last chance to notice the helper has been
+            # aimed at a different `app`, and the root is half of that aim.
+            print(f"Would hand {cwd} to a detached "
+                  f"`reloaded --repos-root \"{helper_root}\" restart \"{cwd}\"` "
                   f"starting in {after:.0f}s.")
             print("\nDry run — nothing spawned.")
             return 0
         try:
-            helper = _dispatch_restart(cwd, args.layout, after, args.repos_root)
+            helper = _dispatch_restart(cwd, args.layout, after, helper_root)
         except Exception as exc:
             print(f"[warn] could not start the restart: {exc}")
             print(f"    Fall back to `reloaded restart --self --arm-only` and "

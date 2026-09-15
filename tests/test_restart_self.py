@@ -238,7 +238,10 @@ def dispatched(monkeypatch, session):
 
 def test_by_default_it_hands_the_job_to_a_detached_process(dispatched, session):
     assert main_mod.cmd_restart(_args(arm_only=False)) == 0
-    assert dispatched[0][:3] == (CWD, "default", main_mod.SELF_RESTART_DELAY_SECONDS)
+    # The length matters as much as the contents: dispatch happens exactly once,
+    # and a second helper would race the first for the same tab.
+    assert dispatched == [
+        (CWD, "default", main_mod.SELF_RESTART_DELAY_SECONDS, r"C:\repos")]
 
 
 def test_a_session_outside_the_default_root_dispatches_its_own_path(
@@ -263,12 +266,33 @@ def test_two_repos_sharing_a_basename_cannot_be_confused(dispatched, session):
     assert dispatched[0][0] == r"D:\work\app"
 
 
-def test_the_repos_root_reaches_the_helper(dispatched, session):
-    """Routing is settled by the absolute path, but the helper still resolves
-    TAB titles under a root - a Codex tab has no transcript to match on and
-    falls back to the basename guess. A helper left on the default root cannot
-    find the tab it was sent to drive."""
+def test_the_helper_gets_a_root_that_resolves_the_session_tab(dispatched, session):
+    """Routing is settled by the absolute path, but the helper still has to
+    find the session's TAB, and `resolve_tab` falls back to matching a title
+    against a root. A Codex tab is never in the transcript title map, so that
+    fallback is its only route.
+
+    The root therefore has to be the session's own parent, not the dispatching
+    process's `--repos-root`."""
     main_mod.cmd_restart(_args(arm_only=False, repos_root=r"D:\work"))
+
+    assert dispatched[0][3] == r"C:\repos"
+
+
+def test_the_forwarded_root_does_not_depend_on_the_callers_flag(dispatched, session):
+    """The whole bug report is a session outside the default root - and someone
+    in that position has no reason to have typed `--repos-root`, because they
+    are not naming a repo. Forwarding the caller's flag hands the helper
+    `~/repos` in exactly the case the fix exists for: the target is then
+    unambiguous, the tab is unfindable, `_no_tab_to_type_into` refuses the
+    batch, and the refusal prints to the helper's DEVNULL while the dispatching
+    session has already said "Nothing further to do."
+
+    Deriving the root from the path turns "restarts the wrong app" into
+    "restarts the right one" rather than into "silently does nothing"."""
+    session["found"] = (111, r"D:\work\app", "claude")
+
+    main_mod.cmd_restart(_args(arm_only=False))  # no --repos-root, as reported
 
     assert dispatched[0][3] == r"D:\work"
 
@@ -330,15 +354,32 @@ def test_the_bootstrap_carries_the_absolute_path_and_the_root(bootstrap):
 
 
 def test_the_global_options_precede_the_subcommand(bootstrap):
-    """argparse puts `--layout` and `--repos-root` on the top-level parser, so
-    after `restart` they are not options at all - they would be swallowed as
-    repo names and the helper would target two repos called `--repos-root` and
-    `D:\\work`."""
+    """`--layout` and `--repos-root` are added to the top-level parser before
+    `add_subparsers`, so they are not options after `restart`.
+
+    Verified rather than assumed: argparse does not fold them into `repos`
+    (`nargs="*"` skips anything starting with a prefix char) - it exits 2 with
+    "unrecognized arguments". So the failure mode for a misordered bootstrap is
+    a helper that dies instantly into DEVNULL, with the dispatching session
+    still reporting a successful handoff. Silent, not wrong."""
     main_mod._dispatch_restart(r"D:\work\app", "work", 7.0, r"D:\work")
 
     argv = _helper_argv(bootstrap)
     assert argv.index("--layout") < argv.index("restart")
     assert argv.index("--repos-root") < argv.index("restart")
+
+
+def test_the_bootstrap_argv_is_one_argparse_accepts(bootstrap):
+    """The ordering above only matters because of what it prevents, so parse it
+    with the real parser rather than trusting the index comparison."""
+    main_mod._dispatch_restart(r"D:\work\app", "work", 7.0, r"D:\work")
+
+    parsed = main_mod.build_parser().parse_args(_helper_argv(bootstrap))
+
+    assert parsed.command == "restart"
+    assert parsed.repos == [r"D:\work\app"]
+    assert parsed.repos_root == r"D:\work"
+    assert parsed.layout == "work"
 
 
 def test_a_path_with_spaces_stays_one_argument(bootstrap):

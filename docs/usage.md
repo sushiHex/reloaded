@@ -147,11 +147,14 @@ default delay; `--after` changes that delay. A successful return confirms
 handoff, not completion. Save a concise handoff note, finish the turn before
 the delay expires, and check the session after it returns.
 
-The detached helper receives the calling session's absolute directory, and the
-active `--repos-root` is forwarded to it. A session outside the default root
-restarts correctly, and two checkouts sharing a basename cannot be confused:
-the path is the identity, not the name. The dry run prints that full path, so
-check it names the session you meant.
+The detached helper receives the calling session's absolute directory, and a
+`--repos-root` derived from it — the session's own parent directory, not the
+one the calling process happens to be using. The path settles which session is
+restarted; the root is what lets the helper find that session's tab, since a
+Codex tab has no transcript title to match on and resolves by name under the
+root instead. A session outside the default root restarts correctly, and two
+checkouts sharing a basename cannot be confused. The dry run prints the command
+as it will really run, root included, so check it names the session you meant.
 
 `--self` cannot take repository names. It refuses an ordinary terminal and a
 hand-started session whose shell has no Reloaded loop. Restart a hand-started
