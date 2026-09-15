@@ -120,3 +120,31 @@ def test_an_unknown_target_is_treated_as_claude(monkeypatch):
 
 def test_kinds_may_be_omitted_entirely(monkeypatch):
     assert _run(monkeypatch, None) == [("/exit", "{Enter}")]
+
+
+def test_omitting_kinds_asks_nothing_of_the_machine(monkeypatch):
+    """The reason `execute_down` does not resolve kinds itself.
+
+    Making omission mean "read each target's pid" is the tempting fix, and it
+    is wrong here: ~30 call sites across this suite omit `kinds`, so every one
+    of them would reach `discover.session_launch` on a fixture pid like 111 and
+    then fall through to `live_agents()`, a psutil sweep of every process on
+    the developer's machine. Measured when it was briefly done that way: three
+    teardown files went from 0.70s to 28.40s, and they still passed - fixture
+    cwds are not on the machine, so the sweep missed and the Claude default
+    came back anyway.
+
+    Passing for an accidental reason, slowly, against live machine state is
+    precisely the failure conftest.py was written about: "the only symptom at
+    the time was the suite getting slower, which was written off as the real
+    function's sleeps."
+    """
+    asked = []
+    monkeypatch.setattr(teardown_mod.discover, "session_launch",
+                        lambda pid: asked.append(pid) or ("", ""))
+    monkeypatch.setattr(teardown_mod.discover, "live_agents",
+                        lambda: asked.append("sweep") or {})
+
+    _run(monkeypatch, None)
+
+    assert asked == [], "execute_down reached discovery for a caller that omitted kinds"
