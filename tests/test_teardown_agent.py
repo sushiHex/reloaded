@@ -114,9 +114,26 @@ def test_a_claude_target_is_sent_exit(monkeypatch):
 
 
 def test_an_unknown_target_is_treated_as_claude(monkeypatch):
-    """Which is what every teardown before agent kinds assumed."""
+    """Which is what every teardown before agent kinds assumed.
+
+    An empty map is an answer, not the absence of one: a caller holding a map
+    this cwd is simply not in has already looked. Contrast the next test, where
+    nothing was passed at all.
+    """
     assert _run(monkeypatch, {}) == [("/exit", "{Enter}")]
 
 
-def test_kinds_may_be_omitted_entirely(monkeypatch):
-    assert _run(monkeypatch, None) == [("/exit", "{Enter}")]
+def test_omitted_kinds_are_read_from_each_targets_own_process(monkeypatch):
+    """Omission used to mean "assume Claude Code", and that default is what
+    made the bug in `cmd_restart` invisible: it passed a sweep that could come
+    back without a given cwd, which lands in the same place as passing nothing.
+
+    Now the absence of an answer is a question, asked of the pid in the plan.
+    A caller who says nothing gets the truth rather than the kind that happened
+    to predate there being more than one.
+    """
+    monkeypatch.setattr(teardown_mod.discover, "session_launch",
+                        lambda pid: ("codex", "codex resume"))
+    monkeypatch.setattr(teardown_mod.discover, "live_agents", lambda: {})
+
+    assert _run(monkeypatch, None) == [("{Ctrl}c", "{Ctrl}c")]

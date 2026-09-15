@@ -72,6 +72,26 @@ def _print_down_result(result: dict, *, timed_out_note: str = "") -> None:
         print(f"{len(result['left_open'])} window(s) left open (see warnings above).")
 
 
+def _announce_quit(plans) -> dict[str, str]:
+    """Name the keystrokes about to be sent, and return the map they came from.
+
+    Named rather than assumed: half these tabs may be quit with an interrupt
+    rather than `/exit`, and this line is the user's only record of what the
+    command did to their desktop.
+
+    Returns the map so `execute_down` is not asked to work the same answer out
+    a second time - resolving it costs one psutil lookup per target, and the
+    caller that reports it is the caller that already paid.
+    """
+    kinds = teardown_mod.agent_kinds(plans)
+    labels = sorted({agents_mod.for_kind(kinds.get(norm(t.cwd))).quit_label
+                     for t in teardown_mod.targets(plans)})
+    total = sum(len(p.targets) for p in plans)
+    print(f"\nSending {' / '.join(labels)} to {total} session(s) — "
+          "this will steal keyboard focus...")
+    return kinds
+
+
 def _capture_layout(args):
     """Load the previous layout (if any) and capture the current live
     arrangement. Returns (Layout, path, live, title_map) - the last two are
@@ -614,7 +634,7 @@ def _no_tab_to_type_into(cwds, plans) -> str:
     skip the rest without a word, and still return 0 - leaving the skipped
     repos' markers armed on disk.
     """
-    planned = {norm(t.cwd) for t in _targets(plans)}
+    planned = {norm(t.cwd) for t in teardown_mod.targets(plans)}
     unresolved = [c for c in cwds if norm(c) not in planned]
     if not unresolved:
         return ""
@@ -629,7 +649,7 @@ def _no_tab_to_type_into(cwds, plans) -> str:
 
 def _preview_restart(plans) -> None:
     """`--dry-run`: what would happen, and the one consequence worth previewing."""
-    for t in _targets(plans):
+    for t in teardown_mod.targets(plans):
         print(f"Would restart {t.cwd} (pid {t.pid}) in place, leaving its window open.")
         if discover_mod.launcher_kind(t.pid) == discover_mod.HAND:
             # Restarting a hand-launched session rewrites what its tab runs,
@@ -813,37 +833,6 @@ def _reopen_in_a_new_tab(s: _Restarting) -> bool:
 # exit". The rest of staleness is handled where being wrong costs nothing:
 # deploy's TTL makes an old marker inert, and _sweep_stale_markers clears the
 # directory on the next run.
-
-
-def _agent_kinds(plans) -> dict[str, str]:
-    """Which CLI each planned target is, asked of that target's own process.
-
-    `live_agents()` answers the same question by sweeping every process on the
-    machine and keying the result by directory. That is a second enumeration,
-    taken at a different moment, and a target it misses - because the sweep
-    raced the process, or because two sessions share a directory and one
-    overwrote the other - falls back to Claude Code. A Codex tab then gets
-    `/exit` typed into it.
-
-    A plan already holds each target's pid. Asking it directly is both cheaper
-    and incapable of disagreeing with itself. The sweep remains the fallback
-    for a pid that will not answer, and the kind's own default after that.
-    """
-    kinds: dict[str, str] = {}
-    sweep = None
-    for t in _targets(plans):
-        kind, _command = discover_mod.session_launch(t.pid)
-        if not kind:
-            if sweep is None:
-                sweep = discover_mod.live_agents()
-            kind = sweep.get(norm(t.cwd), agents_mod.DEFAULT_KIND)
-        kinds[norm(t.cwd)] = kind
-    return kinds
-
-
-def _targets(plans):
-    for plan in plans:
-        yield from plan.targets
 
 
 SELF_RESTART_DELAY_SECONDS = 5.0
@@ -1052,14 +1041,12 @@ def cmd_restart(args) -> int:
     layout_mod.save(lo, path)
     _print_capture_summary(lo, path)
 
-    print("\nExiting current sessions — this will steal keyboard focus...")
     try:
         plans = teardown_mod.plan_down(args.repos_root, live=live, title_map=title_map)
     except tabs_mod.UIAUnavailable as exc:
         return _report_uia_unavailable(exc)
 
-    down_result = teardown_mod.execute_down(
-        plans, kinds=discover_mod.live_agents())
+    down_result = teardown_mod.execute_down(plans, kinds=_announce_quit(plans))
     _print_down_result(
         down_result,
         timed_out_note=" — the relaunch below will skip them rather than duplicate them",
@@ -1101,20 +1088,7 @@ def cmd_down(args) -> int:
         print("\nDry run — nothing sent, nothing closed.")
         return 0
 
-    # Read off each target's OWN pid, not from a second cwd-keyed sweep of
-    # every process on the machine. The sweep can miss a session that is in
-    # this plan - it is a separate enumeration, taken later - and a target
-    # missing from it gets Claude's /exit sent to a Codex tab. The pid is
-    # right here; asking it directly cannot disagree with itself.
-    kinds = _agent_kinds(plans)
-    # Named rather than assumed: half these tabs may be quit with an interrupt
-    # rather than /exit, and a line that says otherwise is the user's only
-    # record of what this command did to their desktop.
-    labels = sorted({agents_mod.for_kind(kinds.get(norm(t.cwd))).quit_label
-                     for t in _targets(plans)})
-    print(f"\nSending {' / '.join(labels)} to {total} session(s) — "
-          "this will steal keyboard focus...")
-    result = teardown_mod.execute_down(plans, kinds=kinds)
+    result = teardown_mod.execute_down(plans, kinds=_announce_quit(plans))
     print()
     _print_down_result(result)
     return 1 if result["timed_out"] else 0

@@ -12,6 +12,7 @@ import pytest
 
 import reloaded.__main__ as main_mod
 import reloaded.discover as discover_mod
+import reloaded.teardown as teardown_mod
 import reloaded.layout as layout_mod
 import reloaded.tabs as tabs_mod
 from conftest import make_layout, make_window
@@ -41,7 +42,7 @@ def test_the_quit_kind_is_read_from_the_targets_own_process(monkeypatch):
                         lambda pid: ("codex", "codex resume"))
     monkeypatch.setattr(discover_mod, "live_agents", lambda: {})
 
-    kinds = main_mod._agent_kinds(_plans(
+    kinds = teardown_mod.agent_kinds(_plans(
         main_mod.teardown_mod.Target("app", CWD, 111, _Item())))
 
     assert kinds == {norm(CWD): "codex"}
@@ -52,7 +53,7 @@ def test_the_sweep_is_the_fallback_for_a_pid_that_will_not_answer(monkeypatch):
     monkeypatch.setattr(discover_mod, "live_agents",
                         lambda: {norm(CWD): "codex"})
 
-    kinds = main_mod._agent_kinds(_plans(
+    kinds = teardown_mod.agent_kinds(_plans(
         main_mod.teardown_mod.Target("app", CWD, 111, _Item())))
 
     assert kinds == {norm(CWD): "codex"}
@@ -62,7 +63,7 @@ def test_nothing_answering_falls_back_to_the_default_kind(monkeypatch):
     monkeypatch.setattr(discover_mod, "session_launch", lambda pid: ("", ""))
     monkeypatch.setattr(discover_mod, "live_agents", lambda: {})
 
-    kinds = main_mod._agent_kinds(_plans(
+    kinds = teardown_mod.agent_kinds(_plans(
         main_mod.teardown_mod.Target("app", CWD, 111, _Item())))
 
     assert kinds == {norm(CWD): main_mod.agents_mod.DEFAULT_KIND}
@@ -77,10 +78,77 @@ def test_the_sweep_is_not_run_when_every_pid_answers(monkeypatch):
     monkeypatch.setattr(discover_mod, "live_agents",
                         lambda: swept.append(1) or {})
 
-    main_mod._agent_kinds(_plans(
+    teardown_mod.agent_kinds(_plans(
         main_mod.teardown_mod.Target("app", CWD, 111, _Item())))
 
     assert swept == []
+
+
+# ── the site that pass missed: a bare restart ────────────────────────────
+
+
+def _codex_tab_plan():
+    return main_mod.teardown_mod.WindowPlan(
+        hwnd=1, total_tabs=1,
+        targets=[main_mod.teardown_mod.Target("app", CWD, 222, _TabItem())],
+    )
+
+
+class _TabItem:
+    def GetChildren(self):
+        return []
+
+
+def test_a_bare_restart_reads_the_quit_kind_from_the_targets_own_process(
+    tmp_path, monkeypatch
+):
+    """`cmd_down` was given `_agent_kinds`; `cmd_restart` was not, and kept
+    handing `execute_down` the `live_agents()` sweep directly.
+
+    A Codex session the sweep misses is treated as Claude Code, so `/exit` and
+    Enter are typed into a TUI that ignores them. The resend types them again,
+    the pid never goes away, and twenty seconds later the session is reported
+    as "did not exit in time" — neither quit nor restarted, with nothing on
+    screen saying the wrong keys were sent.
+    """
+    sent = []
+    monkeypatch.setattr(main_mod, "layout_path", lambda name: tmp_path / "default.json")
+    monkeypatch.setattr(main_mod.capture_mod, "capture_live", lambda *a, **k: make_layout(
+        [make_window([0, 0, 800, 600], [Tab(cwd=CWD, title="app")])]))
+    monkeypatch.setattr(main_mod.layout_mod, "save", lambda layout, path: None)
+    monkeypatch.setattr(main_mod.teardown_mod, "plan_down",
+                        lambda repos_root, **kw: [_codex_tab_plan()])
+    monkeypatch.setattr(main_mod, "_deploy_layout", lambda layout, args: 0)
+
+    # The tab is Codex, and the machine-wide sweep does not know about it.
+    monkeypatch.setattr(discover_mod, "session_launch", lambda pid: ("codex", "codex resume"))
+    monkeypatch.setattr(discover_mod, "live_agents", lambda: {})
+
+    _stub_the_desktop(monkeypatch, sent)
+
+    main_mod.cmd_restart(types.SimpleNamespace(
+        layout="default", repos_root=r"C:\repos", unattended=False,
+        dry_run=False, repos=[]))
+
+    assert sent == [("{Ctrl}c", "{Ctrl}c")]
+
+
+def _stub_the_desktop(monkeypatch, sent):
+    """Let the real execute_down run, with every desktop effect replaced.
+
+    Stubbing `execute_down` itself would assert that a particular argument was
+    passed, which is a claim about plumbing. What matters is which keystrokes
+    reach the tab, so the keystroke sender is the only thing faked.
+    """
+    import psutil
+
+    monkeypatch.setattr(main_mod.teardown_mod, "EXIT_TIMEOUT_SECONDS", 0.2)
+    monkeypatch.setattr(main_mod.teardown_mod, "EXIT_POLL_SECONDS", 0.01)
+    monkeypatch.setattr(tabs_mod, "select_tab", lambda hwnd, item: True)
+    monkeypatch.setattr(tabs_mod, "send_quit_keystrokes",
+                        lambda keys, **kw: sent.append(tuple(keys)))
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
+    monkeypatch.setattr(main_mod.teardown_mod.win32, "close_window", lambda hwnd: True)
 
 
 # ── an executable name reads the same in either case ─────────────────────
