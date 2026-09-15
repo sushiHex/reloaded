@@ -78,7 +78,11 @@ def test_it_says_what_missing_the_window_costs(session, capsys):
 
     out = capsys.readouterr().out
     assert "closes the tab" in out, "it never says the tab closes"
-    assert "reloaded open app" in out, "it never says how to get it back"
+    # The full path, not the basename it used to print. This line is meant to
+    # be copied and run, and a bare name routes through whatever --repos-root
+    # the next shell happens to default to - which is the same mistake the
+    # dispatch above was making.
+    assert f'reloaded open "{CWD}"' in out, "it never says how to get it back"
 
 
 def test_a_codex_session_is_told_to_use_its_own_quit_keys(session, capsys):
@@ -227,15 +231,124 @@ def dispatched(monkeypatch, session):
     """Capture the delegate instead of spawning it."""
     calls = []
     monkeypatch.setattr(main_mod, "_dispatch_restart",
-                        lambda repo, layout, after: calls.append(
-                            (repo, layout, after)) or 4242)
+                        lambda repo, layout, after, repos_root: calls.append(
+                            (repo, layout, after, repos_root)) or 4242)
     return calls
 
 
 def test_by_default_it_hands_the_job_to_a_detached_process(dispatched, session):
-    main_mod.cmd_restart(_args(arm_only=False))
+    assert main_mod.cmd_restart(_args(arm_only=False)) == 0
+    assert dispatched[0][:3] == (CWD, "default", main_mod.SELF_RESTART_DELAY_SECONDS)
 
-    assert dispatched == [("app", "default", main_mod.SELF_RESTART_DELAY_SECONDS)]
+
+def test_a_session_outside_the_default_root_dispatches_its_own_path(
+    dispatched, session
+):
+    session["found"] = (111, r"D:\work\app", "claude")
+
+    main_mod.cmd_restart(_args(arm_only=False, repos_root=r"D:\work"))
+
+    assert dispatched[0][0] == r"D:\work\app"
+
+
+def test_two_repos_sharing_a_basename_cannot_be_confused(dispatched, session):
+    """`C:\\repos\\app` and `D:\\work\\app` are both "app". The old dispatch
+    sent that name to a helper resolving under its own default root, so a
+    self-restart in one could restart the other."""
+    session["found"] = (111, r"D:\work\app", "claude")
+
+    main_mod.cmd_restart(_args(arm_only=False, repos_root=r"D:\work"))
+
+    assert dispatched[0][0] != "app"
+    assert dispatched[0][0] == r"D:\work\app"
+
+
+def test_the_repos_root_reaches_the_helper(dispatched, session):
+    """Routing is settled by the absolute path, but the helper still resolves
+    TAB titles under a root - a Codex tab has no transcript to match on and
+    falls back to the basename guess. A helper left on the default root cannot
+    find the tab it was sent to drive."""
+    main_mod.cmd_restart(_args(arm_only=False, repos_root=r"D:\work"))
+
+    assert dispatched[0][3] == r"D:\work"
+
+
+def test_the_dry_run_names_the_full_target_path(session, capsys):
+    """The preview is the last chance to notice the helper was aimed at the
+    wrong "app". A basename cannot show that."""
+    main_mod.cmd_restart(_args(arm_only=False, dry_run=True))
+
+    assert CWD in capsys.readouterr().out
+
+
+# ── what the detached process is actually told ───────────────────────────
+
+
+@pytest.fixture
+def bootstrap(monkeypatch):
+    """The argv of the real spawn, without spawning it.
+
+    `sys.executable` is not on conftest's forbidden list - nothing stops this
+    from starting a real detached python that outlives the suite - so Popen is
+    replaced here rather than relied upon to refuse.
+    """
+    import subprocess
+
+    argv = []
+
+    class _Popen:
+        def __init__(self, a, **kw):
+            argv.append(a)
+            self.pid = 4242
+
+    monkeypatch.setattr(subprocess, "Popen", _Popen)
+    return argv
+
+
+def _helper_argv(spawned):
+    """The argv the helper will really see.
+
+    Asserting on the bootstrap's *text* would be asserting on repr escaping -
+    a path arrives there as `D:\\\\work\\\\app` and matching that proves
+    nothing about what the helper parses. The list is read back the way the
+    interpreter will read it.
+    """
+    import ast
+
+    source = spawned[0][2]
+    start = source.index("[", source.index("main("))
+    return ast.literal_eval(source[start:source.rindex("]") + 1])
+
+
+def test_the_bootstrap_carries_the_absolute_path_and_the_root(bootstrap):
+    main_mod._dispatch_restart(r"D:\work\app", "work", 7.0, r"D:\work")
+
+    assert _helper_argv(bootstrap) == [
+        "--layout", "work", "--repos-root", r"D:\work",
+        "restart", r"D:\work\app", "--after", "7.0",
+    ]
+
+
+def test_the_global_options_precede_the_subcommand(bootstrap):
+    """argparse puts `--layout` and `--repos-root` on the top-level parser, so
+    after `restart` they are not options at all - they would be swallowed as
+    repo names and the helper would target two repos called `--repos-root` and
+    `D:\\work`."""
+    main_mod._dispatch_restart(r"D:\work\app", "work", 7.0, r"D:\work")
+
+    argv = _helper_argv(bootstrap)
+    assert argv.index("--layout") < argv.index("restart")
+    assert argv.index("--repos-root") < argv.index("restart")
+
+
+def test_a_path_with_spaces_stays_one_argument(bootstrap):
+    """The bootstrap is Python source, not a shell line - the list is embedded
+    by repr and read back by the interpreter, so a space is just a character.
+    Pinned because the obvious "fix" of building a command string is what
+    breaks it."""
+    main_mod._dispatch_restart(r"C:\work\my project", "default", 5.0, r"C:\work")
+
+    assert r"C:\work\my project" in _helper_argv(bootstrap)
 
 
 def test_it_does_not_arm_the_marker_itself(dispatched, session):

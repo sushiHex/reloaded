@@ -129,11 +129,10 @@ reloaded restart --self --after 10
 
 Save useful handoff notes before dispatching and finish the turn within the
 delay. The default delay is five seconds. `--self` requires a recognized agent
-session using Reloaded's launcher and cannot take a repository name. Its helper
-currently resolves the repo name under `~/repos`; for other locations, use a
-named restart by absolute path from another session or manual arming. For manual
-exit timing, cancellation limits, and hand-started sessions, read
-[self restart](docs/usage.md#self-restart).
+session using Reloaded's launcher and cannot take a repository name; it targets
+the calling session's own directory, wherever that is, and forwards the active
+`--repos-root`. For manual exit timing, cancellation limits, and hand-started
+sessions, read [self restart](docs/usage.md#self-restart).
 
 ## Restore at sign-in
 

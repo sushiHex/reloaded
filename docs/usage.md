@@ -147,10 +147,11 @@ default delay; `--after` changes that delay. A successful return confirms
 handoff, not completion. Save a concise handoff note, finish the turn before
 the delay expires, and check the session after it returns.
 
-The detached helper currently receives the repository's basename and uses the
-default `~/repos` root; `--repos-root` is not forwarded. For a session outside
-that root, use a named restart with its absolute path from another terminal,
-or the manual arming path below, which uses the caller's actual directory.
+The detached helper receives the calling session's absolute directory, and the
+active `--repos-root` is forwarded to it. A session outside the default root
+restarts correctly, and two checkouts sharing a basename cannot be confused:
+the path is the identity, not the name. The dry run prints that full path, so
+check it names the session you meant.
 
 `--self` cannot take repository names. It refuses an ordinary terminal and a
 hand-started session whose shell has no Reloaded loop. Restart a hand-started

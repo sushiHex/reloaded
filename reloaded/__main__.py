@@ -849,8 +849,18 @@ def _targets(plans):
 SELF_RESTART_DELAY_SECONDS = 5.0
 
 
-def _dispatch_restart(repo: str, layout: str, after: float) -> int:
+def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> int:
     """Start `restart <repo>` in a process that outlives this session.
+
+    `repo` is an absolute path, not a name. The helper is a fresh process with
+    its own working directory and its own idea of a default root, so a name is
+    only as good as the root it is resolved against - and two checkouts called
+    `app` under different roots are the same name. The path is the identity.
+
+    `repos_root` is forwarded even so: routing is settled by the absolute path,
+    but the helper still has to find the session's TAB, and resolve_tab falls
+    back to matching a title against `repos_root`. A Codex tab has no
+    transcript to match on first, so that fallback is the only route it has.
 
     The whole difficulty of restarting yourself is that the command doing it
     dies with the session it ends. So it does not do it - it hands the job to a
@@ -876,7 +886,7 @@ def _dispatch_restart(repo: str, layout: str, after: float) -> int:
     bootstrap = (
         f"import sys; sys.path.insert(0, {package_dir!r}); "
         f"from reloaded.__main__ import main; "
-        f"raise SystemExit(main({['--layout', layout, 'restart', repo, '--after', str(after)]!r}))"
+        f"raise SystemExit(main({['--layout', layout, '--repos-root', repos_root, 'restart', repo, '--after', str(after)]!r}))"
     )
 
     DETACHED_PROCESS = 0x00000008
@@ -972,18 +982,19 @@ def cmd_restart_self(args) -> int:
         return 1
 
     ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS
-    repo = os.path.basename(cwd.rstrip("\\/")) or cwd
     after = float(getattr(args, "after", 0) or 0) or SELF_RESTART_DELAY_SECONDS
     arm_only = getattr(args, "arm_only", False)
 
     if not arm_only:
         if args.dry_run:
-            print(f"Would hand {repo} to a detached `reloaded restart {repo}` "
+            # The full path, not a basename: this preview is the last chance to
+            # notice the helper has been aimed at a different `app`.
+            print(f"Would hand {cwd} to a detached `reloaded restart \"{cwd}\"` "
                   f"starting in {after:.0f}s.")
             print("\nDry run — nothing spawned.")
             return 0
         try:
-            helper = _dispatch_restart(repo, args.layout, after)
+            helper = _dispatch_restart(cwd, args.layout, after, args.repos_root)
         except Exception as exc:
             print(f"[warn] could not start the restart: {exc}")
             print(f"    Fall back to `reloaded restart --self --arm-only` and "
@@ -1017,7 +1028,7 @@ def cmd_restart_self(args) -> int:
     # would be surprised by an empty slot.
     print(f"    Later than that the marker is stale, and quitting just closes "
           "the tab as usual —")
-    print(f"    you would reopen it with `reloaded open {repo}`, at the end "
+    print(f"    you would reopen it with `reloaded open \"{cwd}\"`, at the end "
           "of the strip.")
     print("\n    `reloaded restart --self --cancel` calls it off.")
     return 0
