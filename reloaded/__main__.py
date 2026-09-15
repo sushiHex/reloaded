@@ -846,8 +846,31 @@ def _reopen_in_a_new_tab(s: _Restarting) -> bool:
 SELF_RESTART_DELAY_SECONDS = 5.0
 
 
-def _dispatch_restart(repo: str, layout: str, after: float) -> int:
+def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> int:
     """Start `restart <repo>` in a process that outlives this session.
+
+    `repo` is an absolute path, not a name. The helper is a fresh process with
+    its own working directory and its own idea of a default root, so a name is
+    only as good as the root it is resolved against - and two checkouts called
+    `app` under different roots are the same name. The path is the identity.
+
+    `repos_root` is a separate need, and the caller's own `--repos-root` is the
+    wrong value for it. Routing is settled by the absolute path, but the helper
+    still has to find the session's TAB, and `capture.resolve_tab` falls back to
+    matching a title against a root - a Codex tab is never in the transcript
+    title map, so that fallback is its only route.
+
+    Someone running `--self` from outside the default root has no reason to have
+    typed `--repos-root`: they are not naming a repo. Forwarding their flag
+    hands the helper `~/repos` in precisely the case this exists for, and the
+    failure is silent - the target is unambiguous, the tab is unfindable,
+    `_no_tab_to_type_into` refuses the batch, and the refusal goes to the
+    helper's DEVNULL after the dispatching session has said "Nothing further to
+    do."
+
+    So the caller passes `os.path.dirname(cwd)`: the path already in hand
+    reconstructs the guess exactly, for a session under the default root and one
+    anywhere else alike.
 
     The whole difficulty of restarting yourself is that the command doing it
     dies with the session it ends. So it does not do it - it hands the job to a
@@ -873,7 +896,7 @@ def _dispatch_restart(repo: str, layout: str, after: float) -> int:
     bootstrap = (
         f"import sys; sys.path.insert(0, {package_dir!r}); "
         f"from reloaded.__main__ import main; "
-        f"raise SystemExit(main({['--layout', layout, 'restart', repo, '--after', str(after)]!r}))"
+        f"raise SystemExit(main({['--layout', layout, '--repos-root', repos_root, 'restart', repo, '--after', str(after)]!r}))"
     )
 
     DETACHED_PROCESS = 0x00000008
@@ -969,18 +992,25 @@ def cmd_restart_self(args) -> int:
         return 1
 
     ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS
-    repo = os.path.basename(cwd.rstrip("\\/")) or cwd
     after = float(getattr(args, "after", 0) or 0) or SELF_RESTART_DELAY_SECONDS
     arm_only = getattr(args, "arm_only", False)
 
+    # The root the helper resolves tab titles against, derived from the session
+    # itself rather than from this process's flag. See _dispatch_restart.
+    helper_root = os.path.dirname(cwd.rstrip("\\/")) or args.repos_root
+
     if not arm_only:
         if args.dry_run:
-            print(f"Would hand {repo} to a detached `reloaded restart {repo}` "
+            # The command as it will really run, not a readable summary of it:
+            # this preview is the last chance to notice the helper has been
+            # aimed at a different `app`, and the root is half of that aim.
+            print(f"Would hand {cwd} to a detached "
+                  f"`reloaded --repos-root \"{helper_root}\" restart \"{cwd}\"` "
                   f"starting in {after:.0f}s.")
             print("\nDry run — nothing spawned.")
             return 0
         try:
-            helper = _dispatch_restart(repo, args.layout, after)
+            helper = _dispatch_restart(cwd, args.layout, after, helper_root)
         except Exception as exc:
             print(f"[warn] could not start the restart: {exc}")
             print(f"    Fall back to `reloaded restart --self --arm-only` and "
@@ -1014,7 +1044,7 @@ def cmd_restart_self(args) -> int:
     # would be surprised by an empty slot.
     print(f"    Later than that the marker is stale, and quitting just closes "
           "the tab as usual —")
-    print(f"    you would reopen it with `reloaded open {repo}`, at the end "
+    print(f"    you would reopen it with `reloaded open \"{cwd}\"`, at the end "
           "of the strip.")
     print("\n    `reloaded restart --self --cancel` calls it off.")
     return 0
