@@ -72,7 +72,7 @@ automation, so a later sign-in can restore the saved layout again.
 | Path | Contents |
 | --- | --- |
 | `~/.reloaded/layouts/<name>.json` | Saved windows, tabs, geometry, and launch commands. |
-| `~/.reloaded/reloaded.log` | Unattended deployment output, readiness results, and crash reports. |
+| `~/.reloaded/reloaded.log` | Unattended deployment output, readiness results, crash reports, and every change a capture made to the layout. |
 | `~/.reloaded/restart/` | Short-lived restart markers. |
 | `~/.reloaded/relaunch/` | Launcher scripts used to upgrade hand-started tabs. |
 
@@ -83,8 +83,21 @@ PowerShell:
 Get-Content -LiteralPath "$env:USERPROFILE\.reloaded\reloaded.log" -Tail 80
 ```
 
-Routine periodic-capture output is not a continuous audit log. Reproduce a
-capture interactively to see its refusal or unmatched-session messages.
+Periodic capture records every change it makes to the layout — repositories
+gained or lost, with full paths, and any refusal to overwrite — whether or not
+the run was attended. It writes nothing when the set of repositories is
+unchanged, so the log stays short enough to skim: a capture every five minutes
+that said "same as last time" would bury the one line that matters.
+
+```
+2026-09-18 01:01:54  [reloaded] layout gained 1 (c:\users\kfaim\repos\kakeibo)
+2026-09-18 04:36:22  [reloaded] layout lost 2 (c:\users\kfaim\repos\meta, c:\users\kfaim\repos\retro)
+```
+
+Geometry and window grouping change on almost every capture and are not
+recorded. Repositories you close on purpose are recorded as losses, because
+nothing distinguishes them from the ones that went missing — which is the
+point of writing them down.
 
 ## Troubleshooting
 

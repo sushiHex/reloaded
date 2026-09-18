@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .agents import DEFAULT_KIND
+from .paths import norm
 
 LAYOUT_VERSION = 1
 
@@ -157,6 +158,16 @@ def window_header(w: Window) -> str:
     """Monitor and geometry, formatted identically everywhere it is shown."""
     x, y, width, height = w.rect
     return f"{w.monitor}  ({x},{y} {width}x{height}, {w.state})"
+
+
+def repo_set(lo: Layout) -> set[str]:
+    """Every repo a layout holds, normalized.
+
+    A layout's identity for the one question worth asking about a capture: did
+    it lose something the last one had? Geometry, order and window grouping all
+    change constantly and none of them are losses.
+    """
+    return {norm(t.cwd) for w in lo.windows for t in w.tabs}
 
 
 def save(lo: Layout, path) -> None:

@@ -36,6 +36,15 @@ insets account for Terminal's invisible resize borders, and changed monitor
 layouts trigger re-anchoring and DPI scaling. A launch must be associated with
 its new window before geometry can be applied; failures are reported.
 
+A capture records what it changed about the layout — repositories gained or
+lost, and refusals — in `~/.reloaded/reloaded.log`, and says nothing when the
+repository set is unchanged. Recorded regardless of whether the run was
+attended, unlike deploy output, because it describes the user's saved state
+rather than the run; a loss is printed as well, since the capture summary shows
+what remains and never what went. The reconcile task rewrites the layout every
+five minutes under `pyw.exe` with no console, so before this it changed the one
+durable artifact thousands of times without leaving a trace.
+
 Pinned editor entries survive capture even when their sessions are absent.
 Normal capture refuses to drop previously saved repositories that are still
 running but were missed by the tab scan. A full restart performs its own fresh
