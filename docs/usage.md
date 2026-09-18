@@ -123,9 +123,23 @@ open. Quit attempts wait up to 20 seconds per session and include a retry.
 Prompts or active work may consume the keystrokes instead of exiting.
 
 Full `restart` saves a fresh capture **before** teardown, then deploys it and
-skips sessions that stayed alive. A named restart verifies a different process
-ID; seeing the original process still running does not count as a restart.
-Read timeout and placement warnings even if a tab remains visible.
+skips sessions that stayed alive. If that capture loses a repository that is
+still running — a window that read as empty rather than a session that went
+away — the restart refuses before saving anything and before exiting anything.
+The relaunch deploys from that capture, so a session it missed is dropped from
+the layout either way; if the window recovers before teardown the session is
+also exited and then not brought back.
+
+Prefer `reloaded restart <repo>` in that state: a named restart takes no
+capture and cannot rewrite the layout. `restart --force` accepts the capture
+anyway, as `capture --force` does. `restart --dry-run` reports the refusal
+instead of previewing a run that would stop, and exits non-zero to say so —
+the only dry run in the CLI that does, because it is the only one that can
+preview a refusal.
+
+A named restart verifies a different process ID; seeing the original process
+still running does not count as a restart. Read timeout and placement warnings
+even if a tab remains visible.
 
 Avoid overlapping restart commands for the same repository, or mixing a full
 restart with named restarts. They share markers without transaction isolation.
