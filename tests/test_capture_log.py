@@ -27,6 +27,41 @@ import reloaded.__main__ as main_mod
 from reloaded.layout import Tab
 
 
+def test_log_writes_exactly_what_it_prints(monkeypatch, tmp_path, capsys):
+    """The one pre-existing behaviour this change touches.
+
+    `_log` built one line and used it for both halves. Splitting the file write
+    out into `_record` briefly gave each half its own `now()`, so the console
+    and the log could disagree by a second whenever the write landed across a
+    tick - and lining those two up is the whole reason anyone reads both for
+    the same run.
+
+    Nothing caught it: every test of the deploy path monkeypatches `_log`
+    wholesale, so the seam inside it was never exercised. The clock is stubbed
+    to tick on every read, which turns a race into a certainty - a second read
+    takes a different second and the two lines cannot match.
+    """
+    import datetime as dt
+
+    log = tmp_path / "reloaded.log"
+    monkeypatch.setattr(main_mod, "log_path", lambda: log)
+
+    ticks = iter([dt.datetime(2026, 1, 1, 0, 0, s) for s in range(10)])
+
+    class _Ticking(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return next(ticks)
+
+    monkeypatch.setattr(dt, "datetime", _Ticking)
+
+    main_mod._log("readiness: ready")
+
+    printed = capsys.readouterr().out
+    assert printed == log.read_text(encoding="utf-8")
+    assert printed == "2026-01-01 00:00:00  readiness: ready\n"
+
+
 def _args(**kw):
     d = {"layout": "default", "repos_root": r"C:\repos", "unattended": False,
          "force": False}
