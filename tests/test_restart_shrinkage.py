@@ -85,12 +85,30 @@ def test_nothing_is_saved_exited_or_relaunched_on_a_refusal(restart, capsys):
 
 def test_the_refusal_says_what_proceeding_would_cost(restart, capsys):
     """`capture`'s cost is that `up` stops knowing about the repo. A restart's
-    is that the session is exited now and not brought back, which is a
-    different sentence and the one worth reading."""
+    is larger and conditional, and the wording has to carry both halves.
+
+    `plan_down` builds its targets from `tabs.list_tab_items` — the same call
+    that timed out during the capture — so a window still wedged at teardown
+    yields no targets and its sessions survive; one that recovers in between is
+    exited and then not relaunched. The dropped layout entry is certain, the
+    exit is a race, and saying either alone would be wrong.
+    """
     main_mod.cmd_restart(_args())
 
     out = capsys.readouterr().out
-    assert "not come back" in out or "left closed" in out
+    assert "dropped from the layout" in out
+    assert "if its window recovers before teardown" in out
+
+
+def test_the_refusal_names_the_door_that_is_not_force(restart, capsys):
+    """`--force` here *is* the outcome the check exists to prevent. Naming it
+    as the only way past would funnel the user straight into it, and there is a
+    safe one: a named restart takes no capture at all."""
+    main_mod.cmd_restart(_args())
+
+    out = capsys.readouterr().out
+    assert "reloaded restart <repo>" in out
+    assert out.index("reloaded restart <repo>") < out.index("--force")
 
 
 def test_force_proceeds(restart, capsys):

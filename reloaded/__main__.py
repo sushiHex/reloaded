@@ -199,6 +199,7 @@ def cmd_capture(args) -> int:
     if _refused_for_shrinkage(
         lo, path, live, args,
         cost="Saving now would drop them from `up`.",
+        escape="Re-run once they read cleanly, or pass --force to accept it.",
     ):
         return 1
 
@@ -295,7 +296,7 @@ def _record(message: str) -> None:
     _append(_stamped(message))
 
 
-def _refused_for_shrinkage(lo, path, live, args, *, cost: str) -> bool:
+def _refused_for_shrinkage(lo, path, live, args, *, cost: str, escape: str) -> bool:
     """Whether this capture drops sessions that are still running, reported.
 
     One decision with one cause, so one implementation. `tabs.list_tab_items`
@@ -304,10 +305,12 @@ def _refused_for_shrinkage(lo, path, live, args, *, cost: str) -> bool:
     `capture` and a full `restart` take that same fresh capture and write it
     over the saved layout, so both have the same reason to stop.
 
-    Only `cost` differs. What proceeding would actually take from the user is
-    not the same in the two commands - `capture` costs you the repo in `up`, a
-    restart costs you the running session - and that is the one sentence worth
-    saying differently rather than a reason to write the check twice.
+    Two sentences differ, and they are the two the caller alone knows. `cost`
+    is what proceeding takes from you. `escape` is what to do instead - which
+    is not a detail: for `capture` the only way past is `--force`, while a
+    restart has a safe door (`restart <repo>` takes no capture at all), and a
+    message that named `--force` as the sole option would be funnelling the
+    user into the outcome this check exists to prevent.
 
     A dry run says "would refuse" and records nothing: a preview must leave
     nothing behind, and the log is something behind.
@@ -318,8 +321,10 @@ def _refused_for_shrinkage(lo, path, live, args, *, cost: str) -> bool:
 
     dry = getattr(args, "dry_run", False)
     if not dry:
-        # Unattended this is the only trace. The reconcile has no console, and
-        # this is the outcome where the layout stops matching what is running.
+        # The record matters most for `capture`, which the reconcile runs
+        # unattended with nowhere to print; a restart is always interactive and
+        # gets the line anyway, because what changed about the saved layout is
+        # worth the same entry whoever was watching.
         _record(f"[reloaded] refused to overwrite the layout: {shrink}")
     print(f"[reloaded] {'would refuse' if dry else 'refusing'} to overwrite "
           f"the layout: {shrink}")
@@ -328,7 +333,7 @@ def _refused_for_shrinkage(lo, path, live, args, *, cost: str) -> bool:
         "them (a UIA timeout, or a window still starting) rather than them "
         f"having gone away. {cost}"
     )
-    print("    Re-run once they read cleanly, or pass --force to accept it.")
+    print(f"    {escape}")
     return True
 
 
@@ -1173,19 +1178,35 @@ def cmd_restart(args) -> int:
 
     if not lo.windows:
         print("No agent sessions found — nothing to restart.")
+        # Total loss is the most severe instance of the failure the check
+        # below exists for, and it lands here instead - where the honest
+        # reading of "nothing found" is "nothing is running". Say which
+        # sessions are running but unreadable, or a wedged UIA looks like an
+        # empty desktop.
+        for name in _unresolved_live_repos(lo, live):
+            print(f"    still running but unreadable: {name}")
         return 1
 
     total = sum(len(w.tabs) for w in lo.windows)
 
-    # Before the save, and before anything is exited. A refusal that lands
-    # after either has already lost the thing it exists to protect: teardown
-    # works from live discovery rather than from this layout, so every session
-    # is exited, and the relaunch works from this layout, so the ones the
-    # capture missed would be closed and left closed.
+    # Before the save, and before anything is exited.
+    #
+    # The certain harm is the layout: the relaunch deploys from this capture,
+    # so a session it missed is dropped whatever else happens. Whether that
+    # session is also exited depends on a race - `plan_down` builds its targets
+    # from `tabs.list_tab_items`, the same call that timed out here, so a
+    # window still wedged at teardown yields no targets and its sessions
+    # survive, while one that recovers in between is exited and then not
+    # brought back. Naming only the worse outcome would be stating a coin flip
+    # as a certainty; naming only the milder one would undersell it.
     refused = _refused_for_shrinkage(
         lo, path, live, args,
-        cost="Restarting now would exit every live session and relaunch only "
-             "the ones this capture saw — the rest would not come back.",
+        cost="Restarting now would relaunch from this capture, so a session it "
+             "missed is dropped from the layout — and exited without being "
+             "brought back if its window recovers before teardown.",
+        escape="Re-run once they read cleanly, or name the repos instead — "
+               "`reloaded restart <repo>` takes no capture. --force accepts "
+               "this one.",
     )
 
     if args.dry_run:
@@ -1447,8 +1468,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     restart.add_argument(
         "--force", action="store_true",
-        help="capture and restart even if the capture lost sessions that are "
-             "still running (same escape as `capture --force`)",
+        help="with no repo names, capture and restart even if the capture lost "
+             "sessions that are still running; a named or --self restart takes "
+             "no capture and ignores this",
     )
     restart.add_argument(
         "--self", dest="self_", action="store_true",

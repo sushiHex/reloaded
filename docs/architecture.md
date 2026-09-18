@@ -48,12 +48,16 @@ durable artifact thousands of times without leaving a trace.
 Pinned editor entries survive capture even when their sessions are absent.
 A capture refuses to drop previously saved repositories that are still running
 but were missed by the tab scan — one check, shared by `capture` and a full
-restart, differing only in what it says proceeding would cost. A restart is the
-costlier of the two: teardown works from live discovery rather than from the
-layout, so every session is exited, while the relaunch works from the layout,
-so a repository the capture missed is closed and not brought back. The refusal
-therefore lands before the save and before any keystroke, and `--force` accepts
-the capture deliberately in both commands.
+restart, differing in what it says proceeding would cost and what it offers
+instead. A restart is the costlier of the two. Its relaunch deploys from the
+capture, so a repository the capture missed is dropped from the layout for
+certain; whether that session is also exited is a race, because `plan_down`
+builds its targets from the same `tabs.list_tab_items` call that timed out, so
+a window still wedged at teardown yields no targets and survives, while one
+that recovers in between is exited and then not brought back. The refusal
+therefore lands before the save and before any keystroke. `--force` accepts the
+capture deliberately in both commands; for a restart the message names
+`restart <repo>`, which takes no capture, before it names `--force`.
 
 ## Launching and closing
 
