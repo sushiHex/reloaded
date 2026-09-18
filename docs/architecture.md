@@ -46,10 +46,14 @@ five minutes under `pyw.exe` with no console, so before this it changed the one
 durable artifact thousands of times without leaving a trace.
 
 Pinned editor entries survive capture even when their sessions are absent.
-Normal capture refuses to drop previously saved repositories that are still
-running but were missed by the tab scan. A full restart performs its own fresh
-capture and saves it before teardown; it does not use `cmd_capture`'s shrinkage
-check. Preview a full restart's target set before proceeding.
+A capture refuses to drop previously saved repositories that are still running
+but were missed by the tab scan — one check, shared by `capture` and a full
+restart, differing only in what it says proceeding would cost. A restart is the
+costlier of the two: teardown works from live discovery rather than from the
+layout, so every session is exited, while the relaunch works from the layout,
+so a repository the capture missed is closed and not brought back. The refusal
+therefore lands before the save and before any keystroke, and `--force` accepts
+the capture deliberately in both commands.
 
 ## Launching and closing
 

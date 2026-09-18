@@ -196,18 +196,10 @@ def cmd_capture(args) -> int:
             "changed its spinner, add the range to discover._SPINNER_RANGES."
         )
 
-    shrink = _capture_shrinkage(lo, path, live)
-    if shrink and not getattr(args, "force", False):
-        # The one outcome where the layout on disk stops matching what is
-        # running, and the reconcile hits it unattended with nowhere to print.
-        _record(f"[reloaded] refused to overwrite the layout: {shrink}")
-        print(f"[reloaded] refusing to overwrite the layout: {shrink}")
-        print(
-            "    Those sessions are still running, so this capture failed to "
-            "read them (a UIA timeout, or a window still starting) rather than "
-            "them having gone away. Saving now would drop them from `up`."
-        )
-        print("    Re-run once they read cleanly, or pass --force to accept it.")
+    if _refused_for_shrinkage(
+        lo, path, live, args,
+        cost="Saving now would drop them from `up`.",
+    ):
         return 1
 
     before = _saved_repos(path)
@@ -301,6 +293,43 @@ def _record(message: str) -> None:
     that is worth keeping whether or not a console was attached.
     """
     _append(_stamped(message))
+
+
+def _refused_for_shrinkage(lo, path, live, args, *, cost: str) -> bool:
+    """Whether this capture drops sessions that are still running, reported.
+
+    One decision with one cause, so one implementation. `tabs.list_tab_items`
+    degrades a per-window UIA timeout to an empty list, `build_layout` drops
+    that window entirely, and what looks like a capture is a failed read. Both
+    `capture` and a full `restart` take that same fresh capture and write it
+    over the saved layout, so both have the same reason to stop.
+
+    Only `cost` differs. What proceeding would actually take from the user is
+    not the same in the two commands - `capture` costs you the repo in `up`, a
+    restart costs you the running session - and that is the one sentence worth
+    saying differently rather than a reason to write the check twice.
+
+    A dry run says "would refuse" and records nothing: a preview must leave
+    nothing behind, and the log is something behind.
+    """
+    shrink = _capture_shrinkage(lo, path, live)
+    if not shrink or getattr(args, "force", False):
+        return False
+
+    dry = getattr(args, "dry_run", False)
+    if not dry:
+        # Unattended this is the only trace. The reconcile has no console, and
+        # this is the outcome where the layout stops matching what is running.
+        _record(f"[reloaded] refused to overwrite the layout: {shrink}")
+    print(f"[reloaded] {'would refuse' if dry else 'refusing'} to overwrite "
+          f"the layout: {shrink}")
+    print(
+        "    Those sessions are still running, so this capture failed to read "
+        "them (a UIA timeout, or a window still starting) rather than them "
+        f"having gone away. {cost}"
+    )
+    print("    Re-run once they read cleanly, or pass --force to accept it.")
+    return True
 
 
 def _log(message: str) -> None:
@@ -1148,14 +1177,33 @@ def cmd_restart(args) -> int:
 
     total = sum(len(w.tabs) for w in lo.windows)
 
-    if args.dry_run:
-        print(f"Would capture {len(lo.windows)} window(s), {total} session(s):")
-        _print_window_tree(lo)
-        print(f"\nWould gracefully exit all {total} session(s), then relaunch them from this capture.")
-        print("\nDry run — nothing captured, sent, closed, or relaunched.")
-        return 0
+    # Before the save, and before anything is exited. A refusal that lands
+    # after either has already lost the thing it exists to protect: teardown
+    # works from live discovery rather than from this layout, so every session
+    # is exited, and the relaunch works from this layout, so the ones the
+    # capture missed would be closed and left closed.
+    refused = _refused_for_shrinkage(
+        lo, path, live, args,
+        cost="Restarting now would exit every live session and relaunch only "
+             "the ones this capture saw — the rest would not come back.",
+    )
 
+    if args.dry_run:
+        if not refused:
+            print(f"Would capture {len(lo.windows)} window(s), {total} session(s):")
+            _print_window_tree(lo)
+            print(f"\nWould gracefully exit all {total} session(s), then relaunch them from this capture.")
+        print("\nDry run — nothing captured, sent, closed, or relaunched.")
+        # Non-zero for a preview of a run that would stop: the exit code
+        # answers "would this work", and the preview itself succeeded either way.
+        return 1 if refused else 0
+
+    if refused:
+        return 1
+
+    before = _saved_repos(path)
     layout_mod.save(lo, path)
+    _report_layout_change(before, lo)
     _print_capture_summary(lo, path)
 
     try:
@@ -1396,6 +1444,11 @@ def build_parser() -> argparse.ArgumentParser:
         nargs="*",
         help="repo name or path to restart in place, keeping its tab and window "
              "(default: every session, via a full capture and relaunch)",
+    )
+    restart.add_argument(
+        "--force", action="store_true",
+        help="capture and restart even if the capture lost sessions that are "
+             "still running (same escape as `capture --force`)",
     )
     restart.add_argument(
         "--self", dest="self_", action="store_true",
