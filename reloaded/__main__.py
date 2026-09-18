@@ -226,6 +226,21 @@ def _capture_shrinkage(fresh, path, live) -> str:
     return f"{len(lost)} running session(s) missing from this capture — {names}"
 
 
+def _stamped(message: str) -> str:
+    import datetime
+
+    return f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  {message}"
+
+
+def _append(line: str) -> None:
+    try:
+        with open(log_path(), "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        # Losing a log line must never fail the run that produced it.
+        pass
+
+
 def _record(message: str) -> None:
     """Append one timestamped line to the log, without printing it.
 
@@ -235,23 +250,18 @@ def _record(message: str) -> None:
     user's saved state, and that is worth recording whether or not a console
     was attached - the console has its own summary either way.
     """
-    import datetime
-
-    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    try:
-        with open(log_path(), "a", encoding="utf-8") as fh:
-            fh.write(f"{stamp}  {message}\n")
-    except OSError:
-        # Losing a log line must never fail the run that produced it.
-        pass
+    _append(_stamped(message))
 
 
 def _log(message: str) -> None:
-    import datetime
-
-    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"{stamp}  {message}")
-    _record(message)
+    # One clock read, not two: the printed line and the logged line are the
+    # same line. Building each from its own `now()` lets them disagree by a
+    # second whenever the write lands across a tick, which would make the
+    # console and the log impossible to line up for the one run anybody reads
+    # them together for.
+    line = _stamped(message)
+    print(line)
+    _append(line)
 
 
 def _saved_repos(path) -> set[str]:
