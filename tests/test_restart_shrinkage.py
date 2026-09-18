@@ -21,6 +21,7 @@ import pytest
 from conftest import make_layout, make_window
 import reloaded.__main__ as main_mod
 from reloaded.layout import Tab
+from reloaded.paths import norm
 
 
 def _args(**kw):
@@ -131,6 +132,70 @@ def test_a_real_refusal_is_recorded(restart):
     main_mod.cmd_restart(_args())
 
     assert "refused to overwrite the layout" in restart["log"].read_text(encoding="utf-8")
+
+
+# ── through the real predicate ───────────────────────────────────────────
+#
+# Everything above stubs `_capture_shrinkage` to pin the wiring. A guard wired
+# perfectly to a predicate that never fires, or fires on everything, is still
+# broken, so these two go through the real one.
+
+
+@pytest.fixture
+def wired(monkeypatch, tmp_path):
+    """A real saved layout on disk, and a capture that came back short."""
+    path = tmp_path / "default.json"
+    did = {"saved": [], "exited": False, "path": path}
+
+    monkeypatch.setattr(main_mod, "layout_path", lambda name: path)
+    monkeypatch.setattr(main_mod, "log_path", lambda: tmp_path / "reloaded.log")
+    main_mod.layout_mod.save(make_layout([make_window(
+        [0, 0, 800, 600],
+        [Tab(cwd=r"C:\repos\app", title="app"), Tab(cwd=r"C:\repos\beta", title="beta")],
+    )]), path)
+
+    # The capture only read one of the two windows.
+    monkeypatch.setattr(main_mod.capture_mod, "capture_live", lambda *a, **k: make_layout(
+        [make_window([0, 0, 800, 600], [Tab(cwd=r"C:\repos\app", title="app")])]))
+    monkeypatch.setattr(main_mod.discover_mod, "title_to_cwd", lambda idx: {})
+    monkeypatch.setattr(main_mod.discover_mod, "transcript_index", lambda: {})
+    monkeypatch.setattr(main_mod.layout_mod, "save",
+                        lambda lo, p: did["saved"].append(lo))
+    monkeypatch.setattr(main_mod.teardown_mod, "plan_down", lambda *a, **k: [])
+    monkeypatch.setattr(main_mod.teardown_mod, "execute_down",
+                        lambda *a, **k: did.update(exited=True) or {
+                            "exited": [], "timed_out": [], "closed": [], "left_open": []})
+    monkeypatch.setattr(main_mod, "_deploy_layout", lambda lo, args: 0)
+    return did
+
+
+def test_a_window_that_read_as_empty_stops_the_restart(wired, monkeypatch, capsys):
+    """`beta` is still running, so the capture that missed it failed to read
+    it. Restarting would exit it and never bring it back."""
+    monkeypatch.setattr(main_mod.discover_mod, "live_sessions",
+                        lambda: {norm(r"C:\repos\app"): 1, norm(r"C:\repos\beta"): 2})
+
+    assert main_mod.cmd_restart(_args()) == 1
+
+    assert wired["saved"] == []
+    assert wired["exited"] is False
+    assert "beta" in capsys.readouterr().out
+
+
+def test_a_session_closed_on_purpose_does_not_stop_the_restart(wired, monkeypatch):
+    """The mirror case, and the one that decides whether this guard is usable.
+
+    `beta` is gone from the layout because the user closed it, not because the
+    scan missed it — it is not running. Refusing here would mean a restart
+    fails for good the first time anybody closes a tab.
+    """
+    monkeypatch.setattr(main_mod.discover_mod, "live_sessions",
+                        lambda: {norm(r"C:\repos\app"): 1})
+
+    assert main_mod.cmd_restart(_args()) == 0
+
+    assert wired["saved"], "a legitimate restart was refused"
+    assert wired["exited"] is True
 
 
 def test_a_named_restart_never_reaches_the_check(restart, monkeypatch):
