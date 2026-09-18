@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .agents import DEFAULT_KIND
+from .paths import norm
 
 LAYOUT_VERSION = 1
 
@@ -159,28 +160,38 @@ def window_header(w: Window) -> str:
     return f"{w.monitor}  ({x},{y} {width}x{height}, {w.state})"
 
 
-def save(lo: Layout, path) -> None:
-    """Write atomically — a torn layout file would break unattended deploy.
+def repo_set(lo: Layout) -> set[str]:
+    """Every repo a layout holds, normalized.
 
-    The temp file is per-process. Every writer used to share one
-    `default.json.tmp`, and there are several: the reconcile task saves every
-    five minutes, forever, while `capture`, `restart` and the interactive
-    editor all save on demand. Two of them overlapping wrote into the same
-    handle, or one replaced the file the other was about to move, and the
-    "atomic" rename then made a half-written layout the real one. A pid in the
-    name costs nothing and makes the two writes independent.
+    A layout's identity for the one question worth asking before overwriting
+    it: did this one lose something the last one had? Geometry, order and
+    window grouping all change constantly and none of them are losses.
+    """
+    return {norm(t.cwd) for w in lo.windows for t in w.tabs}
+
+
+def _atomic_write(p: pathlib.Path, text: str) -> None:
+    """Replace `p`'s contents in one step, via a temp file of this process's own.
+
+    Every writer used to share one `default.json.tmp`, and there are several:
+    the reconcile task saves every five minutes, forever, while `capture`,
+    `restart` and the interactive editor all save on demand. Two of them
+    overlapping wrote into the same handle, or one replaced the file the other
+    was about to move, and the "atomic" rename then made a half-written layout
+    the real one. A pid in the name costs nothing and makes the two writes
+    independent.
 
     It does not make them ordered. Two writers still race to be last, and the
     loser's changes are gone - an editor session open for ten minutes saves an
     in-memory layout that the reconcile has rewritten twice underneath it. This
     stops corruption, not lost updates. Fixing that needs a lock, and a lock
     needs a stale-lock story on a machine that crashes; not attempted here.
+    `save` keeps the losing side of that race instead.
     """
-    p = pathlib.Path(path)
     p.parent.mkdir(parents=True, exist_ok=True)
     tmp = p.with_suffix(f"{p.suffix}.{os.getpid()}.tmp")
     try:
-        tmp.write_text(json.dumps(lo.to_dict(), indent=2) + "\n", encoding="utf-8")
+        tmp.write_text(text, encoding="utf-8")
         tmp.replace(p)
     finally:
         # A crash between write and replace would otherwise leave one temp file
@@ -189,6 +200,62 @@ def save(lo: Layout, path) -> None:
             tmp.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def previous_path(path) -> pathlib.Path:
+    """Where `save` keeps the layout it is about to lose repos from.
+
+    Beside the layout and named like one, so recovery needs no new flag:
+    `layouts/default.prev.json` is what `--layout default.prev` already
+    resolves to, and `up`, `status` and the editor all accept it.
+    """
+    p = pathlib.Path(path)
+    return p.with_name(p.stem + ".prev" + p.suffix)
+
+
+def _keep_if_losing(p: pathlib.Path, lo: Layout) -> pathlib.Path | None:
+    """Preserve the layout on disk when `lo` would drop repos from it.
+
+    Keyed on loss rather than on every write, and that is the whole design. The
+    reconcile rewrites this file every five minutes forever; a copy refreshed
+    each time is overwritten ninety times between a problem at 04:40 and
+    noticing it at noon, which is exactly as useless as keeping none. One that
+    moves only when repos disappear still points at the last layout that had
+    them.
+
+    Byte-faithful rather than re-serialized: a layout written by a later
+    version keeps whatever it had, including fields this one would drop.
+
+    Best effort. A copy that cannot be written must not fail the save - that
+    would wedge the reconcile against a file only a person can clear - so the
+    caller is told there is no copy and says so.
+    """
+    try:
+        text = p.read_text(encoding="utf-8")
+        lost = repo_set(Layout.from_dict(json.loads(text))) - repo_set(lo)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not lost:
+        return None
+    prev = previous_path(p)
+    try:
+        _atomic_write(prev, text)
+    except OSError:
+        return None
+    return prev
+
+
+def save(lo: Layout, path) -> pathlib.Path | None:
+    """Write `lo` atomically, keeping the layout it replaces if repos are lost.
+
+    Returns where the previous layout was kept, or None when nothing was lost
+    (the ordinary case) or no copy could be made. The caller is the one that
+    can say so out loud; this is how it knows.
+    """
+    p = pathlib.Path(path)
+    kept = _keep_if_losing(p, lo)
+    _atomic_write(p, json.dumps(lo.to_dict(), indent=2) + "\n")
+    return kept
 
 
 def load(path) -> Layout:

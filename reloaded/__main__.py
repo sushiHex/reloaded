@@ -147,6 +147,9 @@ def cmd_capture(args) -> int:
 
     shrink = _capture_shrinkage(lo, path, live)
     if shrink and not getattr(args, "force", False):
+        # The one outcome where the layout on disk stops matching what is
+        # running, and the reconcile hits it unattended with nowhere to print.
+        _record(f"[reloaded] refused to overwrite the layout: {shrink}")
         print(f"[reloaded] refusing to overwrite the layout: {shrink}")
         print(
             "    Those sessions are still running, so this capture failed to "
@@ -156,7 +159,9 @@ def cmd_capture(args) -> int:
         print("    Re-run once they read cleanly, or pass --force to accept it.")
         return 1
 
-    layout_mod.save(lo, path)
+    before = _saved_repos(path)
+    kept = layout_mod.save(lo, path)
+    _record_layout_change(before, lo, kept)
     _print_capture_summary(lo, path)
     return 0
 
@@ -221,17 +226,75 @@ def _capture_shrinkage(fresh, path, live) -> str:
     return f"{len(lost)} running session(s) missing from this capture — {names}"
 
 
+def _record(message: str) -> None:
+    """Append one timestamped line to the log, without printing it.
+
+    Separate from `_log` because the two answer different questions. `_log` is
+    run output that an unattended run has nowhere else to send, so it is
+    written only when nobody is watching. This is an audit line about the
+    user's saved state, and that is worth recording whether or not a console
+    was attached - the console has its own summary either way.
+    """
+    import datetime
+
+    stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(log_path(), "a", encoding="utf-8") as fh:
+            fh.write(f"{stamp}  {message}\n")
+    except OSError:
+        # Losing a log line must never fail the run that produced it.
+        pass
+
+
 def _log(message: str) -> None:
     import datetime
 
     stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"{stamp}  {message}"
-    print(line)
+    print(f"{stamp}  {message}")
+    _record(message)
+
+
+def _saved_repos(path) -> set[str]:
+    """Repos in the layout on disk, or none when there is no readable one.
+
+    An unreadable layout reads as empty rather than raising: this is only used
+    to describe a change afterwards, and a capture must not fail because the
+    file it is about to replace could not be parsed.
+    """
     try:
-        with open(log_path(), "a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-    except OSError:
-        pass
+        return layout_mod.repo_set(layout_mod.load(path))
+    except (OSError, ValueError, KeyError, TypeError):
+        return set()
+
+
+def _record_layout_change(before: set[str], after, kept) -> None:
+    """Record what this capture did to the saved layout, if anything.
+
+    Silent when the repo set is unchanged, which is almost every run: the
+    reconcile fires every five minutes forever, and 288 lines a day of "same as
+    last time" is a log nobody skims - the same as having none, which is the
+    thing being fixed. Geometry and window grouping change constantly and are
+    not losses.
+
+    Full paths rather than basenames. This line exists to be read months later
+    by someone asking which sessions went missing, and two checkouts can share
+    a name.
+    """
+    now = layout_mod.repo_set(after)
+    lost = sorted(before - now)
+    gained = sorted(now - before)
+    if not lost and not gained:
+        return
+
+    parts = []
+    if lost:
+        parts.append(f"lost {len(lost)} ({', '.join(lost)})")
+    if gained:
+        parts.append(f"gained {len(gained)} ({', '.join(gained)})")
+    line = f"[reloaded] layout {' and '.join(parts)}"
+    if kept:
+        line += f" — previous kept at {kept}, deploy it with `--layout {kept.stem}`"
+    _record(line)
 
 
 def _transcript_sizes(index) -> dict[str, int]:

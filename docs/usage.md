@@ -40,6 +40,28 @@ as running. Recheck after windows finish starting. `capture --force` accepts a
 partial capture deliberately; sessions you actually closed may disappear from
 a normal capture without forcing.
 
+### When a layout loses repositories
+
+That refusal only covers repositories still detected as running. A session that
+is genuinely gone — after a reboot, or a tab that never started — is dropped as
+if you had closed it, which is usually right and occasionally not.
+
+So a capture that drops repositories keeps the layout it replaced, as
+`<name>.prev.json` beside it, and records the loss in `~/.reloaded/reloaded.log`
+with the full paths. The copy moves only when repositories are lost: geometry
+and window changes leave it alone, so it keeps pointing at the last layout that
+had them rather than at whatever the reconcile task wrote five minutes ago.
+
+Recovery needs no special flag, because the copy is itself a layout name:
+
+```powershell
+reloaded --layout default.prev status
+reloaded --layout default.prev up
+```
+
+Inspect it first — the repositories it holds may be ones you meant to close.
+To adopt it wholesale, copy `default.prev.json` over `default.json`.
+
 Run `reloaded edit` for the interactive editor. Its changes affect the saved
 layout, not the live desktop. With no saved layout, it captures a starting
 arrangement in memory; save to persist it.

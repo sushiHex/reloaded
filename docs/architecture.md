@@ -31,6 +31,15 @@ for the investigation and limits of reconstructing identities from rollout files
 geometry as JSON. Writes use atomic replacement. Optional fields have defaults
 so older layouts continue to load; missing agent kinds mean Claude Code.
 
+A write that drops repositories first copies the outgoing file to
+`<name>.prev.json`, byte for byte. Keyed on loss rather than on every write:
+the reconcile task saves every five minutes forever, so a copy refreshed each
+time would be overwritten long before anyone noticed the loss. `capture`
+records what changed — repositories lost or gained, and where the copy went —
+in `~/.reloaded/reloaded.log`, and says nothing when the set is unchanged.
+That log line is written whether or not the run was unattended, unlike deploy
+output: it describes the user's saved state rather than the run.
+
 Win32 placement APIs restore real pixel positions and dimensions. Saved frame
 insets account for Terminal's invisible resize borders, and changed monitor
 layouts trigger re-anchoring and DPI scaling. A launch must be associated with
