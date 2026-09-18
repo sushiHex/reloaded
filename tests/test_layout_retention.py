@@ -128,6 +128,59 @@ def test_the_kept_layout_is_addressable_as_a_layout_name(monkeypatch, tmp_path):
     assert layout_path("default.prev").parent == layout_path("default").parent
 
 
+def test_a_second_loss_does_not_destroy_the_copy_from_the_first(tmp_path):
+    """The cascade this feature is useless without.
+
+    A reboot does not lose sessions all at once. Tabs come up on a four-second
+    stagger, agents fail one at a time, and the reconcile fires every five
+    minutes through the whole thing. Rotating on each loss walks the copy
+    forward with the damage - by the third capture `.prev` holds a layout
+    nearly as degraded as the live one, and a user who trusts it gets back
+    something that is already missing most of what they wanted.
+
+    A burst of losses is one event. The state worth keeping is the one from
+    before it started, so the copy holds still while the damage is ongoing.
+    """
+    path = tmp_path / "default.json"
+    layout_mod.save(_layout("app", "beta", "gamma"), path)
+    layout_mod.save(_layout("app", "beta"), path)
+
+    layout_mod.save(_layout("app"), path)
+
+    assert _saved(tmp_path / "default.prev.json") == {"app", "beta", "gamma"}
+
+
+def test_a_held_copy_is_still_reported_to_the_caller(tmp_path):
+    """Declining to overwrite is not "there is no backup" - it is "the backup
+    is the good one". A caller told None would log a loss with no way back."""
+    path = tmp_path / "default.json"
+    layout_mod.save(_layout("app", "beta", "gamma"), path)
+    layout_mod.save(_layout("app", "beta"), path)
+
+    kept = layout_mod.save(_layout("app"), path)
+
+    assert kept == tmp_path / "default.prev.json"
+
+
+def test_a_cold_copy_is_replaced(tmp_path):
+    """The hold is a burst window, not a permanent freeze. A loss long after
+    the last one is a new event, and the layout just before it is now the
+    interesting one."""
+    import os
+    import time
+
+    path = tmp_path / "default.json"
+    layout_mod.save(_layout("app", "beta", "gamma"), path)
+    layout_mod.save(_layout("app", "beta"), path)
+    prev = tmp_path / "default.prev.json"
+    old = time.time() - (layout_mod.PREVIOUS_HOLD_SECONDS + 60)
+    os.utime(prev, (old, old))
+
+    layout_mod.save(_layout("app"), path)
+
+    assert _saved(prev) == {"app", "beta"}
+
+
 def test_only_the_repos_decide_a_rotation(tmp_path):
     """Two tabs for one repo, then one: the repo set is unchanged, so nothing
     was lost. Deduping is build_layout's job and a rotation must not second

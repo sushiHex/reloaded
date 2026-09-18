@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+import time
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -213,6 +214,21 @@ def previous_path(path) -> pathlib.Path:
     return p.with_name(p.stem + ".prev" + p.suffix)
 
 
+# How long a kept layout is left alone once written.
+#
+# A reboot does not lose sessions all at once. Tabs come up on a four-second
+# stagger, agents fail one at a time, and the reconcile fires every five minutes
+# throughout. Rotating on every loss walks the copy forward with the damage:
+# by the third capture it holds a layout nearly as degraded as the live one, and
+# a user who trusts it gets back something already missing most of what they
+# wanted - worse than no copy, because it looks like a recovery.
+#
+# A burst of losses is one event, and the state worth keeping is the one from
+# before it started. An hour outlasts any boot storm while still letting a
+# genuinely later loss take a fresh copy.
+PREVIOUS_HOLD_SECONDS = 3600
+
+
 def _keep_if_losing(p: pathlib.Path, lo: Layout) -> pathlib.Path | None:
     """Preserve the layout on disk when `lo` would drop repos from it.
 
@@ -237,7 +253,18 @@ def _keep_if_losing(p: pathlib.Path, lo: Layout) -> pathlib.Path | None:
         return None
     if not lost:
         return None
+
     prev = previous_path(p)
+    try:
+        if time.time() - prev.stat().st_mtime < PREVIOUS_HOLD_SECONDS:
+            # Still inside the burst that wrote it. Returned rather than None:
+            # declining to overwrite is not "there is no copy", it is "the copy
+            # you want is the one already there", and a caller told None would
+            # report a loss with no way back.
+            return prev
+    except OSError:
+        pass  # No copy yet, or it cannot be read - either way, write one.
+
     try:
         _atomic_write(prev, text)
     except OSError:

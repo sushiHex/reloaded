@@ -52,6 +52,14 @@ with the full paths. The copy moves only when repositories are lost: geometry
 and window changes leave it alone, so it keeps pointing at the last layout that
 had them rather than at whatever the reconcile task wrote five minutes ago.
 
+Once written it is held for an hour. A reboot does not lose sessions all at
+once — tabs start on a stagger, agents fail one at a time, and the reconcile
+runs throughout — so a copy that moved on every loss would follow the damage
+down until it was no better than the live layout. Holding it keeps the state
+from before the burst. The copy can therefore be older than the most recent
+loss, which is the point; `saved` in `reloaded --layout <name>.prev status`
+tells you when it is from.
+
 Recovery needs no special flag, because the copy is itself a layout name:
 
 ```powershell
