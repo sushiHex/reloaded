@@ -17,9 +17,15 @@ py -3 -c "import psutil, uiautomation; print('Automation dependencies available'
 reloaded install-tasks
 ```
 
-For another saved layout, use `reloaded --layout work install-tasks`. Installing
-again replaces the entries with that layout; this is one automation setup per
-user, not a separate task pair for every layout.
+Global options given to `install-tasks` are the ones the scheduled entries will
+run with, so put both of them there if you use them:
+
+```powershell
+reloaded --layout work --repos-root "D:\repos" install-tasks
+```
+
+Installing again replaces the entries with those settings; this is one
+automation setup per user, not a separate task pair for every layout.
 
 | Entry | Behavior |
 | --- | --- |
@@ -30,10 +36,15 @@ No elevation is normally required. Keep the installed package or editable
 checkout where it was registered: both entries embed that location. Re-run
 `install-tasks` after moving or reinstalling it.
 
-The periodic task uses the default repository root, `~/repos`; registration
-persists `--layout` but not `--repos-root`. Verify capture under that default
-if your repositories live elsewhere. Absolute paths already saved in a layout
-are used when restoring its tabs.
+Registration persists both `--layout` and `--repos-root` into the two
+generated commands. A scheduled run starts with its own working directory and
+its own idea of a default root, so neither is recoverable once dropped — which
+is why `install-tasks` bakes them in rather than leaving them to be guessed.
+
+Both commands are fixed at install time. An installation made before this was
+the case still runs against `~/repos`; re-run `install-tasks` with the options
+you want to correct it. Absolute paths already saved in a layout are used when
+restoring its tabs either way.
 
 ## What unattended mode does
 

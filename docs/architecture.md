@@ -123,6 +123,8 @@ compaction; this is version-dependent behavior, not a guaranteed API contract.
 A per-user Startup VBS entry launches `up --unattended` through `pyw.exe -3`.
 A separate task registered through PowerShell runs periodic capture with an
 execution limit and battery restrictions disabled. Both embed the package
-location and selected layout, and use system Python dependencies rather than
-assuming the interactive environment is available. See [automation](automation.md)
+location, the selected layout and the repository root, and use system Python
+dependencies rather than assuming the interactive environment is available.
+A scheduled run has its own working directory and its own default root, so
+configuration not baked in at registration is not recoverable later. See [automation](automation.md)
 for setup and diagnostics.

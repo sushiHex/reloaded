@@ -70,7 +70,8 @@ def _ps_quote(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
-def _bootstrap_command(package_dir: str, layout: str, subcommand: list[str]) -> str:
+def _bootstrap_command(package_dir: str, layout: str, repos_root: str,
+                       subcommand: list[str]) -> str:
     """A self-contained Python one-liner: put the package on sys.path and run
     a reloaded subcommand directly. Neither launcher needs a PYTHONPATH
     environment variable or a cmd.exe wrapper as a result -- both would
@@ -78,7 +79,11 @@ def _bootstrap_command(package_dir: str, layout: str, subcommand: list[str]) -> 
     escaping for package_dir correctly regardless of its contents (backslashes,
     an embedded quote, ...), rather than re-deriving that rule by hand.
     """
-    argv = ["--layout", layout] + subcommand
+    # Global options, so they precede the subcommand: after it argparse does
+    # not treat them as options at all and exits 2 into a launcher with no
+    # console. `repos_root` is required rather than defaulted - it went
+    # missing here once already, and a parameter that can be omitted is how.
+    argv = ["--layout", layout, "--repos-root", repos_root] + subcommand
     return (
         f"import sys; sys.path.insert(0, {package_dir!r}); "
         f"from reloaded.__main__ import main; "
@@ -97,8 +102,9 @@ def _launcher_argv(bootstrap: str) -> str:
     return subprocess.list2cmdline(["-3", "-c", bootstrap])
 
 
-def _build_vbs(package_dir: str, layout: str) -> str:
-    bootstrap = _bootstrap_command(package_dir, layout, ["up", "--unattended"])
+def _build_vbs(package_dir: str, layout: str, repos_root: str) -> str:
+    bootstrap = _bootstrap_command(
+        package_dir, layout, repos_root, ["up", "--unattended"])
     run_command = "pyw.exe " + _launcher_argv(bootstrap)
     return (
         'Set shell = CreateObject("WScript.Shell")\r\n'
@@ -150,8 +156,9 @@ def _run_powershell(script: str) -> subprocess.CompletedProcess:
     )
 
 
-def _register_reconcile_task(package_dir: str, layout: str) -> tuple[int, str]:
-    bootstrap = _bootstrap_command(package_dir, layout, ["capture"])
+def _register_reconcile_task(package_dir: str, layout: str,
+                             repos_root: str) -> tuple[int, str]:
+    bootstrap = _bootstrap_command(package_dir, layout, repos_root, ["capture"])
     argv = _launcher_argv(bootstrap)
     script = f"""
 $ErrorActionPreference = 'Stop'
@@ -200,8 +207,15 @@ Write-Output 'REMOVED'
     return False, f"[warn] could not remove {TASK_RECONCILE}: {detail}"
 
 
-def install(package_dir: str, layout: str = "default") -> int:
-    vbs = _build_vbs(package_dir, layout)
+def install(package_dir: str, layout: str, repos_root: str) -> int:
+    """Register both launchers with the layout AND the repository root.
+
+    Both are configuration the user chose and neither is recoverable by the
+    scheduled process: it starts with its own working directory and its own
+    idea of a default root. Forwarding one and not the other is how a custom
+    root came to be silently discarded at every logon and every reconcile.
+    """
+    vbs = _build_vbs(package_dir, layout, repos_root)
     path = startup_vbs_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -222,7 +236,7 @@ def install(package_dir: str, layout: str = "default") -> int:
         except OSError as exc:
             print(f"[warn] could not remove legacy launcher {legacy}: {exc}")
 
-    rc, detail = _register_reconcile_task(package_dir, layout)
+    rc, detail = _register_reconcile_task(package_dir, layout, repos_root)
     if rc != 0:
         print(f"Failed to register {TASK_RECONCILE} (exit {rc}): {detail}")
         return rc
