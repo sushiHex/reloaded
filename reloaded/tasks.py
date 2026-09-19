@@ -212,9 +212,21 @@ def install(package_dir: str, layout: str, repos_root: str) -> int:
 
     Both are configuration the user chose and neither is recoverable by the
     scheduled process: it starts with its own working directory and its own
-    idea of a default root. Forwarding one and not the other is how a custom
-    root came to be silently discarded at every logon and every reconcile.
+    idea of a default root.
+
+    The root changes behaviour for the reconcile, which runs `capture` and
+    resolves tab titles against it. It changes nothing for the logon launcher
+    today - `up` deploys from the absolute cwd saved in each tab and never
+    reads `repos_root` - so passing it there is consistency rather than a fix,
+    and worth having only because a launcher that carries half the
+    configuration is how the other half went missing.
+
+    Both commands are fixed here, at registration. A later run that omits
+    either option replaces it with a default, so what was baked in is printed:
+    the documented upgrade path is "re-run install-tasks after moving the
+    checkout", and a bare re-run must not revert a custom root in silence.
     """
+    print(f"Registering with --layout {layout} --repos-root {repos_root}")
     vbs = _build_vbs(package_dir, layout, repos_root)
     path = startup_vbs_path()
     try:

@@ -36,15 +36,28 @@ No elevation is normally required. Keep the installed package or editable
 checkout where it was registered: both entries embed that location. Re-run
 `install-tasks` after moving or reinstalling it.
 
-Registration persists both `--layout` and `--repos-root` into the two
-generated commands. A scheduled run starts with its own working directory and
-its own idea of a default root, so neither is recoverable once dropped — which
-is why `install-tasks` bakes them in rather than leaving them to be guessed.
+Registration persists both `--layout` and `--repos-root` into the two generated
+commands, and prints what it baked in. The root is what the reconcile resolves
+tab titles against; the logon launcher deploys from the absolute paths already
+in the layout and does not consult it, so carrying it there is consistency
+rather than a fix.
 
-Both commands are fixed at install time. An installation made before this was
-the case still runs against `~/repos`; re-run `install-tasks` with the options
-you want to correct it. Absolute paths already saved in a layout are used when
-restoring its tabs either way.
+**Both commands are fixed at install time, and a later `install-tasks` replaces
+any option you leave out with its default.** Re-running after moving the
+checkout therefore needs the same globals you installed with, or a custom root
+silently reverts to `~/repos`. The line it prints is the check:
+
+```
+Registering with --layout work --repos-root D:\repos
+```
+
+An installation made before registration carried the root still runs against
+`~/repos` until re-registered. Absolute paths already saved in a layout are
+used when restoring its tabs either way.
+
+A repository root containing a `%NAME%` pair is expanded by Windows Script Host
+before the logon launcher starts, so avoid one — the reconcile task is
+unaffected.
 
 ## What unattended mode does
 

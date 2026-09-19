@@ -61,15 +61,13 @@ def test_ps_quote_escapes_embedded_single_quotes():
 
 
 def _scheduled_argv(text: str) -> list[str]:
-    """The argv the scheduled process will really see, out of a bootstrap.
+    """The argv list out of a bootstrap — the Python source, already unwrapped.
 
-    Works on a bare bootstrap and on the VBS that wraps one, because
-    `_vbs_quote` doubles `"` while the embedded Python literal uses `'` — the
-    two escapes do not collide. It does NOT work on the PowerShell
-    registration script: `_ps_quote` doubles `'`, which is the quote the
-    literal is built from, so that one has to be un-escaped first. Stated
-    rather than handled, because a helper that guessed which encoding it was
-    looking at would hide exactly the layer these tests exist to check.
+    Deliberately does not unwrap anything itself. Its callers peel the VBScript
+    or PowerShell literal first, with Windows' own parser, because a helper
+    that guessed which encoding it was looking at would hide exactly the layer
+    those tests exist to check — which is how an earlier draft of them managed
+    to call a correctly-escaped `""` a corruption.
     """
     import ast
 
@@ -147,8 +145,7 @@ HOSTILE_ROOTS = [
     "D:\\o'brien",          # a single quote: flips repr() to double-quoting
     'D:\\o\'b"r',           # both, so neither quoting style is a safe harbour
     "D:\\r\u00e9pos",       # non-ASCII, decoded from wchar_t by the child
-    r"D:\%USERPROFILE%\r",  # WSH does not expand these; prove it
-    r"D:\a&b",
+    r"D:\a&b",              # safe only because neither launcher goes via a shell
     r"D:\a^b",
 ]
 
@@ -179,6 +176,35 @@ def test_the_root_reaches_both_launchers_intact(root, monkeypatch):
     assert reconcile[-1] == "capture"
 
 
+def test_a_percent_in_the_root_is_expanded_by_the_logon_launcher():
+    """The one input where the three layers legitimately disagree.
+
+    `WScript.Shell.Run` expands environment variables in the command string it
+    is given, so a `%NAME%` pair in the root is substituted before the process
+    starts. Measured, not read: a launcher built with `D:\\%USERPROFILE%\\r`
+    delivered `D:\\C:\\Users\\<user>\\r` to the child.
+
+    An earlier version of the parametrized test above carried this root with
+    the comment "WSH does not expand these; prove it" — asserting the opposite
+    of the truth, in a test structurally incapable of noticing, because it
+    decodes with CommandLineToArgvW and never invokes WSH. Pinned here as the
+    limitation it is rather than left as a false claim.
+
+    Not fixed: WSH has no escape for this, avoiding it means a different launch
+    mechanism entirely, and a repository root containing `%` is pathological.
+    The reconcile path is unaffected — it never goes through WSH.
+    """
+    root = r"D:\%USERPROFILE%\r"
+
+    bootstrap = _scheduled_argv(
+        _bootstrap_command(r"C:\pkg", "default", root, ["capture"]))
+
+    # Intact in the source the launcher carries; WSH substitutes at run time,
+    # which is past anything this suite can observe without starting one.
+    assert bootstrap[3] == root
+    assert "%USERPROFILE%" in _build_vbs(r"C:\pkg", "default", root)
+
+
 def _ok():
     return subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
 
@@ -203,6 +229,20 @@ def test_install_tasks_hands_over_the_root_it_was_invoked_with(monkeypatch):
         types.SimpleNamespace(layout="work", repos_root=r"D:\work"))
 
     assert got == [("work", r"D:\work")]
+
+
+def test_install_says_what_it_baked_in(monkeypatch, fake_startup, capsys):
+    """A bare re-run replaces omitted options with defaults, and the documented
+    upgrade path is "re-run install-tasks after moving the checkout" — so a
+    re-run that silently reverts a custom root to `~/repos` is a trap the docs
+    walk you into. It has to say what it just registered."""
+    _mock_powershell(monkeypatch, 0)
+
+    install(str(fake_startup / "pkg"), "work", r"D:\work")
+
+    out = capsys.readouterr().out
+    assert "--layout work" in out
+    assert r"--repos-root D:\work" in out
 
 
 def test_bootstrap_command_needs_no_pythonpath_env_var():
