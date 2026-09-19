@@ -100,33 +100,83 @@ def test_the_scheduled_argv_is_one_the_real_parser_accepts():
     assert parsed.layout == "work"
 
 
-def test_a_root_with_spaces_survives_into_the_logon_launcher():
-    """Three encodings between here and the running process - repr into the
-    bootstrap, list2cmdline into the pyw command line, then a VBScript string
-    literal - and a space is the character that breaks the naive version of
-    any of them."""
-    vbs = _build_vbs(r"C:\pkg", "default", r"D:\my work")
+def _win_argv(command_line: str) -> list[str]:
+    """Split a command line the way the started process will see it.
 
-    assert _scheduled_argv(vbs) == [
-        "--layout", "default", "--repos-root", r"D:\my work",
-        "up", "--unattended",
-    ]
+    `CommandLineToArgvW` is the function Windows itself uses, so it is the only
+    honest answer to "what does pyw.exe receive". Approximating it is how this
+    kind of test ends up agreeing with the bug: an earlier draft here compared
+    the *encoded* text and called a correctly-escaped `""` a corruption.
+
+    A pure string function with no side effects - it touches nothing the
+    conftest guards protect.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    shell32 = ctypes.WinDLL("shell32", use_last_error=True)
+    shell32.CommandLineToArgvW.restype = ctypes.POINTER(wintypes.LPWSTR)
+    shell32.CommandLineToArgvW.argtypes = [wintypes.LPCWSTR,
+                                           ctypes.POINTER(ctypes.c_int)]
+    n = ctypes.c_int(0)
+    p = shell32.CommandLineToArgvW(command_line, ctypes.byref(n))
+    if not p:
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        return [p[i] for i in range(n.value)]
+    finally:
+        ctypes.windll.kernel32.LocalFree(p)
 
 
-def test_a_root_with_spaces_survives_into_the_reconcile_registration(monkeypatch):
+def _argv_the_logon_launcher_delivers(vbs: str) -> list[str]:
+    inner = vbs[vbs.index('shell.Run "'):vbs.rindex(", 0, False")]
+    command_line = inner[len('shell.Run "'):-1].replace('""', '"')  # WSH reads it
+    return _scheduled_argv(_win_argv(command_line)[3])              # pyw -3 -c <this>
+
+
+def _argv_the_reconcile_task_delivers(script: str) -> list[str]:
+    start = script.index("-Argument '") + len("-Argument '")
+    argument = script[start:script.index("'\n", start)].replace("''", "'")
+    return _scheduled_argv(_win_argv("pyw.exe " + argument)[3])
+
+
+HOSTILE_ROOTS = [
+    r"D:\my work",          # a space, the one everybody remembers
+    "D:\\work\\",           # trailing backslash, list2cmdline's classic hazard
+    'D:\\wo"rk',            # a double quote: VBScript's own escape character
+    "D:\\o'brien",          # a single quote: flips repr() to double-quoting
+    'D:\\o\'b"r',           # both, so neither quoting style is a safe harbour
+    "D:\\r\u00e9pos",       # non-ASCII, decoded from wchar_t by the child
+    r"D:\%USERPROFILE%\r",  # WSH does not expand these; prove it
+    r"D:\a&b",
+    r"D:\a^b",
+]
+
+
+@pytest.mark.parametrize("root", HOSTILE_ROOTS)
+def test_the_root_reaches_both_launchers_intact(root, monkeypatch):
+    """Every encoding between here and the running process, for each layer.
+
+    The root crosses `repr()` into Python source, `list2cmdline` into the pyw
+    command line, and then either a VBScript string literal or a PowerShell one
+    plus PowerShell's own parsing. Nine characters that break the naive version
+    of at least one of those.
+    """
     scripts = []
     monkeypatch.setattr(tasks_mod, "_run_powershell",
                         lambda script: scripts.append(script) or _ok())
+    tasks_mod._register_reconcile_task(r"C:\pkg", "default", root)
 
-    tasks_mod._register_reconcile_task(r"C:\pkg", "default", r"D:\my work")
+    bootstrap = _scheduled_argv(
+        _bootstrap_command(r"C:\pkg", "default", root, ["capture"]))
+    logon = _argv_the_logon_launcher_delivers(_build_vbs(r"C:\pkg", "default", root))
+    reconcile = _argv_the_reconcile_task_delivers(scripts[0])
 
-    # Undo the PowerShell single-quoted literal before reading the Python one
-    # inside it. Four encodings deep here, one more than the VBS path.
-    unquoted = scripts[0].replace("''", "'")
-
-    assert _scheduled_argv(unquoted) == [
-        "--layout", "default", "--repos-root", r"D:\my work", "capture",
-    ]
+    assert bootstrap[3] == root
+    assert logon[3] == root
+    assert reconcile[3] == root
+    assert logon[-2:] == ["up", "--unattended"]
+    assert reconcile[-1] == "capture"
 
 
 def _ok():
