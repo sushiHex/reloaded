@@ -768,6 +768,20 @@ def _no_tab_to_type_into(cwds, plans) -> str:
     )
 
 
+def _print_hand_upgrade(verb: str) -> None:
+    """The one consequence of restarting a hand-started session that outlives
+    the restart: its tab stops being a plain shell.
+
+    One wording, two tenses, because two paths describe the same fact - the
+    named restart's preview, and `--self`'s refusal to do it to you. Written
+    separately they drift, and the version a user happens to meet decides
+    whether they understood what they agreed to.
+    """
+    print(f"    its tab {verb} upgraded to the reloaded launcher, which "
+          "self-closes")
+    print("    when the session exits.")
+
+
 def _preview_restart(plans) -> None:
     """`--dry-run`: what would happen, and the one consequence worth previewing."""
     for t in teardown_mod.targets(plans):
@@ -776,9 +790,8 @@ def _preview_restart(plans) -> None:
             # Restarting a hand-launched session rewrites what its tab runs,
             # permanently. A preview that reads the same for both kinds hides
             # that until after the fact.
-            print("    Started by hand — its tab would be upgraded to the "
-                  "reloaded launcher,")
-            print("    which self-closes when the session exits.")
+            print("    Started by hand, so restarting it changes the tab:")
+            _print_hand_upgrade("would be")
     print("\nDry run — no marker written, nothing sent.")
 
 
@@ -1094,19 +1107,34 @@ def cmd_restart_self(args) -> int:
               "inside it.)")
         return 0
 
-    if discover_mod.launcher_kind(pid) == discover_mod.HAND:
-        print(f"{cwd} was started by hand, so nothing will read a marker.")
-        print("    Its shell is a plain prompt with no restart loop in it — "
-              "arming would leave a file on disk")
-        print("    that no one collects. Restart it once from another session "
-              "with `reloaded restart <repo>`,")
-        print("    which types the launcher into its tab and upgrades it; "
-              "after that this works.")
-        return 1
-
     ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS
     after = float(getattr(args, "after", 0) or 0) or SELF_RESTART_DELAY_SECONDS
     arm_only = getattr(args, "arm_only", False)
+    hand_started = discover_mod.launcher_kind(pid) == discover_mod.HAND
+
+    # Both paths refuse a hand-started session, for different reasons, so each
+    # says its own. One message served both and described a marker that the
+    # dispatch path never writes - refusing correctly while explaining
+    # something the command would not have done.
+    if hand_started:
+        if arm_only:
+            print(f"{cwd} was started by hand, so nothing will read a marker.")
+            print("    Its shell is a plain prompt with no restart loop in it "
+                  "— arming would leave a file on disk")
+            print("    that no one collects.")
+        else:
+            # Not a marker problem: this path spawns a helper and writes
+            # nothing. The reason to refuse is what succeeding would change.
+            print(f"{cwd} was started by hand, so restarting it would "
+                  "change the tab:")
+            _print_hand_upgrade("would be")
+            print("    `--self` will not make that change to the session it is "
+                  "called from")
+            print("    on one keystroke.")
+        print("    Restart it once from another session with `reloaded restart "
+              "<repo>`, which makes")
+        print("    that change deliberately; after that this works.")
+        return 1
 
     # The root the helper resolves tab titles against, derived from the session
     # itself rather than from this process's flag. See _dispatch_restart.
