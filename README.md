@@ -147,6 +147,8 @@ reloaded install-tasks
 
 The logon launcher runs `up --unattended`. A separate five-minute task runs
 `capture`; it refreshes the saved arrangement without launching sessions.
+Both are registered with the global options you install with, so pass
+`--repos-root` there too if your repositories live elsewhere.
 Use `reloaded uninstall-tasks` to disable both. `down` alone leaves automation
 installed. See [automation setup and troubleshooting](docs/automation.md).
 

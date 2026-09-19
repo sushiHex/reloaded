@@ -17,9 +17,15 @@ py -3 -c "import psutil, uiautomation; print('Automation dependencies available'
 reloaded install-tasks
 ```
 
-For another saved layout, use `reloaded --layout work install-tasks`. Installing
-again replaces the entries with that layout; this is one automation setup per
-user, not a separate task pair for every layout.
+Global options given to `install-tasks` are the ones the scheduled entries will
+run with, so put both of them there if you use them:
+
+```powershell
+reloaded --layout work --repos-root "D:\repos" install-tasks
+```
+
+Installing again replaces the entries with those settings; this is one
+automation setup per user, not a separate task pair for every layout.
 
 | Entry | Behavior |
 | --- | --- |
@@ -30,10 +36,28 @@ No elevation is normally required. Keep the installed package or editable
 checkout where it was registered: both entries embed that location. Re-run
 `install-tasks` after moving or reinstalling it.
 
-The periodic task uses the default repository root, `~/repos`; registration
-persists `--layout` but not `--repos-root`. Verify capture under that default
-if your repositories live elsewhere. Absolute paths already saved in a layout
-are used when restoring its tabs.
+Registration persists both `--layout` and `--repos-root` into the two generated
+commands, and prints what it baked in. The root is what the reconcile resolves
+tab titles against; the logon launcher deploys from the absolute paths already
+in the layout and does not consult it, so carrying it there is consistency
+rather than a fix.
+
+**Both commands are fixed at install time, and a later `install-tasks` replaces
+any option you leave out with its default.** Re-running after moving the
+checkout therefore needs the same globals you installed with, or a custom root
+silently reverts to `~/repos`. The line it prints is the check:
+
+```
+Registering with --layout work --repos-root D:\repos
+```
+
+An installation made before registration carried the root still runs against
+`~/repos` until re-registered. Absolute paths already saved in a layout are
+used when restoring its tabs either way.
+
+A repository root containing a `%NAME%` pair is expanded by Windows Script Host
+before the logon launcher starts, so avoid one — the reconcile task is
+unaffected.
 
 ## What unattended mode does
 

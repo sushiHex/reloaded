@@ -1284,7 +1284,7 @@ def cmd_install_tasks(args) -> int:
     import pathlib
 
     package_dir = str(pathlib.Path(__file__).resolve().parents[1])
-    return tasks_mod.install(package_dir, args.layout)
+    return tasks_mod.install(package_dir, args.layout, args.repos_root)
 
 
 def cmd_uninstall_tasks(args) -> int:
