@@ -106,7 +106,7 @@ def test_outside_a_session_it_refuses_and_says_what_to_run(capsys, monkeypatch):
     assert "restart <repo>" in capsys.readouterr().out
 
 
-def test_a_hand_launched_session_is_refused(session, capsys):
+def test_a_hand_launched_session_cannot_be_armed(session, capsys):
     """Its shell is a plain prompt with no loop in it. Arming would leave a
     file nobody collects, and report success for a restart that cannot
     happen."""
@@ -118,7 +118,55 @@ def test_a_hand_launched_session_is_refused(session, capsys):
     assert not session["marker"].exists()
     out = capsys.readouterr().out
     assert "started by hand" in out
+    assert "marker" in out, "the reason arming is refused is the marker"
     assert "restart <repo>" in out, "no way out is offered"
+
+
+def test_a_hand_launched_dispatch_is_refused_for_what_it_would_change(
+    session, capsys
+):
+    """Still refused — the rationale in test_the_refusals_still_apply_before_
+    dispatching holds — but for the reason that applies to this path.
+
+    Plain `--self` writes no marker; it hands the job to a detached process. So
+    "arming would leave a file on disk that no one collects" describes
+    something this command would never do, and the one consequence worth
+    refusing over goes unsaid: the upgrade permanently rewrites what the tab
+    runs. A refusal that gives the wrong reason teaches the wrong lesson.
+    """
+    session["launcher"] = discover_mod.HAND
+
+    rc = main_mod.cmd_restart(_args(arm_only=False))
+
+    assert rc == 1
+    out = capsys.readouterr().out
+    assert "marker" not in out, "this path never writes one"
+    assert "self-closes" in out, "the permanent change is not named"
+    assert "restart <repo>" in out
+
+
+def test_both_hand_refusals_describe_the_upgrade_identically(session, capsys):
+    """One fact, one wording. `_preview_restart` says this for the named path;
+    saying it differently here is how two descriptions of the same consequence
+    drift apart."""
+    session["launcher"] = discover_mod.HAND
+    main_mod.cmd_restart(_args(arm_only=False))
+    from_self = capsys.readouterr().out
+
+    main_mod._print_hand_upgrade("would be")
+    canonical = capsys.readouterr().out
+
+    assert canonical.strip() in from_self
+
+
+def test_a_reloaded_launched_session_is_not_refused_on_either_path(
+    dispatched, session
+):
+    session["launcher"] = discover_mod.RELOADED
+
+    assert main_mod.cmd_restart(_args(arm_only=False)) == 0
+    assert main_mod.cmd_restart(_args(arm_only=True)) == 0
+    assert session["marker"].exists()
 
 
 def test_a_session_whose_directory_cannot_be_read_is_refused(session, capsys):
