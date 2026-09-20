@@ -416,8 +416,12 @@ def test_execute_skips_settle_and_verify_when_initial_placement_fails(monkeypatc
     # The reason travels with the result: a failure that reached the log as
     # "geometry could not be applied" and nothing else is what left a real
     # wrong-monitor logon undiagnosable.
-    assert results == [
-        LaunchResult(window_id="w1", hwnd=100, placed=False, why="refused")]
+    #
+    # `spawned_at` is a measured duration, so it is checked for presence rather
+    # than value - pinning a clock reading would fail on a slower machine.
+    assert [(r.window_id, r.hwnd, r.placed, r.why) for r in results] == [
+        ("w1", 100, False, "refused")]
+    assert results[0].spawned_at is not None
 
 
 def test_execute_final_placed_reflects_the_verify_step_not_just_the_initial_apply(monkeypatch):

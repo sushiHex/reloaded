@@ -22,6 +22,13 @@ from reloaded.layout import Tab
 from reloaded.paths import norm
 
 
+def _spawned(plan):
+    """Results for a plan whose windows all came up at once. The offset only
+    matters when windows are spawned slowly; these tests are about the other
+    half of the condition."""
+    return [deploy_mod.LaunchResult(window_id=e.id, hwnd=1, placed=True,
+                                    spawned_at=0.0) for e in plan]
+
 def _plan(n):
     tabs = [Tab(cwd=rf"C:\repos\r{i}", title=f"r{i}") for i in range(n)]
     return [deploy_mod.PlanEntry(
@@ -34,7 +41,7 @@ def _plan(n):
 
 def test_a_tab_still_sleeping_out_its_delay_is_not_a_failure():
     """The whole of the real incident: 13 tabs, checked at +5s."""
-    assert main_mod._never_started(_plan(13), live={}, elapsed=5) == []
+    assert main_mod._never_started(_plan(13), _spawned(_plan(13)), live={}, elapsed=5) == []
 
 
 def test_a_tab_whose_turn_passed_without_a_session_is_a_failure():
@@ -42,7 +49,7 @@ def test_a_tab_whose_turn_passed_without_a_session_is_a_failure():
     open with nothing behind it."""
     late = deploy_mod.STAGGER_SECONDS + deploy_mod.SESSION_START_ALLOWANCE + 1
 
-    silent = main_mod._never_started(_plan(2), live={}, elapsed=late)
+    silent = main_mod._never_started(_plan(2), _spawned(_plan(2)), live={}, elapsed=late)
 
     assert silent == [r"C:\repos\r0", r"C:\repos\r1"]
 
@@ -51,14 +58,14 @@ def test_a_started_session_is_never_reported():
     late = 10_000
     live = {norm(rf"C:\repos\r{i}"): i for i in range(2)}
 
-    assert main_mod._never_started(_plan(2), live=live, elapsed=late) == []
+    assert main_mod._never_started(_plan(2), _spawned(_plan(2)), live=live, elapsed=late) == []
 
 
 def test_only_the_tabs_whose_turn_has_come_are_judged():
     """Mid-stagger: the first tab has had its chance and the last has not."""
     elapsed = deploy_mod.SESSION_START_ALLOWANCE + 1
 
-    silent = main_mod._never_started(_plan(5), live={}, elapsed=elapsed)
+    silent = main_mod._never_started(_plan(5), _spawned(_plan(5)), live={}, elapsed=elapsed)
 
     assert silent == [r"C:\repos\r0"]
 

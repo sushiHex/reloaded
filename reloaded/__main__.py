@@ -474,7 +474,7 @@ def _deploy_layout(lo, args) -> int:
     say(f"Launched {launched} session(s) in {len(plan)} window(s).", blank=True)
 
     elapsed = time.monotonic() - started_at
-    silent = _never_started(plan, discover_mod.live_sessions(), elapsed)
+    silent = _never_started(plan, results, discover_mod.live_sessions(), elapsed)
     if silent:
         say(f"[reloaded] {len(silent)} tab(s) opened but no session started:",
             blank=True)
@@ -484,7 +484,7 @@ def _deploy_layout(lo, args) -> int:
         say("    before it starts. Answer it in the tab - this tool will not")
         say("    answer a security question on your behalf.")
 
-    pending = _still_starting(plan, elapsed)
+    pending = _still_starting(plan, results, elapsed)
     if pending:
         last = max(d for entry in plan for d in entry.delays)
         say(f"[reloaded] {len(pending)} session(s) still starting; the last "
@@ -494,7 +494,7 @@ def _deploy_layout(lo, args) -> int:
     return 1 if failures else 0
 
 
-def _never_started(plan, live, elapsed: float) -> list[str]:
+def _never_started(plan, results, live, elapsed: float) -> list[str]:
     """Tabs THIS deploy opened whose turn has come and gone without a session.
 
     `elapsed` is how long ago the launches were spawned, and it is the whole
@@ -520,14 +520,25 @@ def _never_started(plan, live, elapsed: float) -> list[str]:
     """
     return [
         t.cwd
-        for entry in plan
+        for entry, spawned_at in _spawn_offsets(plan, results)
         for t, delay in zip(entry.tabs, entry.delays)
-        if delay + deploy_mod.SESSION_START_ALLOWANCE <= elapsed
+        if spawned_at is not None
+        and spawned_at + delay + deploy_mod.SESSION_START_ALLOWANCE <= elapsed
         and norm(t.cwd) not in live
     ]
 
 
-def _still_starting(plan, elapsed: float) -> list[str]:
+def _spawn_offsets(plan, results):
+    """Each plan entry paired with when its window was actually spawned.
+
+    A window whose HWND was never identified has no spawn time, and a tab in it
+    has had no turn to miss - blaming it would be blaming it for the window's
+    failure, which is reported separately and by name.
+    """
+    return [(entry, result.spawned_at) for entry, result in zip(plan, results)]
+
+
+def _still_starting(plan, results, elapsed: float) -> list[str]:
     """Tabs whose launch delay has not run out yet.
 
     Named because the alternative is silence: a restore that launched thirteen
@@ -536,9 +547,10 @@ def _still_starting(plan, elapsed: float) -> list[str]:
     """
     return [
         t.cwd
-        for entry in plan
+        for entry, spawned_at in _spawn_offsets(plan, results)
         for t, delay in zip(entry.tabs, entry.delays)
-        if delay + deploy_mod.SESSION_START_ALLOWANCE > elapsed
+        if spawned_at is None
+        or spawned_at + delay + deploy_mod.SESSION_START_ALLOWANCE > elapsed
     ]
 
 
@@ -1391,7 +1403,13 @@ def cmd_install_tasks(args) -> int:
     import pathlib
 
     package_dir = str(pathlib.Path(__file__).resolve().parents[1])
-    return tasks_mod.install(package_dir, args.layout, args.repos_root)
+    # Resolved here, not passed through. A relative root is legal everywhere
+    # else because `resolve_repo` reads it against the caller's directory, but
+    # a scheduled task starts somewhere else entirely - `..\repos` baked into
+    # the launcher means a different directory at every logon, and
+    # `resolve_tab` then joins tab titles to a place that does not exist.
+    repos_root = str(pathlib.Path(args.repos_root).expanduser().resolve())
+    return tasks_mod.install(package_dir, args.layout, repos_root)
 
 
 def cmd_uninstall_tasks(args) -> int:

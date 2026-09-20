@@ -231,6 +231,26 @@ def test_install_tasks_hands_over_the_root_it_was_invoked_with(monkeypatch):
     assert got == [("work", r"D:\work")]
 
 
+def test_install_tasks_resolves_a_relative_root_before_baking_it_in(monkeypatch):
+    """A relative root is legal everywhere else — `resolve_repo` reads it
+    against the caller's directory. A scheduled task has a different one, so
+    `..\\repos` baked into the launcher names a different place at every logon,
+    and `resolve_tab` joins tab titles to somewhere that does not exist."""
+    import os
+    import types
+    import reloaded.__main__ as main_mod
+
+    got = []
+    monkeypatch.setattr(main_mod.tasks_mod, "install",
+                        lambda pkg, layout, repos_root: got.append(repos_root) or 0)
+
+    main_mod.cmd_install_tasks(
+        types.SimpleNamespace(layout="default", repos_root=os.path.join("..", "repos")))
+
+    assert os.path.isabs(got[0]), f"a relative root was persisted: {got[0]!r}"
+    assert ".." not in got[0]
+
+
 def test_install_says_what_it_baked_in(monkeypatch, fake_startup, capsys):
     """A bare re-run replaces omitted options with defaults, and the documented
     upgrade path is "re-run install-tasks after moving the checkout" — so a

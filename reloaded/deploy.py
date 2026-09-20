@@ -311,6 +311,11 @@ class LaunchResult:
     window_id: str
     hwnd: int | None
     placed: bool
+    # Seconds into `execute` at which this window's `wt` was spawned, or None
+    # if it never was. A tab's staggered delay is a sleep inside a shell that
+    # does not exist until then, so this is the origin its turn is measured
+    # from - `execute`'s own start can be a minute earlier.
+    spawned_at: float | None = None
     # Why the placement failed, "" when it did not. Carried so the warning can
     # say which of three different failures this was; see win32.Placed.
     why: str = ""
@@ -515,6 +520,7 @@ def restoring_for() -> float:
 def execute(plan: list[PlanEntry]) -> list[LaunchResult]:
     """Launch every window in the plan and apply its exact geometry."""
     mark_restoring(plan)
+    started_at = time.monotonic()
     results: list[LaunchResult] = []
     # (result, target rect, target state) for every window placed below, so
     # the settle-and-verify pass after the loop knows what each one should
@@ -523,22 +529,24 @@ def execute(plan: list[PlanEntry]) -> list[LaunchResult]:
 
     for entry in plan:
         hwnd = launch_window(entry.argv, entry.tabs)
+        spawned_at = time.monotonic() - started_at
+        # Refreshed per spawn, not once at the top. `launch_window` polls for
+        # up to twenty seconds before giving up on an HWND, so four slow
+        # windows outlast a deadline computed from in-shell delays alone - and
+        # a reconcile arriving in that gap overwrites the layout mid-restore,
+        # which is the failure this marker exists to prevent.
+        mark_restoring(plan)
         placed = win32.Placed(False, "")
         if hwnd is not None:
             # wt --pos got it close; this makes the rect exact and restores
             # maximized state, which --size (character cells) cannot express.
             placed = win32.set_geometry(hwnd, entry.rect, entry.state)
         result = LaunchResult(window_id=entry.id, hwnd=hwnd,
-                              placed=placed.ok, why=placed.why)
+                              placed=placed.ok, why=placed.why,
+                              spawned_at=None if hwnd is None else spawned_at)
         results.append(result)
         if placed.ok:
             to_verify.append((result, entry.rect, entry.state))
-
-    # Marked again now the spawning is done. The first mark covers `execute`
-    # itself, which can take tens of seconds when a window's HWND has to be
-    # waited out; this one makes the window count from the last spawn, which is
-    # when the last tab actually begins sleeping out its delay.
-    mark_restoring(plan)
 
     if to_verify:
         # One shared wait for Windows Terminal's own startup layout to

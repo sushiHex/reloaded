@@ -83,7 +83,11 @@ def test_every_line_of_the_no_session_report_reaches_the_log(logged, monkeypatch
     monkeypatch.setattr(main_mod.deploy_mod, "transcripts_to_repair",
                         lambda *a, **k: [])
     monkeypatch.setattr(main_mod.transcript_mod, "repair_all", lambda paths: [])
-    monkeypatch.setattr(main_mod.deploy_mod, "execute", lambda plan: [])
+    monkeypatch.setattr(
+        main_mod.deploy_mod, "execute",
+        lambda plan: [main_mod.deploy_mod.LaunchResult(
+            window_id=e.id, hwnd=1, placed=True, spawned_at=0.0)
+            for e in plan])
 
     main_mod._deploy_layout(lo, types.SimpleNamespace(
         unattended=True, dry_run=False))
@@ -100,7 +104,8 @@ def test_a_failed_placement_reaches_the_log(logged, monkeypatch):
     `print` too."""
     lo = _one_tab_layout()
     _stub_deploy(monkeypatch, lo, results=[
-        types.SimpleNamespace(window_id="w1", hwnd=None, placed=False),
+        main_mod.deploy_mod.LaunchResult(
+            window_id="w1", hwnd=None, placed=False),
     ])
     monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: {})
 
