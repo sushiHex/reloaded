@@ -59,7 +59,9 @@ def slow_launch(monkeypatch, tmp_path):
 def test_each_window_records_when_it_was_spawned(slow_launch):
     results = deploy_mod.execute([_entry("w1", [0, 4]), _entry("w2", [8, 12])])
 
-    assert [r.spawned_at for r in results] == [20.0, 40.0]
+    # Taken before each `launch_window`, which is where Popen happens; the
+    # twenty seconds after it are the HWND hunt, not the spawn.
+    assert [r.spawned_at for r in results] == [0.0, 20.0]
 
 
 def test_the_marker_is_refreshed_as_windows_are_spawned(slow_launch, monkeypatch):
@@ -80,23 +82,23 @@ def test_the_marker_is_refreshed_as_windows_are_spawned(slow_launch, monkeypatch
 
 def test_a_tab_is_judged_from_its_own_window_spawn(slow_launch):
     """w2's tabs carry delays of 8s and 12s, but their shells did not exist
-    until 40s in. At 45s the first has had 5s — not enough — and neither has
-    failed."""
+    until 20s in, so their turns fall at 38s and 42s. At 30s neither has had
+    one; w1's two, spawned at 0s, are overdue."""
     results = deploy_mod.execute([_entry("w1", [0, 4]), _entry("w2", [8, 12])])
     plan = [_entry("w1", [0, 4]), _entry("w2", [8, 12])]
 
-    silent = main_mod._never_started(plan, results, live={}, elapsed=45.0)
+    silent = main_mod._never_started(plan, results, live={}, elapsed=30.0)
 
     assert silent == [r"C:\repos\w1-0", r"C:\repos\w1-4"]
 
 
 def test_the_old_reading_would_have_blamed_them(slow_launch):
     """Pinning the bug rather than only the fix: judged from `execute`'s start,
-    w2's +8s tab looks overdue at 45s even though its shell began at 40s."""
+    w2's +8s tab looks overdue at 30s even though its turn is at 38s."""
     plan = [_entry("w1", [0, 4]), _entry("w2", [8, 12])]
     without_offsets = [
         t.cwd for entry in plan for t, d in zip(entry.tabs, entry.delays)
-        if d + deploy_mod.SESSION_START_ALLOWANCE <= 45.0
+        if d + deploy_mod.SESSION_START_ALLOWANCE <= 30.0
     ]
 
     assert r"C:\repos\w2-8" in without_offsets, "the false positive, reproduced"

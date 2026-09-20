@@ -488,8 +488,20 @@ def mark_restoring(plan: list[PlanEntry]) -> None:
     finished starting, so there is no moment at which this process could
     honestly remove it.
     """
+    window = restore_window(plan)
+    # Never shorten a restore already in flight. The marker is one file for the
+    # machine, so a three-session restore of one layout would otherwise replace
+    # a thirteen-session restore's deadline with its own - and the reconcile
+    # would then capture the longer one's half-finished desktop.
+    #
+    # Read-then-write, not a lock: `save`'s docstring is right that a lock here
+    # needs a stale-lock story on a machine that crashes. The race this leaves
+    # is two marks landing together and the shorter winning, which is the
+    # behaviour of every mark before this one.
+    if restoring_for() > window:
+        return
     try:
-        restore_marker().write_text(f"{restore_window(plan):.0f}", encoding="utf-8")
+        restore_marker().write_text(f"{window:.0f}", encoding="utf-8")
     except OSError:
         # Best effort. Failing a restore because a hint could not be written
         # would trade a recoverable layout for an unrecoverable desktop.
@@ -528,8 +540,13 @@ def execute(plan: list[PlanEntry]) -> list[LaunchResult]:
     to_verify: list[tuple[LaunchResult, list[int], str]] = []
 
     for entry in plan:
-        hwnd = launch_window(entry.argv, entry.tabs)
+        # Before the call, not after. `launch_window` runs Popen and then polls
+        # for the window for up to twenty seconds, so timing from its return
+        # pushes a delay-zero tab's turn twenty seconds into the future - and a
+        # session stuck at a trust prompt is then reported as "still starting"
+        # rather than failed, with nothing checking again later.
         spawned_at = time.monotonic() - started_at
+        hwnd = launch_window(entry.argv, entry.tabs)
         # Refreshed per spawn, not once at the top. `launch_window` polls for
         # up to twenty seconds before giving up on an HWND, so four slow
         # windows outlast a deadline computed from in-shell delays alone - and
