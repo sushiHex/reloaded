@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 from dataclasses import dataclass
 
 from . import agents as agents_mod
@@ -180,6 +181,22 @@ def cmd_capture(args) -> int:
     pruned = transcript_mod.prune_torn_backups(discover_mod.default_projects_dir())
     if pruned:
         print(f"[reloaded] pruned {len(pruned)} stale .torn backup(s)")
+
+    # Before anything is read into a decision: a restore still staggering its
+    # launches has tabs whose agents have not started, and a session that has
+    # not started is absent from `live` — which is indistinguishable from one
+    # the user closed. The shrinkage guard cannot tell those apart, so the
+    # capture must not be taken at all rather than taken and second-guessed.
+    left = deploy_mod.restoring_for()
+    if left and not getattr(args, "force", False):
+        message = (f"[reloaded] a restore is still starting ({left:.0f}s left) "
+                   "— not overwriting the layout")
+        _record(message)
+        print(message)
+        print("    Sessions that have not started yet read as closed, and a "
+              "capture now would drop them.")
+        print("    It resolves itself; pass --force to capture anyway.")
+        return 1
 
     if not lo.windows:
         print("No agent sessions found — nothing captured, existing layout untouched.")
@@ -422,6 +439,7 @@ def _deploy_layout(lo, args) -> int:
         elif outcome:
             say(f"[reloaded] repaired torn transcript: {transcript_path}")
 
+    started_at = time.monotonic()
     results = deploy_mod.execute(plan)
     failures = 0
     for r in results:
@@ -431,12 +449,15 @@ def _deploy_layout(lo, args) -> int:
             failures += 1
         elif not r.placed:
             say(f"[warn] window {r.window_id}: launched but geometry could "
+                f"not be applied — {r.why}" if r.why else
+                f"[warn] window {r.window_id}: launched but geometry could "
                 "not be applied")
             failures += 1
     launched = sum(len(e.tabs) for e in plan)
     say(f"Launched {launched} session(s) in {len(plan)} window(s).", blank=True)
 
-    silent = _never_started(plan, discover_mod.live_sessions())
+    elapsed = time.monotonic() - started_at
+    silent = _never_started(plan, discover_mod.live_sessions(), elapsed)
     if silent:
         say(f"[reloaded] {len(silent)} tab(s) opened but no session started:",
             blank=True)
@@ -446,11 +467,25 @@ def _deploy_layout(lo, args) -> int:
         say("    before it starts. Answer it in the tab - this tool will not")
         say("    answer a security question on your behalf.")
 
+    pending = _still_starting(plan, elapsed)
+    if pending:
+        last = max(d for entry in plan for d in entry.delays)
+        say(f"[reloaded] {len(pending)} session(s) still starting; the last "
+            f"begins {last}s in.", blank=True)
+        say("    `reloaded status` afterwards shows any that did not come up.")
+
     return 1 if failures else 0
 
 
-def _never_started(plan, live) -> list[str]:
-    """Tabs THIS deploy opened that have no live session behind them.
+def _never_started(plan, live, elapsed: float) -> list[str]:
+    """Tabs THIS deploy opened whose turn has come and gone without a session.
+
+    `elapsed` is how long ago the launches were spawned, and it is the whole
+    point. The stagger is a `Start-Sleep` inside each launched shell, not
+    something `execute` waits out, so a tab scheduled at +44s has not been
+    asked to do anything when `execute` returns. Judging it then reported 12
+    of 13 tabs as failed five seconds into a forty-eight second start, under
+    an explanation about a Codex trust prompt that had not been shown yet.
 
     Usually Codex asking whether to trust a directory it has not seen: the tab
     opens, the prompt waits, and no session ever appears. Reported rather than
@@ -466,7 +501,28 @@ def _never_started(plan, live) -> list[str]:
     started", under an explanation about a trust prompt that had nothing to do
     with it. A tab that was never opened cannot have failed to start.
     """
-    return [t.cwd for entry in plan for t in entry.tabs if norm(t.cwd) not in live]
+    return [
+        t.cwd
+        for entry in plan
+        for t, delay in zip(entry.tabs, entry.delays)
+        if delay + deploy_mod.SESSION_START_ALLOWANCE <= elapsed
+        and norm(t.cwd) not in live
+    ]
+
+
+def _still_starting(plan, elapsed: float) -> list[str]:
+    """Tabs whose launch delay has not run out yet.
+
+    Named because the alternative is silence: a restore that launched thirteen
+    sessions and reported nothing about twelve of them reads as one that did
+    nothing.
+    """
+    return [
+        t.cwd
+        for entry in plan
+        for t, delay in zip(entry.tabs, entry.delays)
+        if delay + deploy_mod.SESSION_START_ALLOWANCE > elapsed
+    ]
 
 
 def cmd_up(args) -> int:
@@ -1326,6 +1382,19 @@ def cmd_status(args) -> int:
     print(f"live sessions : {len(live)}")
     for cwd in sorted(live):
         print(f"    {cwd}")
+
+    # Here rather than in `capture`: this needs a process sweep of its own, and
+    # the reconcile runs capture every five minutes forever. `status` is the
+    # command someone runs to find out what is going on, which is also the
+    # moment this is worth knowing - the loss it describes happens at the next
+    # restore, not now.
+    for cwd, kinds in sorted(discover_mod.crowded_dirs().items()):
+        print(f"\n[warn] {len(kinds)} agent sessions share {cwd} "
+              f"({', '.join(kinds)}).")
+        print("       Sessions are tracked by directory, so only one is saved "
+              "and only one")
+        print("       comes back. Move one to its own directory, or expect to "
+              "reopen it by hand.")
 
     if not path.exists():
         print(f"\nno layout saved at {path} — run `reloaded capture`")

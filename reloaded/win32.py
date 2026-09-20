@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 from ctypes import wintypes
+from typing import NamedTuple
 
 from .layout import Monitor
 
@@ -353,6 +354,20 @@ def _survives(hwnd: int) -> bool:
     return is_wt_window(hwnd)
 
 
+class Placed(NamedTuple):
+    """Whether a window ended up where it was told, and why not.
+
+    Two facts, and they were one bool: a window that is no longer a Terminal
+    window, a placement call that refused, and a placement Terminal moved back
+    all read as False. A real logon reported two of four windows as "geometry
+    could not be applied" and there was nothing to say which of the three it
+    was - the same shape as `teardown.Sent`, for the same reason.
+    """
+
+    ok: bool
+    why: str  # "" when ok
+
+
 def _apply_geometry(hwnd: int, rect: list[int], state: str) -> bool:
     x, y, w, h = rect
     wp = WINDOWPLACEMENT()
@@ -372,7 +387,7 @@ def _apply_geometry(hwnd: int, rect: list[int], state: str) -> bool:
     return ok
 
 
-def set_geometry(hwnd: int, rect: list[int], state: str = "normal") -> bool:
+def set_geometry(hwnd: int, rect: list[int], state: str = "normal") -> "Placed":
     """Place a window at an exact pixel rect, then apply maximized/minimized state.
 
     Re-checks the window class before touching anything. A destroyed HWND
@@ -393,11 +408,13 @@ def set_geometry(hwnd: int, rect: list[int], state: str = "normal") -> bool:
     rather than paid here per window).
     """
     if _class_name(hwnd).upper() != WT_CLASS:
-        return False
-    return _apply_geometry(hwnd, rect, state)
+        return Placed(False, "the window is no longer a Windows Terminal window")
+    if not _apply_geometry(hwnd, rect, state):
+        return Placed(False, "SetWindowPlacement refused")
+    return Placed(True, "")
 
 
-def verify_and_fix_geometry(hwnd: int, rect: list[int], state: str) -> bool:
+def verify_and_fix_geometry(hwnd: int, rect: list[int], state: str) -> "Placed":
     """Re-check a placement `set_geometry` already applied, reapplying once
     if Windows Terminal's own startup layout clobbered it.
 
@@ -416,8 +433,14 @@ def verify_and_fix_geometry(hwnd: int, rect: list[int], state: str) -> bool:
     placement can never be reported as if the placement itself had failed.
     """
     if _class_name(hwnd).upper() != WT_CLASS:
-        return False
+        return Placed(False, "the window is no longer a Windows Terminal window")
     actual_rect, actual_state, _device, _dpi = get_geometry(hwnd)
     if actual_rect == rect and actual_state == state:
-        return True
-    return _apply_geometry(hwnd, rect, state)
+        return Placed(True, "")
+    if not _apply_geometry(hwnd, rect, state):
+        return Placed(
+            False,
+            f"Terminal moved it to {actual_rect} ({actual_state}) and the "
+            "reapply was refused - drift",
+        )
+    return Placed(True, "")

@@ -237,8 +237,12 @@ def _hosted_elsewhere(proc, agent_images: set) -> bool:
     return False
 
 
-def _sessions() -> dict[str, tuple]:
-    """Normalized cwd -> (pid, kind) for every live agent session.
+def _sessions() -> tuple[dict[str, tuple], dict[str, list[str]]]:
+    """(cwd -> (pid, kind), cwd -> kinds) for every live agent session.
+
+    The second half names what the first collapsed: a directory hosting more
+    than one agent. Built in the same walk, because a separate one would
+    double the process sweeps every capture pays for.
 
     Keyed by cwd, so two sessions in the same directory collapse to whichever
     psutil reports last. That is a real limit and not a fixable one here:
@@ -253,12 +257,13 @@ def _sessions() -> dict[str, tuple]:
     try:
         import psutil
     except ImportError:
-        return {}
+        return {}, {}
 
     from . import agents as agents_mod
 
     by_process = {a.process: a.kind for a in agents_mod.AGENTS.values()}
     out: dict[str, tuple] = {}
+    seen: dict[str, list[str]] = {}
     for proc in psutil.process_iter(["pid", "name", "ppid"]):
         kind = by_process.get((proc.info.get("name") or "").lower())
         if kind is None:
@@ -271,7 +276,28 @@ def _sessions() -> dict[str, tuple]:
             continue
         if cwd:
             out[norm(cwd)] = (int(proc.info["pid"]), kind)
-    return out
+            seen.setdefault(norm(cwd), []).append(kind)
+    crowded = {cwd: sorted(k) for cwd, k in seen.items() if len(k) > 1}
+    return out, crowded
+
+
+def crowded_dirs() -> dict[str, list[str]]:
+    """Directories hosting more than one agent session: cwd -> sorted kinds.
+
+    What `_sessions()` collapses, named. Keying on cwd means two agents in one
+    directory become one entry, so the layout saves one tab with one kind and
+    the other session is never restored - measured on a real machine, a
+    `codex.exe` and a `claude.exe` sharing one repository where only the Codex
+    one came back after a logon.
+
+    The collapse is not fixable here; `_sessions()` says why. What is fixable
+    is the silence, which is the same answer `teardown.plan_down` already gives
+    for the tab-side symptom: report the ambiguity rather than resolve it
+    invisibly. Its own sweep, because the information is gone by the time a
+    caller sees a collapsed map - one more `process_iter` on a path that
+    already walks the transcript corpus.
+    """
+    return _sessions()[1]
 
 
 def live_sessions() -> dict[str, int]:
@@ -284,12 +310,12 @@ def live_sessions() -> dict[str, int]:
     call sites depend on dict[str, int], and which kind a session is travels
     beside it in live_agents() rather than through here.
     """
-    return {cwd: pid for cwd, (pid, _kind) in _sessions().items()}
+    return {cwd: pid for cwd, (pid, _kind) in _sessions()[0].items()}
 
 
 def live_agents() -> dict[str, str]:
     """Map normalized cwd -> agent kind, alongside live_sessions()."""
-    return {cwd: kind for cwd, (_pid, kind) in _sessions().items()}
+    return {cwd: kind for cwd, (_pid, kind) in _sessions()[0].items()}
 
 
 _SAFE_EXE = re.compile(r"[A-Za-z0-9._+-]+")

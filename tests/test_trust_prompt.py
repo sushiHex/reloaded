@@ -15,6 +15,7 @@ from __future__ import annotations
 import types
 
 import reloaded.__main__ as main_mod
+import reloaded.deploy as deploy_mod
 from reloaded.layout import Tab
 from reloaded.paths import norm
 
@@ -25,6 +26,10 @@ CWD_GONE = r"C:\repos\deleted-last-week"
 
 def _tab(cwd, agent="codex"):
     return Tab(cwd=cwd, title=cwd.rsplit("\\", 1)[-1], agent=agent)
+
+
+# Every plan here staggers at 0, so this is past every tab's turn.
+_LATE = deploy_mod.SESSION_START_ALLOWANCE + 1
 
 
 def _plan(launched=(), skipped=(), missing=()):
@@ -41,15 +46,15 @@ def _plan(launched=(), skipped=(), missing=()):
 
 
 def test_a_tab_with_a_live_session_is_not_reported():
-    assert main_mod._never_started(_plan([CWD_A]), {norm(CWD_A): 1}) == []
+    assert main_mod._never_started(_plan([CWD_A]), {norm(CWD_A): 1}, elapsed=_LATE) == []
 
 
 def test_a_tab_that_never_started_is_reported():
-    assert main_mod._never_started(_plan([CWD_A]), {}) == [CWD_A]
+    assert main_mod._never_started(_plan([CWD_A]), {}, elapsed=_LATE) == [CWD_A]
 
 
 def test_every_silent_tab_is_named():
-    assert main_mod._never_started(_plan([CWD_A, CWD_B]), {}) == [CWD_A, CWD_B]
+    assert main_mod._never_started(_plan([CWD_A, CWD_B]), {}, elapsed=_LATE) == [CWD_A, CWD_B]
 
 
 def test_a_claude_tab_that_never_started_is_reported_too():
@@ -58,15 +63,15 @@ def test_a_claude_tab_that_never_started_is_reported_too():
     plan = _plan([CWD_A])
     plan[0].tabs = [_tab(CWD_A, agent="claude")]
 
-    assert main_mod._never_started(plan, {}) == [CWD_A]
+    assert main_mod._never_started(plan, {}, elapsed=_LATE) == [CWD_A]
 
 
 def test_an_empty_plan_reports_nothing():
-    assert main_mod._never_started([], {}) == []
+    assert main_mod._never_started([], {}, elapsed=_LATE) == []
 
 
 def test_a_partly_started_plan_names_only_the_silent_one():
-    assert main_mod._never_started(_plan([CWD_A, CWD_B]), {norm(CWD_A): 1}) == [CWD_B]
+    assert main_mod._never_started(_plan([CWD_A, CWD_B]), {norm(CWD_A): 1}, elapsed=_LATE) == [CWD_B]
 
 
 # ── what the layout holds but the deploy did not open ────────────────────
@@ -77,16 +82,16 @@ def test_a_repo_whose_directory_is_missing_is_not_blamed_on_a_trust_prompt():
     the right reason. Reporting it a second time as "opened but no session
     started" sends the user looking for a prompt in a tab that does not
     exist."""
-    assert main_mod._never_started(_plan(missing=[CWD_GONE]), {}) == []
+    assert main_mod._never_started(_plan(missing=[CWD_GONE]), {}, elapsed=_LATE) == []
 
 
 def test_a_repo_that_was_already_running_is_not_reported():
     """It was skipped precisely BECAUSE it has a session. Reporting it as
     having none inverts the fact that caused the skip."""
-    assert main_mod._never_started(_plan(skipped=[CWD_A]), {}) == []
+    assert main_mod._never_started(_plan(skipped=[CWD_A]), {}, elapsed=_LATE) == []
 
 
 def test_only_the_launched_tab_is_named_among_all_three():
     plan = _plan(launched=[CWD_B], skipped=[CWD_A], missing=[CWD_GONE])
 
-    assert main_mod._never_started(plan, {}) == [CWD_B]
+    assert main_mod._never_started(plan, {}, elapsed=_LATE) == [CWD_B]

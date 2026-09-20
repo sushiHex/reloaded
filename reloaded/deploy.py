@@ -12,7 +12,7 @@ from . import tabs as tabs_mod
 from . import win32
 from .discover import TranscriptInfo
 from .layout import Layout, Monitor, Tab, clamp_rect, window_id
-from .paths import norm, restart_marker
+from .paths import norm, restart_marker, restore_marker
 from .transcript import SIZE_WARN_BYTES, human_size
 
 STAGGER_SECONDS = 4
@@ -311,6 +311,9 @@ class LaunchResult:
     window_id: str
     hwnd: int | None
     placed: bool
+    # Why the placement failed, "" when it did not. Carried so the warning can
+    # say which of three different failures this was; see win32.Placed.
+    why: str = ""
 
 
 def plan_deploy(
@@ -447,8 +450,66 @@ def transcripts_to_repair(plan: list[PlanEntry], index: dict[str, TranscriptInfo
     return [info.path for key, info in index.items() if key in wanted]
 
 
+# How long after its staggered turn a session should have appeared as a
+# process. Below this it has not failed to start; it has not been asked.
+SESSION_START_ALLOWANCE = 10
+
+# How long after its last staggered launch a restore is still starting.
+RESTORE_GRACE_SECONDS = 30
+
+
+def restore_window(plan: list[PlanEntry]) -> float:
+    """Seconds from now until this plan's last session should have started.
+
+    The stagger is a `Start-Sleep` inside each launched shell, not something
+    `execute` waits out, so a thirteen-session restore is still starting its
+    last session forty-eight seconds after `execute` returned.
+    """
+    last = max((d for entry in plan for d in entry.delays), default=0)
+    return last + RESTORE_GRACE_SECONDS
+
+
+def mark_restoring(plan: list[PlanEntry]) -> None:
+    """Say that sessions are coming up, so a capture does not read the gap.
+
+    A reconcile firing inside this window sees tabs whose agents have not
+    started, finds them absent from `live`, and cannot tell that from the user
+    having closed them - so it writes a layout with them missing. Measured on a
+    real logon: a capture 43 seconds into a 48-second stagger took four
+    repositories out of the saved layout.
+
+    Expiry rather than a clearing call, for the same reason the restart marker
+    uses one: `execute` returns long before the sessions it started have
+    finished starting, so there is no moment at which this process could
+    honestly remove it.
+    """
+    try:
+        restore_marker().write_text(f"{restore_window(plan):.0f}", encoding="utf-8")
+    except OSError:
+        # Best effort. Failing a restore because a hint could not be written
+        # would trade a recoverable layout for an unrecoverable desktop.
+        pass
+
+
+def restoring_for() -> float:
+    """Seconds left of a restore still starting, or 0 when none is.
+
+    Anything unreadable reads as "no restore": a capture that could never save
+    again because of a corrupt marker is a worse failure than the one this
+    prevents.
+    """
+    marker = restore_marker()
+    try:
+        window = float(marker.read_text(encoding="utf-8").strip())
+        left = window - (time.time() - marker.stat().st_mtime)
+    except (OSError, ValueError):
+        return 0.0
+    return left if left > 0 else 0.0
+
+
 def execute(plan: list[PlanEntry]) -> list[LaunchResult]:
     """Launch every window in the plan and apply its exact geometry."""
+    mark_restoring(plan)
     results: list[LaunchResult] = []
     # (result, target rect, target state) for every window placed below, so
     # the settle-and-verify pass after the loop knows what each one should
@@ -457,14 +518,15 @@ def execute(plan: list[PlanEntry]) -> list[LaunchResult]:
 
     for entry in plan:
         hwnd = launch_window(entry.argv, entry.tabs)
-        placed = False
+        placed = win32.Placed(False, "")
         if hwnd is not None:
             # wt --pos got it close; this makes the rect exact and restores
             # maximized state, which --size (character cells) cannot express.
             placed = win32.set_geometry(hwnd, entry.rect, entry.state)
-        result = LaunchResult(window_id=entry.id, hwnd=hwnd, placed=placed)
+        result = LaunchResult(window_id=entry.id, hwnd=hwnd,
+                              placed=placed.ok, why=placed.why)
         results.append(result)
-        if placed:
+        if placed.ok:
             to_verify.append((result, entry.rect, entry.state))
 
     if to_verify:
@@ -473,6 +535,7 @@ def execute(plan: list[PlanEntry]) -> list[LaunchResult]:
         # happened; this only decides whether any of them need correcting.
         time.sleep(GEOMETRY_SETTLE_SECONDS)
         for result, rect, state in to_verify:
-            result.placed = win32.verify_and_fix_geometry(result.hwnd, rect, state)
+            verified = win32.verify_and_fix_geometry(result.hwnd, rect, state)
+            result.placed, result.why = verified.ok, verified.why
 
     return results

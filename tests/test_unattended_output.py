@@ -69,6 +69,11 @@ def test_every_line_of_the_no_session_report_reaches_the_log(logged, monkeypatch
         Tab(cwd=r"C:\repos\untrusted", title="untrusted", agent="codex"),
     ])])
 
+    # Far enough past the launch that the tab's turn has come and gone —
+    # otherwise it is still starting, which is not a failure to report.
+    clock = iter([0.0, 10_000.0])
+    monkeypatch.setattr(main_mod.time, "monotonic", lambda: next(clock))
+
     monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: {})
     monkeypatch.setattr(main_mod.win32_mod, "list_monitors", lambda: [])
     monkeypatch.setattr(main_mod.discover_mod, "transcript_index",
