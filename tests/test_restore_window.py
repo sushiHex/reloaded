@@ -78,8 +78,58 @@ def test_the_mark_expires_on_its_own(state, monkeypatch):
     assert deploy_mod.restoring_for() == 0
 
 
+def test_executing_a_plan_marks_the_restore(state, monkeypatch):
+    """The assertion the whole design rests on, and it was missing: every test
+    above calls `mark_restoring` directly, so deleting the call inside
+    `execute` left the suite green and the feature gone."""
+    monkeypatch.setattr(deploy_mod, "launch_window", lambda argv, tabs: 1)
+    monkeypatch.setattr(deploy_mod.win32, "set_geometry",
+                        lambda hwnd, rect, state_: deploy_mod.win32.Placed(True, ""))
+    monkeypatch.setattr(deploy_mod.win32, "verify_and_fix_geometry",
+                        lambda hwnd, rect, state_: deploy_mod.win32.Placed(True, ""))
+    monkeypatch.setattr(deploy_mod.time, "sleep", lambda s: None)
+
+    deploy_mod.execute(_plan(3))
+
+    assert deploy_mod.restoring_for() > 0
+
+
+def test_the_mark_is_refreshed_once_the_spawning_is_done(state, monkeypatch):
+    """`execute` can take tens of seconds when a window's HWND has to be waited
+    out, and each tab only starts sleeping its delay once its own window is
+    spawned. Timing the window from the first mark would let it lapse while the
+    restore is genuinely still starting."""
+    marks = []
+    monkeypatch.setattr(deploy_mod, "launch_window", lambda argv, tabs: 1)
+    monkeypatch.setattr(deploy_mod.win32, "set_geometry",
+                        lambda hwnd, rect, state_: deploy_mod.win32.Placed(True, ""))
+    monkeypatch.setattr(deploy_mod.win32, "verify_and_fix_geometry",
+                        lambda hwnd, rect, state_: deploy_mod.win32.Placed(True, ""))
+    monkeypatch.setattr(deploy_mod.time, "sleep", lambda s: None)
+    real = deploy_mod.mark_restoring
+    monkeypatch.setattr(deploy_mod, "mark_restoring",
+                        lambda plan: marks.append(1) or real(plan))
+
+    deploy_mod.execute(_plan(3))
+
+    assert len(marks) == 2, "marked once before spawning and once after"
+
+
 def test_no_mark_means_no_restore(state):
     assert deploy_mod.restoring_for() == 0
+
+
+def test_a_clock_that_jumped_backwards_does_not_wedge_capture(state, monkeypatch):
+    """A logon is exactly when w32time resyncs and when a VM resumes. An mtime
+    ahead of the clock would otherwise leave `left` unbounded, and every
+    capture refusing for hours through a reconcile with no console."""
+    deploy_mod.mark_restoring(_plan(3))
+    window = deploy_mod.restore_window(_plan(3))
+    # The wall clock steps back to the epoch while the file's mtime stays put,
+    # so the marker now appears to have been written decades in the future.
+    monkeypatch.setattr(time, "time", lambda: 0.0)
+
+    assert 0 < deploy_mod.restoring_for() <= window
 
 
 def test_an_unreadable_mark_does_not_block_forever(state):

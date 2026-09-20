@@ -504,7 +504,12 @@ def restoring_for() -> float:
         left = window - (time.time() - marker.stat().st_mtime)
     except (OSError, ValueError):
         return 0.0
-    return left if left > 0 else 0.0
+    # Clamped to the window that was written. An mtime ahead of the clock -
+    # a logon is exactly when w32time resyncs, when a VM resumes, and when a
+    # dual-boot machine corrects an RTC written as local time - would
+    # otherwise make `left` arbitrarily large and stop every capture for
+    # hours, through a reconcile with no console to say so.
+    return min(left, window) if left > 0 else 0.0
 
 
 def execute(plan: list[PlanEntry]) -> list[LaunchResult]:
@@ -528,6 +533,12 @@ def execute(plan: list[PlanEntry]) -> list[LaunchResult]:
         results.append(result)
         if placed.ok:
             to_verify.append((result, entry.rect, entry.state))
+
+    # Marked again now the spawning is done. The first mark covers `execute`
+    # itself, which can take tens of seconds when a window's HWND has to be
+    # waited out; this one makes the window count from the last spawn, which is
+    # when the last tab actually begins sleeping out its delay.
+    mark_restoring(plan)
 
     if to_verify:
         # One shared wait for Windows Terminal's own startup layout to

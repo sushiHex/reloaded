@@ -80,10 +80,10 @@ def test_status_warns_about_a_shared_directory(monkeypatch, tmp_path, capsys):
     """In `status` rather than `capture`: this needs a process sweep of its
     own, and the reconcile runs capture every five minutes forever."""
     monkeypatch.setattr(main_mod, "layout_path", lambda name: tmp_path / "none.json")
-    monkeypatch.setattr(main_mod.discover_mod, "live_sessions",
-                        lambda: {norm(r"C:\repos\app"): 1})
-    monkeypatch.setattr(main_mod.discover_mod, "crowded_dirs",
-                        lambda: {norm(r"C:\repos\app"): ["claude", "codex"]})
+    monkeypatch.setattr(
+        main_mod.discover_mod, "sweep",
+        lambda: ({norm(r"C:\repos\app"): 1},
+                 {norm(r"C:\repos\app"): ["claude", "codex"]}))
 
     main_mod.cmd_status(types.SimpleNamespace(layout="default",
                                               repos_root=r"C:\repos"))
@@ -96,8 +96,7 @@ def test_status_warns_about_a_shared_directory(monkeypatch, tmp_path, capsys):
 
 def test_status_says_nothing_when_no_directory_is_shared(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(main_mod, "layout_path", lambda name: tmp_path / "none.json")
-    monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: {})
-    monkeypatch.setattr(main_mod.discover_mod, "crowded_dirs", lambda: {})
+    monkeypatch.setattr(main_mod.discover_mod, "sweep", lambda: ({}, {}))
 
     main_mod.cmd_status(types.SimpleNamespace(layout="default",
                                               repos_root=r"C:\repos"))

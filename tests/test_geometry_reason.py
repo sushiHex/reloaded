@@ -96,6 +96,7 @@ def test_the_deploy_warning_carries_the_reason(monkeypatch, capsys):
     monkeypatch.setattr(deploy_mod, "execute", lambda p: [
         deploy_mod.LaunchResult(window_id="w1", hwnd=1, placed=False,
                                 why="SetWindowPlacement refused")])
+    monkeypatch.setattr(main_mod.win32_mod, "list_monitors", lambda: [])
     monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: {})
     monkeypatch.setattr(main_mod.discover_mod, "transcript_index", lambda **k: {})
 

@@ -367,6 +367,13 @@ class Placed(NamedTuple):
     ok: bool
     why: str  # "" when ok
 
+    def __bool__(self) -> bool:
+        # These two functions returned a bare bool until recently, so
+        # `if set_geometry(...)` is the shape every existing caller had. A
+        # NamedTuple is always truthy, which would have made that shape mean
+        # "always" - silently, and only on the failure path.
+        return self.ok
+
 
 def _apply_geometry(hwnd: int, rect: list[int], state: str) -> bool:
     x, y, w, h = rect

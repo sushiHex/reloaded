@@ -281,6 +281,16 @@ def _sessions() -> tuple[dict[str, tuple], dict[str, list[str]]]:
     return out, crowded
 
 
+def sweep() -> tuple[dict[str, int], dict[str, list[str]]]:
+    """Live sessions by cwd, and the directories that collapsed, in one walk.
+
+    The reason `_sessions` computes both: a caller that wants them separately
+    pays two `process_iter` sweeps for one question.
+    """
+    sessions, crowded = _sessions()
+    return {cwd: pid for cwd, (pid, _k) in sessions.items()}, crowded
+
+
 def crowded_dirs() -> dict[str, list[str]]:
     """Directories hosting more than one agent session: cwd -> sorted kinds.
 

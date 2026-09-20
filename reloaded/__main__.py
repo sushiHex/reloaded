@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
 import time
@@ -101,6 +102,30 @@ def _announce_quit(plans) -> dict[str, str]:
     return kinds
 
 
+def _restore_in_flight(args) -> bool:
+    """Whether a restore is still starting its sessions, reported.
+
+    A restore still staggering its launches has tabs whose agents have not
+    started, and a session that has not started is absent from `live` - which
+    is indistinguishable from one the user closed. The shrinkage guard cannot
+    tell those apart, so the capture must not be taken at all rather than taken
+    and second-guessed.
+    """
+    left = deploy_mod.restoring_for()
+    if not left or getattr(args, "force", False):
+        return False
+
+    # Rounded up: "0s left" while refusing reads as a contradiction.
+    message = (f"[reloaded] a restore is still starting "
+               f"({math.ceil(left)}s left) — not overwriting the layout")
+    _record(message)
+    print(message)
+    print("    Sessions that have not started yet read as closed, and a "
+          "capture now would drop them.")
+    print("    It resolves itself; pass --force to capture anyway.")
+    return True
+
+
 def _saved_repos(path) -> set[str]:
     """Repos in the layout on disk, or none when there is no readable one.
 
@@ -170,6 +195,14 @@ def _capture_layout(args):
 
 
 def cmd_capture(args) -> int:
+    # First, before the UIA tab scan and the transcript walk below. A capture
+    # taken inside a restore is going to be discarded anyway, and driving a
+    # per-window tab scan against Windows Terminal while it is creating
+    # thirteen tabs is the condition `_capture_shrinkage` blames for its own
+    # failure mode.
+    if _restore_in_flight(args):
+        return 1
+
     try:
         lo, path, live, _title_map = _capture_layout(args)
     except tabs_mod.UIAUnavailable as exc:
@@ -181,22 +214,6 @@ def cmd_capture(args) -> int:
     pruned = transcript_mod.prune_torn_backups(discover_mod.default_projects_dir())
     if pruned:
         print(f"[reloaded] pruned {len(pruned)} stale .torn backup(s)")
-
-    # Before anything is read into a decision: a restore still staggering its
-    # launches has tabs whose agents have not started, and a session that has
-    # not started is absent from `live` — which is indistinguishable from one
-    # the user closed. The shrinkage guard cannot tell those apart, so the
-    # capture must not be taken at all rather than taken and second-guessed.
-    left = deploy_mod.restoring_for()
-    if left and not getattr(args, "force", False):
-        message = (f"[reloaded] a restore is still starting ({left:.0f}s left) "
-                   "— not overwriting the layout")
-        _record(message)
-        print(message)
-        print("    Sessions that have not started yet read as closed, and a "
-              "capture now would drop them.")
-        print("    It resolves itself; pass --force to capture anyway.")
-        return 1
 
     if not lo.windows:
         print("No agent sessions found — nothing captured, existing layout untouched.")
@@ -1255,6 +1272,12 @@ def cmd_restart(args) -> int:
     if repos:
         return cmd_restart_one(args, repos)
 
+    # The same blind spot as `capture`, and a worse outcome: a restart saves
+    # its fresh capture and then deploys from it, so a session that has not
+    # finished starting is dropped from the layout and not relaunched.
+    if _restore_in_flight(args):
+        return 1
+
     try:
         lo, path, live, title_map = _capture_layout(args)
     except tabs_mod.UIAUnavailable as exc:
@@ -1377,7 +1400,7 @@ def cmd_uninstall_tasks(args) -> int:
 
 def cmd_status(args) -> int:
     path = layout_path(args.layout)
-    live = discover_mod.live_sessions()
+    live, crowded = discover_mod.sweep()
 
     print(f"live sessions : {len(live)}")
     for cwd in sorted(live):
@@ -1388,7 +1411,7 @@ def cmd_status(args) -> int:
     # command someone runs to find out what is going on, which is also the
     # moment this is worth knowing - the loss it describes happens at the next
     # restore, not now.
-    for cwd, kinds in sorted(discover_mod.crowded_dirs().items()):
+    for cwd, kinds in sorted(crowded.items()):
         print(f"\n[warn] {len(kinds)} agent sessions share {cwd} "
               f"({', '.join(kinds)}).")
         print("       Sessions are tracked by directory, so only one is saved "
@@ -1530,7 +1553,8 @@ def build_parser() -> argparse.ArgumentParser:
     cap = sub.add_parser("capture", help="snapshot the current arrangement into the layout")
     cap.add_argument(
         "--force", action="store_true",
-        help="save even if the capture holds fewer sessions than the saved layout",
+        help="save even if a restore is still starting, or the capture holds "
+             "fewer sessions than the saved layout",
     )
 
     up = sub.add_parser("up", help="deploy the saved layout")

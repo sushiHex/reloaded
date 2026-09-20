@@ -70,6 +70,7 @@ def test_a_deploy_says_the_rest_are_still_coming(monkeypatch, capsys):
     monkeypatch.setattr(deploy_mod, "plan_deploy", lambda *a, **k: plan)
     monkeypatch.setattr(deploy_mod, "execute", lambda p: [
         deploy_mod.LaunchResult(window_id="w1", hwnd=1, placed=True)])
+    monkeypatch.setattr(main_mod.win32_mod, "list_monitors", lambda: [])
     monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: {})
     monkeypatch.setattr(main_mod.discover_mod, "transcript_index", lambda **k: {})
     monkeypatch.setattr(main_mod.transcript_mod, "repair_torn_tail", lambda *a, **k: None)
