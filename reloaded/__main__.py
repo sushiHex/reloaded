@@ -7,6 +7,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from . import agents as agents_mod
 from . import capture as capture_mod
@@ -69,6 +70,13 @@ def _print_down_result(result: dict, *, timed_out_note: str = "") -> None:
     if result["timed_out"]:
         print(f"[warn] {len(result['timed_out'])} session(s) did not exit in time{timed_out_note}:")
         for title, cwd in result["timed_out"]:
+            print(f"    - {title}  [{cwd}]")
+    # `.get`, because callers in the suite build this dict by hand and a
+    # teardown that was never given `still_wanted` cannot produce one.
+    if result.get("disarmed"):
+        print(f"{len(result['disarmed'])} session(s) called off before they "
+              "were restarted:")
+        for title, cwd in result["disarmed"]:
             print(f"    - {title}  [{cwd}]")
     if result["left_open"]:
         print(f"{len(result['left_open'])} window(s) left open (see warnings above).")
@@ -773,6 +781,13 @@ def cmd_restart_one(args, repos: list[str]) -> int:
         time.sleep(after)
 
     cwds = [resolve_repo(r, args.repos_root) for r in repos]
+    # Not `--after > 0`. That is a public option a named restart takes
+    # alongside any number of repos, so reading it as "this was dispatched"
+    # would hand `restart a b c --after 5` the marker-long patience below on
+    # every one of them - minutes of typing at sessions whose owner is sitting
+    # there watching.
+    dispatched = getattr(args, "dispatched", False) and not args.dry_run
+
     live = discover_mod.live_sessions()
 
     refusal = _nothing_running_there(cwds, live)
@@ -813,13 +828,24 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     down = teardown_mod.execute_down(
         plans, close_emptied=False, before_exit=arm,
         kinds={s.key: s.agent for s in sessions},
+        patience=SELF_EXIT_PATIENCE_SECONDS if dispatched else None,
+        still_wanted=_still_armed if dispatched else None,
     )
     _print_down_result(down, timed_out_note=" — not restarted")
 
     stuck = {norm(cwd) for _t, cwd in down["timed_out"]}
+    called_off = {norm(cwd) for _t, cwd in down.get("disarmed", ())}
     print("\nWaiting for them to come back...")
     failed = False
     for s in sessions:
+        if s.key in called_off:
+            # Not routed to `_report_never_exited`, which would say "never
+            # exited" about a session nobody finished asking, and then read a
+            # marker that was deliberately removed. And not a failure: the
+            # cancel is a request, and this is it being honoured.
+            print(f"    {s.cwd} was called off — still running as pid "
+                  f"{s.pid}, not restarted")
+            continue
         if s.key in stuck:
             came_back = _report_never_exited(s)
         elif s.launcher == discover_mod.HAND:
@@ -828,6 +854,27 @@ def cmd_restart_one(args, repos: list[str]) -> int:
             came_back = _await_relaunch(s, tabs_before)
         failed = failed or not came_back
     return 1 if failed else 0
+
+
+def _still_armed(cwd: str) -> bool:
+    """Whether typing at `cwd` again could still produce a restart.
+
+    `restart --self --cancel` deletes the marker, and this is what makes that
+    mean something for a helper already dispatched: the helper is the thing
+    typing, and a key it lands after the cancel ends a session nothing will
+    bring back. While the wait was twenty seconds that race was small; it is
+    now as long as the marker's life, so the helper asks - before every key and
+    on every poll, which is why a cancel after arming genuinely stops one.
+
+    Up to the point it has typed. After that the key is out, the cancel cannot
+    recall it, and `execute_down` reports that as its own outcome rather than
+    as a clean stop.
+
+    The marker being gone *while the session is still running* has one cause.
+    The shell only consumes it after its agent exits, and by then the poll that
+    calls this has already ended.
+    """
+    return restart_marker(cwd).exists()
 
 
 def _nothing_running_there(cwds, live) -> str:
@@ -971,11 +1018,37 @@ def _report_never_exited(s: _Restarting) -> bool:
     # Only a reloaded-launched session has a marker at all. Saying otherwise
     # promises a delayed restart nothing can perform - seen for real against a
     # hand-launched session, which is armed with nothing by design.
-    if s.launcher == discover_mod.RELOADED:
-        mins = deploy_mod.RESTART_MARKER_TTL_SECONDS // 60
+    if s.launcher != discover_mod.RELOADED:
+        return False
+    # Read, not assumed. This used to print the TTL as a constant, which was
+    # near enough while the wait before it was twenty seconds. A dispatched
+    # restart now waits out the whole marker, so by the time it reaches here
+    # the marker is expired - and "it will restart if it exits within 2 min"
+    # would be describing a window that closed while the caller waited.
+    left = _marker_life_left(s.cwd)
+    if left > 0:
         print(f"        its restart is still armed: it will restart if it "
-              f"exits within {mins} min, and be ignored after that")
+              f"exits in the next {left:.0f}s")
+    else:
+        print("        its restart is no longer armed — quitting it now "
+              "closes the tab, as an ordinary quit does")
     return False
+
+
+def _marker_life_left(cwd: str) -> float:
+    """How much of `cwd`'s restart marker is left, in seconds, or 0.
+
+    The tab's own shell compares the marker's age at the moment its agent exits
+    against the same TTL (`deploy.restart_loop`), so this is the same question
+    that shell will ask, asked early.
+    """
+    import time
+
+    try:
+        age = time.time() - restart_marker(cwd).stat().st_mtime
+    except OSError:
+        return 0.0
+    return max(0.0, deploy_mod.RESTART_MARKER_TTL_SECONDS - age)
 
 
 def _relaunch_by_typing(s: _Restarting) -> bool:
@@ -1062,6 +1135,15 @@ def _reopen_in_a_new_tab(s: _Restarting) -> bool:
 
 
 SELF_RESTART_DELAY_SECONDS = 5.0
+# How long a dispatched helper keeps asking its target to quit. Not a number of
+# its own: the tab's shell compares the marker's age at the moment the agent
+# exits against deploy.RESTART_MARKER_TTL_SECONDS, so that span is exactly the
+# one in which exiting still means coming back. Being patient for less throws
+# away time the restart could still have used - measured, 2026-09-21: the
+# helper gave up at +30s against a session that became reachable at +83s with
+# its marker good until +120s. Being patient for more types at a session whose
+# exit would close the tab instead of relaunching it.
+SELF_EXIT_PATIENCE_SECONDS = deploy_mod.RESTART_MARKER_TTL_SECONDS
 
 
 def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> int:
@@ -1114,21 +1196,100 @@ def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> 
     bootstrap = (
         f"import sys; sys.path.insert(0, {package_dir!r}); "
         f"from reloaded.__main__ import main; "
-        f"raise SystemExit(main({['--layout', layout, '--repos-root', repos_root, 'restart', repo, '--after', str(after)]!r}))"
+        f"raise SystemExit(main({['--layout', layout, '--repos-root', repos_root, 'restart', repo, '--after', str(after), '--dispatched']!r}))"
     )
 
     DETACHED_PROCESS = 0x00000008
     CREATE_NEW_PROCESS_GROUP = 0x00000200
     CREATE_BREAKAWAY_FROM_JOB = 0x01000000
     base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    argv = [sys.executable, "-c", bootstrap]
-    kw = dict(stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-              stderr=subprocess.DEVNULL, close_fds=True)
+    # -u because the account below is the only record this helper leaves and
+    # the helper is a process that gets killed rather than closed. Block
+    # buffering would hold its last and most interesting lines - the ones about
+    # what went wrong - in a buffer that never flushes.
+    argv = [sys.executable, "-u", "-c", bootstrap]
+
+    # The helper's account used to go to DEVNULL, which made every way this
+    # can fail silent: the session that would have read it is the one being
+    # ended, and the caller has already printed its own success. Everything
+    # worth knowing is in what the helper prints - `never exited — still
+    # running as pid N, not restarted`, and whether the marker is still armed -
+    # so the fix is a file handle, not a reporting mechanism.
+    #
+    # Opened here rather than in the helper because a helper that dies before
+    # its first print, or on the import, would leave nothing at all.
+    account = _open_account()
+    kw = dict(stdin=subprocess.DEVNULL, stdout=account, stderr=account,
+              close_fds=True)
     try:
-        return subprocess.Popen(
+        pid = subprocess.Popen(
             argv, creationflags=base | CREATE_BREAKAWAY_FROM_JOB, **kw).pid
     except OSError:
-        return subprocess.Popen(argv, creationflags=base, **kw).pid
+        pid = subprocess.Popen(argv, creationflags=base, **kw).pid
+    has_account = account is not subprocess.DEVNULL
+    if has_account:
+        # Which session asked, since the helper's own output never says - and
+        # by the time it writes, that session has gone. Written after the spawn
+        # so it can name the pid whose lines follow it.
+        #
+        # Swallowed, because the helper is already running. A full disk here
+        # would otherwise raise out of a function that has successfully
+        # dispatched, and the caller treats an exception as "nothing was
+        # spawned": it would tell the user to start another restart, on top of
+        # the one now typing at their session.
+        try:
+            account.write(_stamped(
+                f"[reloaded] restart --self dispatched for {repo} "
+                f"(helper pid {pid})") + "\n")
+        except OSError:
+            # Swallowed, but not forgotten: the open succeeded and the first
+            # write did not, so the promise the caller builds from this flag
+            # is already false. A disk that filled between the two is the
+            # whole reason the flag exists. Codex review of this branch.
+            has_account = False
+        # Closed here, not left to interpreter exit: Popen has already given
+        # the child its own duplicate of the handle, so the helper keeps
+        # writing, and this process should not be holding the log open while
+        # it waits to be ended.
+        try:
+            account.close()
+        except OSError:
+            pass
+    # Whether there is an account at all, not just where the helper went. The
+    # caller's line about where a failure will be reported is a promise, and
+    # `_open_account` can fall back to DEVNULL - which would make that promise
+    # point at a log containing no explanation, leaving the new reporting
+    # exactly as silent as the old. Codex review of this branch.
+    return Dispatched(pid=pid, account=has_account)
+
+
+class Dispatched(NamedTuple):
+    """A helper that was started, and whether it can say anything.
+
+    `__int__` and `__eq__` are not provided on purpose: every caller wants one
+    field or the other by name, and a tuple that quietly compares equal to a
+    pid is how the account half gets forgotten again.
+    """
+
+    pid: int
+    account: bool
+
+
+def _open_account():
+    """Where a detached helper's output goes, or DEVNULL if nowhere can.
+
+    Losing the account is bad; refusing to restart because the log could not be
+    opened is worse - that is the whole command failing over its own
+    bookkeeping. Line buffered, because the writer is a process that may be
+    killed rather than closed.
+    """
+    import subprocess
+
+    try:
+        return open(log_path(), "a", buffering=1, encoding="utf-8",
+                    errors="replace")
+    except OSError:
+        return subprocess.DEVNULL
 
 
 def cmd_restart_self(args) -> int:
@@ -1189,14 +1350,29 @@ def cmd_restart_self(args) -> int:
             return 1
         print(f"Disarmed {cwd}." if existed
               else f"Nothing was armed for {cwd}.")
-        # Only the marker is recallable. A restart already handed to a detached
-        # process is running outside this session, does its own arming, and
-        # cannot be called back from in here - saying nothing about that would
-        # let "Disarmed" read as "stopped", which it is not.
-        print("    (This clears a waiting marker only. A restart already "
-              "dispatched by `--self`")
-        print("     runs outside this session and cannot be called off from "
-              "inside it.)")
+        # This used to say a dispatched restart could not be called off at all.
+        # That was true when nothing consulted the marker again after arming;
+        # the helper now asks before every key and on every poll, so removing
+        # it does stop one - but only once there is one to remove, and only
+        # until it has typed. Three outcomes, and this command cannot see which
+        # one it is in, so it says all three rather than the flattering one.
+        # The third is the dangerous one and was missing for a round: a quit
+        # key already sent cannot be recalled, and the marker this just removed
+        # is what would have turned the resulting exit into a relaunch.
+        # Codex review of this branch.
+        print("    (A restart dispatched by `--self` runs outside this "
+              "session. What removing this")
+        print("     marker does depends on where it has got to:")
+        print("       still in its opening delay — nothing. It will arm and "
+              "proceed.")
+        print(f"       armed, nothing typed yet — it stops, and leaves the "
+              f"session running.")
+        print(f"       already typed {label} — too late. That key cannot be "
+              "recalled, and without")
+        print("         this marker the exit it causes closes the tab "
+              "instead of relaunching.")
+        print(f"         Look at {cwd}:")
+        print(f"         {agents_mod.for_kind(kind).unsent_quit}.)")
         return 0
 
     ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS
@@ -1250,11 +1426,27 @@ def cmd_restart_self(args) -> int:
                   f"quit with {label}.")
             return 1
         print(f"Restarting {cwd} (pid {pid}, {kind}).")
-        print(f"\n    Handed to pid {helper}, which starts in {after:.0f}s — "
-              "it lives outside this session,")
+        print(f"\n    Handed to pid {helper.pid}, which starts in "
+              f"{after:.0f}s — it lives outside this session,")
         print(f"    so it survives the exit. It will steal focus, send "
               f"{label}, and bring the session")
-        print("    back in this same tab. Nothing further to do.")
+        print(f"    back in this same tab, retrying for up to "
+              f"{SELF_EXIT_PATIENCE_SECONDS // 60:.0f} minutes while this "
+              "session is busy.")
+        # It used to end "Nothing further to do." - printed the instant the
+        # helper was spawned, before anything had been attempted, by a process
+        # that was about to die and could never take it back.
+        if helper.account:
+            print(f"\n    If it does not come back, that is the only place it "
+                  f"will be said: {log_path()}")
+        else:
+            # The restart still goes ahead; only the reporting is gone. Saying
+            # so is the difference between a user who knows to watch the tab
+            # and one sent to read a log with nothing in it.
+            print(f"\n    [warn] {log_path()} could not be opened, so the "
+                  "helper has nowhere to report.")
+            print("    If the session does not come back, nothing will say "
+                  "why — watch the tab.")
         return 0
 
     if args.dry_run:
@@ -1642,12 +1834,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     restart.add_argument(
         "--cancel", action="store_true",
-        help="with --self --arm-only, disarm instead of arming",
+        help="with --self, remove the restart marker: disarms a waiting "
+             "--arm-only, and calls off a dispatched helper once it has armed "
+             "and before it has typed",
     )
     restart.add_argument(
         "--after", type=float, default=0.0, metavar="SECONDS",
         help="wait this long before starting; --self uses it to let the "
              "calling session finish its turn",
+    )
+    # Not `--after > 0`, which is what the dispatched path used to be inferred
+    # from. `--after` is a public option and a named restart takes any number
+    # of repos, so `restart a b c --after 5` would have claimed the marker-long
+    # patience on every one of them - minutes of typing at sessions whose owner
+    # is sitting there watching. The comment saying "only --self sets this" was
+    # true of intent and of nothing the parser enforced.
+    restart.add_argument(
+        "--dispatched", action="store_true", help=argparse.SUPPRESS,
     )
     restart.add_argument(
         "--dry-run", action="store_true", help="print what would be captured/exited/relaunched, do nothing"

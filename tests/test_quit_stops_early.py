@@ -41,12 +41,28 @@ def test_the_whole_sequence_is_sent_while_it_is_still_wanted(keys):
 
 
 def test_the_second_interrupt_is_withheld_once_the_session_is_gone(keys):
-    """The one that would land on the next tab."""
-    alive = [True, False]
+    """The one that would land on the next tab.
+
+    Three answers, not two: at the top, again before key zero because the
+    overlay dismissal has slept in between, and again before key one."""
+    alive = [True, True, False]
     tabs_mod.send_quit_keystrokes(("{Ctrl}c", "{Ctrl}c"),
                                   still_needed=lambda: alive.pop(0))
 
     assert keys == ["{Esc}", "{Ctrl}c"]
+
+
+def test_the_first_key_is_withheld_if_the_overlay_pause_lost_the_target(keys):
+    """The interval the old check did not cover. Escape is a keystroke and a
+    tenth of a second, and `--cancel` landing inside it left key zero going out
+    on an answer given before the sleep — ending a session whose tab will then
+    close rather than relaunch. Codex review of this branch."""
+    alive = [True, False]
+
+    tabs_mod.send_quit_keystrokes(("{Ctrl}c", "{Ctrl}c"),
+                                  still_needed=lambda: alive.pop(0))
+
+    assert keys == ["{Esc}"], "it typed a quit key after losing its target"
 
 
 def test_nothing_at_all_is_sent_when_the_target_has_already_gone(keys):

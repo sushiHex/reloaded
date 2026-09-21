@@ -100,8 +100,18 @@ stops instead of repeatedly launching against an unconsumed marker.
 
 The restart coordinator leaves timed-out markers in place because a slow
 session may still exit within the valid interval. The launcher handles expiry;
-subsequent named restarts sweep stale markers. Explicit self-cancellation can
-remove a waiting marker while its session is still alive.
+subsequent named restarts sweep stale markers. Explicit self-cancellation
+removes a waiting marker while its session is still alive, and a dispatched
+helper reads that removal too — before every keystroke and on every poll — so
+cancelling after it has armed stops it typing and leaves the session running.
+Cancelling during its opening delay changes nothing, because there is nothing
+armed yet. Cancelling after a quit key has gone out is too late: the key cannot
+be recalled, and without the marker the exit it causes closes the tab rather
+than relaunching, so the helper reports that outcome as distinct from a clean
+cancel and stops adding to what is already in the prompt. It does not try to
+retract the partial command, on the same grounds as the timeout branch — it
+cannot read that screen, and typing more at a session it was told to stop
+typing at is how it would do damage.
 
 For hand-started sessions, Reloaded types a short command invoking a generated
 PowerShell script into the waiting shell. Keeping the full launcher in a file

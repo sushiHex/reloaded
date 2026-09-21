@@ -298,7 +298,11 @@ def send_quit_keystrokes(keys, dismiss_overlay: bool = True,
     would cancel the very confirmation the retry exists to answer.
 
     ``still_needed`` is asked before EVERY key, including the first, and a
-    False answer stops the sequence there. Two different windows close on it.
+    False answer stops the sequence there. Three different windows close on it,
+    and the third is why "including the first" has to be taken literally: the
+    overlay dismissal above is itself a keystroke and a tenth of a second, so a
+    check made only at the top would send key zero on an answer given before
+    that sleep.
 
     Before the first key: teardown handles its targets serially, waiting up to
     twenty seconds on each, so a session can end on its own long before its
@@ -328,8 +332,13 @@ def send_quit_keystrokes(keys, dismiss_overlay: bool = True,
     for i, key in enumerate(keys):
         if i:
             time.sleep(MENU_SETTLE_SECONDS)
-            if still_needed is not None and not still_needed():
-                break
+        # After the pause above, and after the overlay dismissal below it -
+        # which is a keystroke and a tenth of a second of its own. Asking only
+        # at the top left the first key going out on an answer given before
+        # that sleep, so the one interval the docstring did not cover was the
+        # one right before key zero. Codex review of this branch.
+        if still_needed is not None and not still_needed():
+            break
         auto.SendKeys(key)
         sent += 1
     return sent

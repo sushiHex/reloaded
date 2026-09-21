@@ -58,6 +58,18 @@ def restart_marker_dir() -> pathlib.Path:
     return d
 
 
+def _digest(cwd: str) -> str:
+    """How a cwd becomes a filename.
+
+    A cwd is not a legal filename, and the spellings that have to agree on one
+    — the user's argument, the path baked into a running tab's command, the one
+    psutil reports — only match after normalization. Two files are keyed this
+    way and both must land on the same name for the same directory, which is a
+    reason to compute it once rather than twice identically.
+    """
+    return hashlib.sha256(norm(cwd).encode("utf-8")).hexdigest()[:16]
+
+
 def relaunch_script_path(cwd: str) -> pathlib.Path:
     """Where the launcher is written for typing into a hand-launched tab.
 
@@ -67,17 +79,15 @@ def relaunch_script_path(cwd: str) -> pathlib.Path:
     """
     d = state_dir() / "relaunch"
     d.mkdir(parents=True, exist_ok=True)
-    digest = hashlib.sha256(norm(cwd).encode("utf-8")).hexdigest()[:16]
-    return d / f"{digest}.ps1"
+    return d / f"{_digest(cwd)}.ps1"
 
 
 def restart_marker(cwd: str) -> pathlib.Path:
     """The file `restart` drops to tell one tab's own shell to relaunch.
 
-    Keyed by the hash of `norm(cwd)` rather than the path itself: a cwd is not
-    a legal filename, and the two spellings that have to agree on this file —
-    the user's argument and the path baked into the running tab's command —
-    only match after normalization.
+    Keyed by `_digest(norm(cwd))` rather than the path itself: a cwd is not a
+    legal filename, and the two spellings that have to agree on this file — the
+    user's argument and the path baked into the running tab's command — only
+    match after normalization.
     """
-    digest = hashlib.sha256(norm(cwd).encode("utf-8")).hexdigest()[:16]
-    return restart_marker_dir() / f"{digest}.marker"
+    return restart_marker_dir() / f"{_digest(cwd)}.marker"

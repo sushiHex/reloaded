@@ -279,8 +279,10 @@ def dispatched(monkeypatch, session):
     """Capture the delegate instead of spawning it."""
     calls = []
     monkeypatch.setattr(main_mod, "_dispatch_restart",
-                        lambda repo, layout, after, repos_root: calls.append(
-                            (repo, layout, after, repos_root)) or 4242)
+                        lambda repo, layout, after, repos_root:
+                        calls.append(
+                                (repo, layout, after, repos_root))
+                        or main_mod.Dispatched(pid=4242, account=True))
     return calls
 
 
@@ -387,7 +389,11 @@ def _helper_argv(spawned):
     """
     import ast
 
-    source = spawned[0][2]
+    # Found by the flag rather than by index: the interpreter's own options
+    # sit in front of it and gaining one (`-u`, so the account is not lost in
+    # a buffer when the helper is killed) should not break this reader.
+    argv = spawned[0]
+    source = argv[argv.index("-c") + 1]
     start = source.index("[", source.index("main("))
     return ast.literal_eval(source[start:source.rindex("]") + 1])
 
@@ -397,8 +403,31 @@ def test_the_bootstrap_carries_the_absolute_path_and_the_root(bootstrap):
 
     assert _helper_argv(bootstrap) == [
         "--layout", "work", "--repos-root", r"D:\work",
-        "restart", r"D:\work\app", "--after", "7.0",
+        "restart", r"D:\work\app", "--after", "7.0", "--dispatched",
     ]
+
+
+def test_the_helper_is_told_it_was_dispatched(bootstrap):
+    """The marker-long patience belongs to a restart nobody is watching, and
+    `--after` cannot stand in for that: it is a public option a named restart
+    accepts alongside any number of repos."""
+    main_mod._dispatch_restart(r"D:\work\app", "work", 7.0, r"D:\work")
+
+    assert main_mod.build_parser().parse_args(
+        _helper_argv(bootstrap)).dispatched is True
+
+
+def test_a_hand_typed_restart_is_not_dispatched(bootstrap):
+    assert main_mod.build_parser().parse_args(
+        ["restart", "app", "--after", "5"]).dispatched is False
+
+
+def test_the_helper_does_not_buffer_its_account(bootstrap):
+    """It is a process that gets killed rather than closed, and the lines
+    worth keeping are the last ones it writes."""
+    main_mod._dispatch_restart(r"D:\work\app", "work", 7.0, r"D:\work")
+
+    assert "-u" in bootstrap[0]
 
 
 def test_the_global_options_precede_the_subcommand(bootstrap):
@@ -458,7 +487,11 @@ def test_it_says_the_helper_outlives_this_session(dispatched, capsys):
     out = capsys.readouterr().out
     assert "4242" in out, "the helper pid is not named"
     assert "outside this session" in out
-    assert "Nothing further to do" in out
+    # It used to end "Nothing further to do." - printed the instant the helper
+    # was spawned, by a process about to die, about work not yet attempted. A
+    # dispatched restart that failed said nothing anywhere; see
+    # tests/test_self_restart_account.py.
+    assert "Nothing further to do" not in out
 
 
 def test_the_delay_is_passed_through(dispatched, session):
@@ -505,13 +538,34 @@ def test_the_refusals_still_apply_before_dispatching(capsys, monkeypatch):
     assert main_mod.cmd_restart(_args(arm_only=False)) == 1
 
 
-def test_cancel_admits_it_cannot_recall_a_dispatched_restart(session, capsys):
-    """"Disarmed" would otherwise read as "stopped". The delegate is a separate
-    process doing its own arming; nothing in here can call it back."""
+def test_cancel_says_what_it_does_to_a_dispatched_restart(session, capsys):
+    """"Disarmed" would otherwise read as "stopped", and the old answer — that
+    a dispatched restart cannot be called off at all — stopped being true when
+    the helper began re-reading the marker before every key. Now it depends on
+    where the helper has got to, and this command cannot see that, so it says
+    both cases rather than the flattering one."""
     main_mod.cmd_restart(_args(cancel=True))
 
     out = capsys.readouterr().out
-    assert "cannot be called off" in out
+    assert "it stops" in out, "it never says a cancel can work"
+    assert "nothing. It will arm" in out, "it never says when it does nothing"
+    assert "too late" in out, "it never says when the cancel arrives too late"
+    assert "closes the tab" in out, "it never says what too late costs"
+    assert "opening delay" in out, "it never says which case is which"
+
+
+def test_the_cli_help_knows_cancel_reaches_a_dispatched_helper(capsys):
+    """`--help` is where a user who does not read docs/usage.md finds out.
+    It said `--cancel` applied only "with --self --arm-only", which is the one
+    path this branch did not change. Read the way a user reads it, through the
+    command rather than through argparse's internals. Codex review of this
+    branch."""
+    with pytest.raises(SystemExit):
+        main_mod.build_parser().parse_args(["restart", "--help"])
+
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "arm-only" in help_text, "it no longer says what it always did"
+    assert "dispatched" in help_text, "it still hides the path that now works"
 
 
 # ── finding the session you are inside ───────────────────────────────────

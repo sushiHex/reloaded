@@ -40,6 +40,15 @@ class Agent:
     # worse than a quiet one - the user reads it to decide whether to go
     # looking.
     quit_label: str
+    # Where a quit key that has gone out but not taken effect actually is, for
+    # a user being sent to look at the tab. A cancel cannot recall a keystroke,
+    # so something has to say what is now sitting in that session - and the two
+    # kinds differ completely. `/exit` is buffered text waiting for an Enter;
+    # an interrupt is not text at all and has already been acted on, by
+    # something that may not have been the quit. Written here because it is a
+    # fact about the agent, and the alternative was a per-kind branch in
+    # teardown's warning.
+    unsent_quit: str
     # Substrings that mean an invocation picks its conversation back up rather
     # than starting a fresh one. See `resumes`.
     resume_tokens: tuple
@@ -74,6 +83,8 @@ CLAUDE = Agent(
     launch="claude --dangerously-skip-permissions --continue",
     quit_keys=("/exit", "{Enter}"),
     quit_label="/exit",
+    unsent_quit="`/exit` may be sitting unsent in its prompt, where your own "
+                "next Enter would submit it",
     resume_tokens=("--continue", "-c", "--resume"),
     sessions_dir=os.path.join(os.path.expanduser("~"), ".claude", "projects"),
 )
@@ -97,6 +108,13 @@ CODEX = Agent(
     # If that is also eaten, it times out and says so. Nothing is forced.
     quit_keys=("{Ctrl}c", "{Ctrl}c"),
     quit_label="Ctrl+C",
+    # Not "sitting unsent": an interrupt is not buffered text. It arrived and
+    # something happened - the quit chord was raised, or, per the note above,
+    # a review was cancelled or a side conversation returned to the main
+    # thread. Which of those is not knowable from here.
+    unsent_quit="an interrupt has already reached it, which may have raised "
+                "its quit chord, cancelled a review, or returned it to the "
+                "main thread",
     resume_tokens=("resume",),
     sessions_dir=os.path.join(_codex_home(), "sessions"),
 )

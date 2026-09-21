@@ -122,6 +122,12 @@ recognized targets and exited; ordinary tabs or unresponsive sessions keep it
 open. Quit attempts wait up to 20 seconds per session and include a retry.
 Prompts or active work may consume the keystrokes instead of exiting.
 
+A restart dispatched by `--self` is the exception, because it is aimed at a
+session that is by construction in the middle of a turn. It waits as long as
+its restart marker can still deliver — two minutes — resending every twenty
+seconds and then going quiet well before the deadline, so that a session acting
+on a late keystroke does not exit after the marker has gone stale.
+
 Full `restart` saves a fresh capture **before** teardown, then deploys it and
 skips sessions that stayed alive. If that capture loses a repository that is
 still running — a window that read as empty rather than a session that went
@@ -188,7 +194,22 @@ waiting marker while still in that session:
 reloaded restart --self --cancel
 ```
 
-Cancellation clears only the marker. It cannot recall a helper already
-dispatched by the normal `--self` command. Likewise, a timed-out named restart
-may still relaunch if the agent exits before its marker expires. Do not delete
-restart markers manually while another session may be consuming them.
+Cancellation clears only the marker, and what that achieves depends on where a
+dispatched helper has got to. There are three outcomes:
+
+- **During its opening delay**, nothing. Nothing is armed yet, and the helper
+  will arm and proceed as though the cancel had not happened.
+- **Armed, nothing typed yet**, it works. The helper re-reads the marker before
+  every keystroke and on every poll, so it stops and leaves the session running.
+- **After it has typed a quit key**, it is too late. That key cannot be
+  recalled, and because the marker has now gone, an exit it causes closes the
+  tab instead of relaunching it. The helper says so and stops adding to it, but
+  the tab needs looking at. What is waiting there differs by agent: Claude's
+  `/exit` is buffered text that your own next Enter would submit, while an
+  interrupt sent to Codex has already been acted on — raising its quit chord,
+  or cancelling a review, or returning it to the main thread, which are not
+  distinguishable from outside.
+
+Likewise, a timed-out named restart may still relaunch if the agent exits
+before its marker expires. Do not delete restart markers manually while another
+session may be consuming them.
