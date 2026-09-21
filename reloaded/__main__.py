@@ -237,6 +237,13 @@ def cmd_capture(args) -> int:
     ):
         return 1
 
+    # Again, here. The entrance check was seconds ago, and the scans between
+    # then and now are exactly where a logon restore starts - an `up` that
+    # began inside them wrote its marker after that check passed, and this
+    # snapshot was taken while its sessions were still coming up.
+    if _restore_in_flight(args):
+        return 1
+
     before = _saved_repos(path)
     layout_mod.save(lo, path)
     _report_layout_change(before, lo)
@@ -1341,6 +1348,13 @@ def cmd_restart(args) -> int:
     if refused:
         return 1
 
+    # Again, here. The entrance check was seconds ago, and the scans between
+    # then and now are exactly where a logon restore starts - an `up` that
+    # began inside them wrote its marker after that check passed, and this
+    # snapshot was taken while its sessions were still coming up.
+    if _restore_in_flight(args):
+        return 1
+
     before = _saved_repos(path)
     layout_mod.save(lo, path)
     _report_layout_change(before, lo)
@@ -1550,6 +1564,10 @@ def cmd_edit(args) -> int:
         lo = layout_mod.load(path)
     else:
         print(f"No layout at {path} — capturing the current arrangement to start from.")
+        # The `c` command already stands down; this is the other capture the
+        # editor does, and `s` persists it just the same.
+        if _restore_in_flight(args):
+            return 1
         try:
             lo, path, _live, _title_map = _capture_layout(args)
         except tabs_mod.UIAUnavailable as exc:
