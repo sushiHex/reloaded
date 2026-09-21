@@ -1480,31 +1480,43 @@ def cmd_restart_self(args) -> int:
     # itself rather than from this process's flag. See _dispatch_restart.
     helper_root = os.path.dirname(cwd.rstrip("\\/")) or args.repos_root
 
-    if not arm_only:
-        # Synchronously, before anything is spawned. The helper runs the named
-        # path and would reach `_shared_directory`'s refusal - but it reaches
-        # it inside a detached process, after this command has printed success
-        # and the user has been told their session is coming back. That is the
-        # exact shape this branch's sibling work exists to remove, and letting
-        # a new refusal reintroduce it would be worse than not having it.
-        # Codex review of this branch.
-        sharing = _shared_with(cwd)
-        if sharing:
-            print(f"{len(sharing)} agent sessions share {cwd} "
-                  f"({', '.join(sharing)}).")
+    # Both paths, and synchronously.
+    #
+    # The dispatch would otherwise reach `_shared_directory`'s refusal inside a
+    # detached process, after this command had said the session was coming
+    # back - the shape the sibling branch exists to remove.
+    #
+    # And `--arm-only` is not the safe alternative this used to offer it as.
+    # Arming needs no tab, which is true and was the whole of my reasoning, but
+    # the marker does not name a session either: `deploy.restart_loop` gives
+    # every reloaded tab in this directory a shell watching the same file, and
+    # whichever exits first consumes it. That can relaunch the other session
+    # and then close this one's tab when its own quit finds nothing left to
+    # read - the wrong-session outcome the rest of this refuses to risk,
+    # reached by the path I had called exempt. Codex review of this branch.
+    sharing = _shared_with(cwd)
+    if sharing:
+        print(f"{len(sharing)} agent sessions share {cwd} "
+              f"({', '.join(sharing)}).")
+        if arm_only:
+            print("\n    Arming needs no tab, but the marker does not name a "
+                  "session. Every reloaded")
+            print("    shell in this directory watches the same file, and "
+                  "whichever exits first")
+            print(f"    consumes it — which can relaunch the other session and "
+                  f"then close this tab")
+            print(f"    when your own {label} finds nothing left to read.")
+        else:
             print("\n    The helper this would hand the job to has to find "
                   "your tab, and nothing")
             print("    connects a tab to the process inside it — so it would "
                   "refuse, in a detached")
             print("    process, after this command had already said the "
                   "session was coming back.")
-            # Not a consolation prize: arming needs no tab at all. The marker
-            # is read by the shell of whichever session exits, and the session
-            # that exits is the one the user quits.
-            print(f"\n    `reloaded restart --self --arm-only` does work here: "
-                  f"it types at nothing, and")
-            print(f"    your own {label} is what the marker waits for.")
-            return 1
+        print("\n    Move one of them to its own directory.")
+        return 1
+
+    if not arm_only:
         if args.dry_run:
             # The command as it will really run, not a readable summary of it:
             # this preview is the last chance to notice the helper has been

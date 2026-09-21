@@ -38,9 +38,11 @@ beside another session's tab: the quit keys reach one, the wait watches the
 other, and the outcome is reported against the wrong one. `restart --self`
 refuses for the same reason before dispatching, since its helper would
 otherwise reach that refusal inside a detached process after the calling
-session had been told it was coming back. `--arm-only` is unaffected, because
-arming needs no tab: the marker is read by the shell of whichever session the
-user quits.
+session had been told it was coming back. `--arm-only` refuses too, for a
+different reason: arming needs no tab, but the marker does not name a session
+either. Every reloaded shell in that directory watches the same file, so
+whichever exits first consumes it — relaunching the other session and then
+closing the caller's tab when its own quit finds nothing left to read.
 
 ## Capture and placement
 

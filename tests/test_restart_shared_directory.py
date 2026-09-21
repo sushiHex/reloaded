@@ -226,19 +226,36 @@ def test_the_dry_run_does_not_preview_something_that_cannot_happen(
     assert "share" in out
 
 
-def test_arming_is_not_refused_in_a_shared_directory(monkeypatch, tmp_path):
-    """Arming needs no tab. The marker is read by the shell of whichever
-    session exits, and the session that exits is the one the user quits — so
-    the ambiguity that stops every other path does not arise here."""
+def test_arming_is_refused_in_a_shared_directory(monkeypatch, tmp_path, capsys):
+    """This test used to assert the opposite, on the reasoning that arming
+    needs no tab so the ambiguity could not arise. Arming needs no tab, but
+    the marker does not name a session either: `deploy.restart_loop` gives
+    every reloaded shell in the directory one watching the same file, and
+    whichever exits first consumes it. Codex review of this branch."""
     marker = tmp_path / "m"
     monkeypatch.setattr(discover_mod, "owning_session",
                         lambda: (111, SHARED, "claude"))
     monkeypatch.setattr(discover_mod, "launcher_kind",
                         lambda pid: discover_mod.RELOADED)
     monkeypatch.setattr(main_mod, "restart_marker", lambda cwd: marker)
-    monkeypatch.setattr(
-        main_mod.discover_mod, "crowded_dirs",
-        lambda: pytest.fail("arming asked a question it does not need"))
+    monkeypatch.setattr(main_mod.discover_mod, "crowded_dirs",
+                        lambda: {norm(SHARED): ["claude", "codex"]})
+
+    assert main_mod.cmd_restart(_self_args(arm_only=True)) == 1
+    assert not marker.exists(), "it armed a marker two shells are watching"
+    out = capsys.readouterr().out
+    assert "whichever exits first" in out
+    assert "close this tab" in out, "it never says what the wrong one costs"
+
+
+def test_arming_still_works_in_a_directory_of_its_own(monkeypatch, tmp_path):
+    marker = tmp_path / "m"
+    monkeypatch.setattr(discover_mod, "owning_session",
+                        lambda: (111, ALONE, "claude"))
+    monkeypatch.setattr(discover_mod, "launcher_kind",
+                        lambda pid: discover_mod.RELOADED)
+    monkeypatch.setattr(main_mod, "restart_marker", lambda cwd: marker)
+    monkeypatch.setattr(main_mod.discover_mod, "crowded_dirs", lambda: {})
 
     assert main_mod.cmd_restart(_self_args(arm_only=True)) == 0
     assert marker.read_text(encoding="utf-8") == "restart"
