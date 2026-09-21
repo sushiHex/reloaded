@@ -141,6 +141,57 @@ def test_a_cancel_mid_sequence_stops_the_remaining_keys(monkeypatch, clock):
     assert sent == ["/exit"], "it kept typing after the restart was disarmed"
 
 
+def test_a_disarmed_send_is_not_reported_as_a_vanished_session(monkeypatch,
+                                                               clock):
+    """Zero keys has two opposite causes now: nothing left to type at, or a
+    sequence stopped on purpose. Reporting the second as the first is a lie,
+    and waiting out the deadline for an exit nobody wants any more would log a
+    timeout contradicting it. Codex review of this branch."""
+    logs = []
+    monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
+    monkeypatch.setattr(teardown_mod.tabs, "tab_is_selected", lambda item: True)
+    monkeypatch.setattr(teardown_mod.win32, "is_foreground", lambda hwnd: True)
+    monkeypatch.setattr(
+        teardown_mod.tabs, "send_quit_keystrokes",
+        lambda keys, *, dismiss_overlay=True, still_needed=None: 0)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+    monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
+    start = clock["t"]
+
+    result = teardown_mod.execute_down(
+        [_plan()], log=logs.append,
+        patience=deploy_mod.RESTART_MARKER_TTL_SECONDS,
+        still_wanted=lambda cwd: False)
+
+    out = "\n".join(logs)
+    assert "disarmed" in out
+    assert "had already gone" not in out, "a live session reported as vanished"
+    assert result["timed_out"] == [("app", CWD)]
+    assert clock["t"] - start < deploy_mod.RESTART_MARKER_TTL_SECONDS, (
+        "it waited out the whole marker for an exit nobody wanted")
+
+
+def test_a_session_that_really_went_is_still_reported_as_gone(monkeypatch,
+                                                              clock):
+    """The other cause, unchanged: zero keys because the target had already
+    ended on its own while an earlier target was being waited out."""
+    logs = []
+    monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
+    monkeypatch.setattr(
+        teardown_mod.tabs, "send_quit_keystrokes",
+        lambda keys, *, dismiss_overlay=True, still_needed=None: 0)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
+    monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
+
+    result = teardown_mod.execute_down(
+        [_plan()], log=logs.append,
+        patience=deploy_mod.RESTART_MARKER_TTL_SECONDS,
+        still_wanted=lambda cwd: False)
+
+    assert "had already gone" in "\n".join(logs)
+    assert result["exited"] == [("app", CWD)]
+
+
 def test_the_knocking_stops_before_the_marker_dies(busy_session, clock):
     """A key that lands in the last moments provokes an exit that arrives
     after the marker is stale - and a stale marker means the shell leaves its

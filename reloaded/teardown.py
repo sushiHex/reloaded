@@ -404,8 +404,24 @@ def execute_down(
                 all_exited = False
                 continue
 
+            import psutil
+
             if sent.keys:
                 log(f"    sent {agent.quit_label} -> {title}  [{cwd}]")
+            elif (wanted is not None and not wanted()
+                  and psutil.pid_exists(pid)):
+                # Zero keys now has two causes, and they are opposite. The
+                # session is still running, so the sequence stopped because
+                # the restart was disarmed mid-send - not because there was
+                # nothing left to type at. Reported as the other would be a
+                # lie, and waiting out the deadline for an exit nobody wants
+                # any more would then log a timeout contradicting it.
+                # Codex review of this branch.
+                log(f"    {title} was disarmed before any quit key was sent "
+                    f"— not restarted  [{cwd}]")
+                timed_out.append((title, cwd))
+                all_exited = False
+                continue
             else:
                 # Targets are handled one at a time with a wait on each, so a
                 # session can end on its own well before its turn. Saying
@@ -422,9 +438,7 @@ def execute_down(
             # this timescale (Windows does not aggressively recycle pids).
             # Only reached with a real pid, which plan_down could only have
             # produced via discover.live_sessions() - psutil is therefore
-            # already imported; this is a cached re-import, not a fresh load.
-            import psutil
-
+            # already imported, and imported again just above.
             start = time.time()
             limit = EXIT_TIMEOUT_SECONDS if patience is None else patience
             deadline = start + limit
