@@ -188,7 +188,14 @@ waiting marker while still in that session:
 reloaded restart --self --cancel
 ```
 
-Cancellation clears only the marker. It cannot recall a helper already
-dispatched by the normal `--self` command. Likewise, a timed-out named restart
-may still relaunch if the agent exits before its marker expires. Do not delete
-restart markers manually while another session may be consuming them.
+Cancellation clears only the marker, and what that achieves depends on where a
+dispatched helper has got to. The helper arms this same marker when it reaches
+your tab, and it checks the marker before every keystroke and on every poll
+afterwards — so removing it at that point does call the restart off: the helper
+stops typing and leaves the session running. Removing it during the helper's
+opening delay changes nothing, because there is nothing armed yet and the
+helper will arm and proceed.
+
+Likewise, a timed-out named restart may still relaunch if the agent exits
+before its marker expires. Do not delete restart markers manually while another
+session may be consuming them.

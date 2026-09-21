@@ -131,7 +131,8 @@ def test_a_log_that_fills_after_the_spawn_is_not_a_spawn_failure(spawn,
 
     monkeypatch.setattr(main_mod, "_open_account", lambda: _Full())
 
-    assert main_mod._dispatch_restart(CWD, "default", 5.0, r"C:\repos") == 4242
+    assert main_mod._dispatch_restart(CWD, "default", 5.0,
+                                      r"C:\repos").pid == 4242
 
 
 def test_a_log_that_cannot_be_opened_does_not_stop_the_restart(monkeypatch,
@@ -149,8 +150,36 @@ def test_a_log_that_cannot_be_opened_does_not_stop_the_restart(monkeypatch,
     monkeypatch.setattr(subprocess, "Popen", _Popen)
     monkeypatch.setattr(main_mod, "log_path", lambda: tmp_path / "nope" / "x.log")
 
-    assert main_mod._dispatch_restart(CWD, "default", 5.0, r"C:\repos") == 4242
+    dispatched = main_mod._dispatch_restart(CWD, "default", 5.0, r"C:\repos")
+
+    assert dispatched.pid == 4242
     assert calls, "the helper was never spawned"
+    assert dispatched.account is False, (
+        "it reported an account it does not have")
+
+
+def test_a_restart_with_nowhere_to_report_says_so(monkeypatch, tmp_path,
+                                                  capsys):
+    """The success line promises that a failure will be recorded in the log.
+    After a fallback to DEVNULL that promise points at a file with no
+    explanation in it, leaving the new reporting exactly as silent as the old.
+    Codex review of this branch."""
+    monkeypatch.setattr(discover_mod, "owning_session",
+                        lambda: (111, CWD, "claude"))
+    monkeypatch.setattr(discover_mod, "launcher_kind",
+                        lambda pid: discover_mod.RELOADED)
+    monkeypatch.setattr(main_mod, "restart_marker", lambda cwd: tmp_path / "m")
+    monkeypatch.setattr(main_mod, "log_path", lambda: tmp_path / "reloaded.log")
+    monkeypatch.setattr(
+        main_mod, "_dispatch_restart",
+        lambda *a, **k: main_mod.Dispatched(pid=4242, account=False))
+
+    assert main_mod.cmd_restart(_self_args()) == 0
+
+    out = capsys.readouterr().out
+    assert "nowhere to report" in out
+    assert "the only place it will be said" not in out, (
+        "it promised a log it does not have")
 
 
 # ── and what it now promises instead ─────────────────────────────────────
@@ -163,7 +192,9 @@ def session(monkeypatch, tmp_path):
     monkeypatch.setattr(discover_mod, "launcher_kind",
                         lambda pid: discover_mod.RELOADED)
     monkeypatch.setattr(main_mod, "restart_marker", lambda cwd: tmp_path / "m.marker")
-    monkeypatch.setattr(main_mod, "_dispatch_restart", lambda *a, **k: 4242)
+    monkeypatch.setattr(main_mod, "_dispatch_restart",
+                        lambda *a, **k: main_mod.Dispatched(pid=4242,
+                                                            account=True))
     monkeypatch.setattr(main_mod, "log_path", lambda: tmp_path / "reloaded.log")
 
 

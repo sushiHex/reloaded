@@ -281,7 +281,8 @@ def dispatched(monkeypatch, session):
     monkeypatch.setattr(main_mod, "_dispatch_restart",
                         lambda repo, layout, after, repos_root:
                         calls.append(
-                                (repo, layout, after, repos_root)) or 4242)
+                                (repo, layout, after, repos_root))
+                        or main_mod.Dispatched(pid=4242, account=True))
     return calls
 
 
@@ -537,13 +538,18 @@ def test_the_refusals_still_apply_before_dispatching(capsys, monkeypatch):
     assert main_mod.cmd_restart(_args(arm_only=False)) == 1
 
 
-def test_cancel_admits_it_cannot_recall_a_dispatched_restart(session, capsys):
-    """"Disarmed" would otherwise read as "stopped". The delegate is a separate
-    process doing its own arming; nothing in here can call it back."""
+def test_cancel_says_what_it_does_to_a_dispatched_restart(session, capsys):
+    """"Disarmed" would otherwise read as "stopped", and the old answer — that
+    a dispatched restart cannot be called off at all — stopped being true when
+    the helper began re-reading the marker before every key. Now it depends on
+    where the helper has got to, and this command cannot see that, so it says
+    both cases rather than the flattering one."""
     main_mod.cmd_restart(_args(cancel=True))
 
     out = capsys.readouterr().out
-    assert "cannot be called off" in out
+    assert "does call it off" in out, "it never says a cancel can work"
+    assert "changes nothing" in out, "it never says when a cancel cannot work"
+    assert "opening delay" in out, "it never says which case is which"
 
 
 # ── finding the session you are inside ───────────────────────────────────

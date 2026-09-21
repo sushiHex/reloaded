@@ -7,6 +7,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from . import agents as agents_mod
 from . import capture as capture_mod
@@ -1244,7 +1245,24 @@ def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> 
             account.close()
         except OSError:
             pass
-    return pid
+    # Whether there is an account at all, not just where the helper went. The
+    # caller's line about where a failure will be reported is a promise, and
+    # `_open_account` can fall back to DEVNULL - which would make that promise
+    # point at a log containing no explanation, leaving the new reporting
+    # exactly as silent as the old. Codex review of this branch.
+    return Dispatched(pid=pid, account=account is not subprocess.DEVNULL)
+
+
+class Dispatched(NamedTuple):
+    """A helper that was started, and whether it can say anything.
+
+    `__int__` and `__eq__` are not provided on purpose: every caller wants one
+    field or the other by name, and a tuple that quietly compares equal to a
+    pid is how the account half gets forgotten again.
+    """
+
+    pid: int
+    account: bool
 
 
 def _open_account():
@@ -1322,14 +1340,20 @@ def cmd_restart_self(args) -> int:
             return 1
         print(f"Disarmed {cwd}." if existed
               else f"Nothing was armed for {cwd}.")
-        # Only the marker is recallable. A restart already handed to a detached
-        # process is running outside this session, does its own arming, and
-        # cannot be called back from in here - saying nothing about that would
-        # let "Disarmed" read as "stopped", which it is not.
-        print("    (This clears a waiting marker only. A restart already "
-              "dispatched by `--self`")
-        print("     runs outside this session and cannot be called off from "
-              "inside it.)")
+        # This used to say a dispatched restart could not be called off at all.
+        # That was true when nothing consulted the marker again after arming;
+        # the helper now asks before every key and on every poll, so removing
+        # it does stop one - but only once there is one to remove. Which of the
+        # two a user is in depends on where the helper is, and this command
+        # cannot see that, so it says both rather than picking the flattering
+        # one. Codex review of this branch.
+        print("    (A restart dispatched by `--self` runs outside this "
+              "session and arms this same marker")
+        print("     when it reaches your tab. Removing it after that does "
+              "call it off: it stops typing")
+        print("     and leaves the session running. Removing it before that "
+              "changes nothing — the helper")
+        print("     is still in its opening delay and will arm and proceed.)")
         return 0
 
     ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS
@@ -1383,8 +1407,8 @@ def cmd_restart_self(args) -> int:
                   f"quit with {label}.")
             return 1
         print(f"Restarting {cwd} (pid {pid}, {kind}).")
-        print(f"\n    Handed to pid {helper}, which starts in {after:.0f}s — "
-              "it lives outside this session,")
+        print(f"\n    Handed to pid {helper.pid}, which starts in "
+              f"{after:.0f}s — it lives outside this session,")
         print(f"    so it survives the exit. It will steal focus, send "
               f"{label}, and bring the session")
         print(f"    back in this same tab, retrying for up to "
@@ -1393,8 +1417,17 @@ def cmd_restart_self(args) -> int:
         # It used to end "Nothing further to do." - printed the instant the
         # helper was spawned, before anything had been attempted, by a process
         # that was about to die and could never take it back.
-        print(f"\n    If it does not come back, that is the only place it "
-              f"will be said: {log_path()}")
+        if helper.account:
+            print(f"\n    If it does not come back, that is the only place it "
+                  f"will be said: {log_path()}")
+        else:
+            # The restart still goes ahead; only the reporting is gone. Saying
+            # so is the difference between a user who knows to watch the tab
+            # and one sent to read a log with nothing in it.
+            print(f"\n    [warn] {log_path()} could not be opened, so the "
+                  "helper has nowhere to report.")
+            print("    If the session does not come back, nothing will say "
+                  "why — watch the tab.")
         return 0
 
     if args.dry_run:
