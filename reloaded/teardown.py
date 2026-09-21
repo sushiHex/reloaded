@@ -174,7 +174,8 @@ def plan_down(
 
 
 def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=None,
-               quit_keys=("/exit", "{Enter}"), pid: int | None = None) -> "Sent":
+               quit_keys=("/exit", "{Enter}"), pid: int | None = None,
+               still_wanted=None) -> "Sent":
     """Foreground `item`'s tab and type its agent's quit keys into it.
 
     Returns a `Sent`. `reached` False means the tab could not be confirmed and
@@ -219,6 +220,13 @@ def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=Non
 
             if not psutil.pid_exists(pid):
                 return False
+        # Asked per key, like the other three, because `--cancel` can land
+        # between the loop's check and any key in this sequence - and a key
+        # after the disarm ends a session whose tab will then close rather
+        # than relaunch. Checking only before the sequence made that race
+        # smaller rather than absent. Codex review of this branch.
+        if still_wanted is not None and not still_wanted():
+            return False
         return tabs.tab_is_selected(item) and win32.is_foreground(hwnd)
 
     keys = tabs.send_quit_keystrokes(quit_keys, dismiss_overlay=dismiss_overlay,
@@ -382,8 +390,11 @@ def execute_down(
             # above, and all three in this package use it.
             agent = agents.for_kind((kinds or {}).get(norm(cwd)))
             quit_keys = agent.quit_keys
+            wanted = (None if still_wanted is None
+                      else (lambda c=cwd: still_wanted(c)))
             sent = _send_exit(plan.hwnd, item, before_send=arm,
-                              quit_keys=quit_keys, pid=pid)
+                              quit_keys=quit_keys, pid=pid,
+                              still_wanted=wanted)
             if not sent.reached:
                 log(
                     f"    [warn] could not bring window 0x{plan.hwnd:X} to the "
@@ -462,7 +473,8 @@ def execute_down(
                     # confirmation - the exact thing this resend exists to
                     # get past. See tabs.send_exit_keystrokes.
                     if _send_exit(plan.hwnd, item, dismiss_overlay=False,
-                                  quit_keys=quit_keys, pid=pid).reached:
+                                  quit_keys=quit_keys, pid=pid,
+                                  still_wanted=wanted).reached:
                         # A zero here is the session ending mid-resend, which
                         # the enclosing loop is about to notice anyway.
                         # Elapsed, not the constant. A patient teardown knocks

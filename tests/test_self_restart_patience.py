@@ -110,6 +110,37 @@ def test_a_disarmed_restart_stops_knocking(monkeypatch, busy_session, clock):
     assert len(busy_session) == 3, "it kept typing after being disarmed"
 
 
+def test_a_cancel_mid_sequence_stops_the_remaining_keys(monkeypatch, clock):
+    """`--cancel` can land between the loop's check and any key in a sequence,
+    and a key after the disarm ends a session whose tab then closes rather than
+    relaunching. The per-key predicate is where that has to be caught.
+    Codex review of this branch."""
+    sent = []
+    armed = {"yes": True}
+
+    def _keys(quit_keys, *, dismiss_overlay=True, still_needed=None):
+        for key in quit_keys:
+            if still_needed is not None and not still_needed():
+                break
+            sent.append(key)
+            armed["yes"] = False  # disarmed the instant the first key goes out
+        return len(sent)
+
+    monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
+    monkeypatch.setattr(teardown_mod.tabs, "tab_is_selected", lambda item: True)
+    monkeypatch.setattr(teardown_mod.win32, "is_foreground", lambda hwnd: True)
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", _keys)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+    monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
+
+    teardown_mod.execute_down(
+        [_plan()], log=lambda *_: None,
+        patience=deploy_mod.RESTART_MARKER_TTL_SECONDS,
+        still_wanted=lambda cwd: armed["yes"])
+
+    assert sent == ["/exit"], "it kept typing after the restart was disarmed"
+
+
 def test_the_knocking_stops_before_the_marker_dies(busy_session, clock):
     """A key that lands in the last moments provokes an exit that arrives
     after the marker is stale - and a stale marker means the shell leaves its
