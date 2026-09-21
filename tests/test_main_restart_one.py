@@ -61,6 +61,11 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod, "layout_path", lambda name: tmp_path / "default.json")
     monkeypatch.setattr(main_mod.discover_mod, "transcript_index", lambda *a, **k: {})
     monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: dict(w["pids"]))
+    # `cmd_restart_one` asks `sweep()` so that crowded directories cost no
+    # second walk of the process table; `_wait_for_session` still asks
+    # `live_sessions()`. Delegating keeps the one source of truth above.
+    monkeypatch.setattr(main_mod.discover_mod, "sweep",
+                        lambda: (main_mod.discover_mod.live_sessions(), {}))
     # Everything here models a reloaded-launched session; the hand-launched
     # path has its own file. Without this the real launcher_kind runs against
     # fabricated pids, can read nothing, and safely answers HAND - which sends

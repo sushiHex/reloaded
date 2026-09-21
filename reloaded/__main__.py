@@ -788,9 +788,17 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     # there watching.
     dispatched = getattr(args, "dispatched", False) and not args.dry_run
 
-    live = discover_mod.live_sessions()
+    # Both halves of one walk. Asking `live_sessions()` and `crowded_dirs()`
+    # separately pays two full process_iter sweeps for one question - 1.47s
+    # each against 679 processes on the machine this was measured on.
+    live, crowded = discover_mod.sweep()
 
     refusal = _nothing_running_there(cwds, live)
+    if refusal:
+        print(refusal)
+        return 1
+
+    refusal = _shared_directory(cwds, crowded)
     if refusal:
         print(refusal)
         return 1
@@ -884,6 +892,47 @@ def _nothing_running_there(cwds, live) -> str:
         return ""
     return "\n".join([f"Not running: {c}" for c in missing]
                      + ["", "`reloaded status` lists the live sessions."])
+
+
+def _shared_directory(cwds, crowded) -> str:
+    """Why this batch cannot be aimed, or "" if every repo holds one session.
+
+    Two agents in one directory are one entry everywhere downstream, and the
+    two choices that produce a target are made independently: `_sessions` keeps
+    the last process enumerated at a cwd, `plan_down` keeps the first tab that
+    resolves to it and says in its own log that which one cannot be
+    established. The `Target` can therefore carry one session's pid beside
+    another session's tab - quit keys to one, the wait watching the other, the
+    outcome reported against the wrong one.
+
+    `status` already names these directories. This is the command that types.
+
+    Refused whole rather than per repo, matching `_no_tab_to_type_into`: acting
+    on the resolvable subset restarts some, skips the rest without a word, and
+    returns 0.
+
+    Counted, not compared: two Claude sessions are exactly as unidentifiable as
+    a Claude and a Codex. Refusing only the mixed pair would answer the example
+    rather than the problem.
+    """
+    shared = [(c, crowded[norm(c)]) for c in cwds if norm(c) in crowded]
+    if not shared:
+        return ""
+    lines = []
+    for cwd, kinds in shared:
+        lines.append(f"{len(kinds)} agent sessions share {cwd} "
+                     f"({', '.join(kinds)}).")
+    lines += [
+        "",
+        "    Nothing connects a Windows Terminal tab to the process inside "
+        "it, so which tab holds",
+        "    which session cannot be established — and restarting the wrong "
+        "one ends a session you",
+        "    did not ask to end. Move one to its own directory, or restart it "
+        "by hand.",
+        "    Nothing was restarted.",
+    ]
+    return "\n".join(lines)
 
 
 def _no_tab_to_type_into(cwds, plans) -> str:
@@ -1399,6 +1448,19 @@ def cmd_restart_self(args) -> int:
             print("    `--self` will not make that change to the session it is "
                   "called from")
             print("    on one keystroke.")
+        # The way out this names has to be one that will work. In a directory
+        # holding two sessions, `restart <repo>` refuses for its own reasons
+        # (see _shared_directory), and sending someone there would be sending
+        # them to a second refusal that does not mention this one.
+        sharing = discover_mod.crowded_dirs().get(norm(cwd))
+        if sharing:
+            print(f"    {len(sharing)} agent sessions share this directory "
+                  f"({', '.join(sharing)}), so `reloaded restart")
+            print("    <repo>` cannot be aimed at it either — which tab holds "
+                  "which session is not")
+            print("    something anything can establish. Move one to its own "
+                  "directory first.")
+            return 1
         print("    Restart it once from another session with `reloaded restart "
               "<repo>`, which makes")
         print("    that change deliberately; after that this works.")
