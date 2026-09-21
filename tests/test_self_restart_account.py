@@ -173,7 +173,9 @@ def restart_one(monkeypatch):
     return state
 
 
-def test_a_dispatched_restart_that_works_leaves_nothing_behind(restart_one):
+def test_a_dispatched_restart_that_works_clears_the_attempt(restart_one):
+    main_mod._record_attempt([CWD])
+
     main_mod.cmd_restart_one(_args(after=5.0, dispatched=True), [CWD])
 
     assert not main_mod.restart_attempt(CWD).exists()
@@ -181,6 +183,7 @@ def test_a_dispatched_restart_that_works_leaves_nothing_behind(restart_one):
 
 def test_a_dispatched_restart_that_fails_leaves_its_attempt(restart_one):
     restart_one["came_back"] = False
+    main_mod._record_attempt([CWD])
 
     main_mod.cmd_restart_one(_args(after=5.0, dispatched=True), [CWD])
 
@@ -188,42 +191,73 @@ def test_a_dispatched_restart_that_fails_leaves_its_attempt(restart_one):
         "nothing on disk says the restart did not happen")
 
 
-def test_a_refusal_before_any_keystroke_leaves_one_too(monkeypatch):
+def test_a_refusal_before_any_keystroke_leaves_it_too(monkeypatch):
     """`_nothing_running_there` and `_no_tab_to_type_into` are exactly the
     silent failures the dispatcher's docstring warned about: the helper
     refuses into DEVNULL after the caller has already promised a restart."""
-    monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: {})
+    monkeypatch.setattr(main_mod.discover_mod, "sweep", lambda: ({}, {}))
+    main_mod._record_attempt([CWD])
 
     assert main_mod.cmd_restart_one(_args(after=5.0, dispatched=True), [CWD]) == 1
     assert main_mod.restart_attempt(CWD).exists()
 
 
-def test_a_restart_someone_is_watching_records_nothing(restart_one):
-    """Named from another tab, the failure is already on the caller's screen.
-    A file for them to trip over later would be noise."""
-    restart_one["came_back"] = False
+def test_a_restart_someone_is_watching_clears_nothing(restart_one):
+    """Named from another tab, the failure is already on the caller's screen,
+    and nothing dispatched it — so there is no attempt of its own to settle."""
+    main_mod._record_attempt([CWD])
 
     main_mod.cmd_restart_one(_args(), [CWD])
 
-    assert not main_mod.restart_attempt(CWD).exists()
+    assert main_mod.restart_attempt(CWD).exists(), (
+        "a hand-typed restart consumed a dispatched restart's record")
 
 
-def test_a_dry_run_records_nothing(restart_one, monkeypatch):
+def test_a_dry_run_settles_nothing(restart_one, monkeypatch):
     monkeypatch.setattr(main_mod, "_preview_restart", lambda plans: None)
+    main_mod._record_attempt([CWD])
 
     main_mod.cmd_restart_one(_args(after=5.0, dispatched=True, dry_run=True),
                              [CWD])
 
+    assert main_mod.restart_attempt(CWD).exists()
+
+
+# ── and who writes it ────────────────────────────────────────────────────
+
+
+def test_the_dispatcher_records_the_attempt_not_the_helper(session):
+    """The helper sleeps `--after` before it could write anything, and its
+    detached spawn is documented as possibly not surviving. An attempt file
+    only written by helpers that lived cannot report the ones that did not.
+    Codex review of this branch."""
+    main_mod.cmd_restart(_self_args())
+
+    assert main_mod.restart_attempt(CWD).exists()
+
+
+def test_a_spawn_that_failed_leaves_no_attempt(session, monkeypatch, capsys):
+    """Nothing is outstanding, so the next `--self` must not report a helper
+    that never existed."""
+    def _boom(*a, **k):
+        raise OSError("no")
+
+    monkeypatch.setattr(main_mod, "_dispatch_restart", _boom)
+
+    assert main_mod.cmd_restart(_self_args()) == 1
     assert not main_mod.restart_attempt(CWD).exists()
 
 
-def test_the_public_delay_flag_records_nothing(restart_one):
-    """`--after` is an ordinary option that a named restart accepts alongside
-    any number of repos, so it cannot be read as "this was dispatched".
-    Codex review of this branch."""
-    restart_one["came_back"] = False
+def test_arming_only_records_no_attempt(session):
+    """`--arm-only` spawns nothing: the user quits the session themselves and
+    there is no helper whose silence needs explaining."""
+    main_mod.cmd_restart(_self_args(arm_only=True))
 
-    main_mod.cmd_restart_one(_args(after=5.0), [CWD])
+    assert not main_mod.restart_attempt(CWD).exists()
+
+
+def test_a_dry_run_dispatch_records_nothing(session):
+    main_mod.cmd_restart(_self_args(dry_run=True))
 
     assert not main_mod.restart_attempt(CWD).exists()
 
@@ -284,14 +318,29 @@ def test_an_unreadable_attempt_is_still_reported(session, capsys):
 
 def test_a_reported_attempt_is_not_reported_forever(session, capsys):
     """Reported once, then cleared. A permanent notice about a restart from
-    days ago is noise the next real one hides behind."""
+    days ago is noise the next real one hides behind.
+
+    Through `--arm-only`, which spawns nothing: a second dispatching call
+    would leave an attempt of its own and be reporting that, which is correct
+    and would prove nothing about the first."""
     main_mod.restart_attempt(CWD).write_text("1758445664 23900", encoding="utf-8")
 
-    main_mod.cmd_restart(_self_args())
+    main_mod.cmd_restart(_self_args(arm_only=True))
     capsys.readouterr()
-    main_mod.cmd_restart(_self_args())
+    main_mod.cmd_restart(_self_args(arm_only=True))
 
     assert "never reported back" not in capsys.readouterr().out
+
+
+def test_the_one_it_just_dispatched_is_reported_next_time(session, capsys):
+    """The other half of the same behaviour: a restart that dispatched and
+    never came back is exactly what the next one should be told about."""
+    main_mod.cmd_restart(_self_args())
+    capsys.readouterr()
+
+    main_mod.cmd_restart(_self_args())
+
+    assert "never reported back" in capsys.readouterr().out
 
 
 def test_a_first_restart_says_nothing_about_previous_ones(session, capsys):

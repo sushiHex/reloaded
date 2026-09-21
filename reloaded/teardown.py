@@ -415,8 +415,8 @@ def execute_down(
             import psutil
 
             start = time.time()
-            deadline = start + (EXIT_TIMEOUT_SECONDS if patience is None
-                                else patience)
+            limit = EXIT_TIMEOUT_SECONDS if patience is None else patience
+            deadline = start + limit
             resend_at = start + EXIT_RETRY_AFTER_SECONDS
             # Without patience this is the deadline itself, which leaves the
             # single resend below exactly where it has always been: scheduled
@@ -436,8 +436,13 @@ def execute_down(
                     # guessing at an answer to type into an unknown prompt is
                     # how a package like this does real damage. Point at the
                     # tab instead.
+                    # The limit actually waited, not the constant. A patient
+                    # teardown reaches here after two minutes, and this is now
+                    # the primary account of a dispatched restart's failure -
+                    # a log that says "did not exit within 20s" after waiting
+                    # 120 puts the reader on the wrong minute.
                     log(f"    [warn] {title} did not exit within "
-                        f"{EXIT_TIMEOUT_SECONDS:.0f}s - look at that tab, it "
+                        f"{limit:.0f}s - look at that tab, it "
                         "may be waiting on a prompt that ate the keys")
                     all_exited = False
                     break

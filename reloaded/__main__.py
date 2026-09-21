@@ -774,14 +774,14 @@ def cmd_restart_one(args, repos: list[str]) -> int:
         time.sleep(after)
 
     cwds = [resolve_repo(r, args.repos_root) for r in repos]
-    # Recorded before the first thing that can fail, and only for a dispatched
-    # restart. Every refusal below returns 1 into a pipe nobody is reading -
-    # the caller said "Nothing further to do" and then ended - so the file is
-    # what is left to say otherwise. A restart someone is watching needs none
-    # of this: the failure is already on their screen.
+    # The attempt file is NOT written here. It is written by the process that
+    # dispatched this one, before the spawn - this helper sleeps `--after`
+    # first, and a helper killed during that sleep, or one whose detached spawn
+    # did not survive (the breakaway fallback is documented as "may not
+    # survive"), would never reach this line. An attempt only recorded by
+    # helpers that lived is an attempt file that cannot report the deaths.
+    # Codex review of this branch. Cleared below, once the session is back.
     dispatched = getattr(args, "dispatched", False) and not args.dry_run
-    if dispatched:
-        _record_attempt(cwds)
 
     live = discover_mod.live_sessions()
 
@@ -1422,9 +1422,19 @@ def cmd_restart_self(args) -> int:
                   f"starting in {after:.0f}s.")
             print("\nDry run — nothing spawned.")
             return 0
+        # Before the spawn, because the helper cannot be relied on to record
+        # its own existence: it sleeps `after` first, and one killed during
+        # that sleep - or one whose detached spawn did not survive, which
+        # _dispatch_restart documents as possible - never runs a line. The
+        # cases this file exists to report are exactly the cases the helper is
+        # not around for.
+        _record_attempt([cwd])
         try:
             helper = _dispatch_restart(cwd, args.layout, after, helper_root)
         except Exception as exc:
+            # Nothing was dispatched, so nothing is outstanding. Leaving it
+            # would have the next `--self` report a helper that never existed.
+            _clear_attempts([cwd])
             print(f"[warn] could not start the restart: {exc}")
             print(f"    Fall back to `reloaded restart --self --arm-only` and "
                   f"quit with {label}.")
