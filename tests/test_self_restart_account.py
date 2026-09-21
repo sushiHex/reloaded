@@ -416,6 +416,29 @@ def test_the_one_it_just_dispatched_is_reported_next_time(session, capsys):
     assert "never reported back" in capsys.readouterr().out
 
 
+def test_a_dry_run_reports_the_attempt_without_eating_it(session, capsys):
+    """`--dry-run` promises to change nothing. Consuming the only record of an
+    unreported restart on the way to saying it did nothing would leave no real
+    invocation able to warn about it. Codex review of this branch."""
+    main_mod._record_attempt([CWD], "earlier")
+
+    main_mod.cmd_restart(_self_args(dry_run=True))
+
+    assert "never reported back" in capsys.readouterr().out
+    assert main_mod.restart_attempts(CWD), "a dry run destroyed the evidence"
+
+
+def test_the_next_real_restart_still_reports_it(session, capsys):
+    """The half that matters: the dry run left it, so this one finds it."""
+    main_mod._record_attempt([CWD], "earlier")
+    main_mod.cmd_restart(_self_args(dry_run=True))
+    capsys.readouterr()
+
+    main_mod.cmd_restart(_self_args(arm_only=True))
+
+    assert "never reported back" in capsys.readouterr().out
+
+
 def test_a_first_restart_says_nothing_about_previous_ones(session, capsys):
     main_mod.cmd_restart(_self_args())
 

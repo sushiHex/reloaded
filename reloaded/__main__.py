@@ -910,7 +910,7 @@ def _clear_attempts(cwds: list[str], token: str) -> None:
             pass
 
 
-def _previous_attempt(cwd: str) -> None:
+def _previous_attempt(cwd: str, *, consume: bool = True) -> None:
     """Report a dispatched restart of `cwd` that never reported back, once.
 
     "Never reported back" and not "failed": the file says the helper did not
@@ -922,6 +922,11 @@ def _previous_attempt(cwd: str) -> None:
     Consumed as it is read. A file that outlives its restart is a fact about
     one moment, and repeating it before every future restart would bury the
     next real failure under an old one.
+
+    Except under `--dry-run`, which promises to change nothing and would
+    otherwise destroy the only record of an unreported restart on its way to
+    saying it did nothing - after which no real invocation could warn about it.
+    Codex review of this branch.
     """
     import datetime
 
@@ -944,6 +949,8 @@ def _previous_attempt(cwd: str) -> None:
     print(f"The last restart of this session, dispatched at {at}, never "
           "reported back.")
     print(f"    What it did get to say is in {log_path()}.")
+    if not consume:
+        return
     for stale in outstanding:
         try:
             stale.unlink(missing_ok=True)
@@ -1417,7 +1424,7 @@ def cmd_restart_self(args) -> int:
     # anyone is typing this command again is that the last one did nothing and
     # said nothing. Past `--cancel`, which is about a marker rather than an
     # attempt, and never on the way out of a refusal that has its own answer.
-    _previous_attempt(cwd)
+    _previous_attempt(cwd, consume=not args.dry_run)
 
     ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS
     after = float(getattr(args, "after", 0) or 0) or SELF_RESTART_DELAY_SECONDS
