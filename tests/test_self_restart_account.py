@@ -166,6 +166,25 @@ def _args(**kw):
 TOKEN = "tok0123456789abc"
 
 
+def _aged(token="earlier", *, unreadable=False):
+    """An attempt whose helper can no longer be in flight.
+
+    A record younger than that is not a failure, it is a restart still
+    happening, so every test about *reporting* has to age its own.
+    """
+    import time
+
+    path = main_mod.restart_attempt(CWD, token)
+    old = time.time() - main_mod.SELF_ATTEMPT_SETTLES_AFTER - 1
+    path.write_text("" if unreadable else f"{old:.0f}", encoding="utf-8")
+    if unreadable:
+        # No timestamp to read, so the age has to come from the mtime.
+        import os
+
+        os.utime(path, (old, old))
+    return path
+
+
 @pytest.fixture
 def restart_one(monkeypatch):
     """`cmd_restart_one` with the desktop removed and its outcome settable."""
@@ -241,11 +260,11 @@ def test_each_dispatch_owns_a_path_rather_than_a_line_in_one(restart_one):
         "two outstanding restarts share one record")
 
 
-def test_reporting_clears_every_outstanding_attempt(session, capsys):
+def test_reporting_clears_every_settled_attempt(session, capsys):
     """Reported once means once. Leaving the older files behind would have the
     next restart announce a restart from two restarts ago."""
-    main_mod._record_attempt([CWD], "one")
-    main_mod._record_attempt([CWD], "two")
+    _aged("one")
+    _aged("two")
 
     main_mod.cmd_restart(_self_args(arm_only=True))
 
@@ -382,7 +401,7 @@ def test_it_does_not_claim_the_previous_one_failed(session, capsys):
 def test_an_unreadable_attempt_is_still_reported(session, capsys):
     """The helper dying hardest is exactly the case that must not fall
     silent."""
-    main_mod.restart_attempt(CWD, "earlier").write_text("", encoding="utf-8")
+    _aged(unreadable=True)
 
     main_mod.cmd_restart(_self_args())
 
@@ -405,13 +424,35 @@ def test_a_reported_attempt_is_not_reported_forever(session, capsys):
     assert "never reported back" not in capsys.readouterr().out
 
 
-def test_the_one_it_just_dispatched_is_reported_next_time(session, capsys):
-    """The other half of the same behaviour: a restart that dispatched and
-    never came back is exactly what the next one should be told about."""
+def test_a_restart_still_in_flight_is_not_called_a_failure(session, capsys):
+    """Repeating `--self` moments later finds a record that has neither failed
+    nor finished — the first helper is still inside its delay, its patience,
+    or its wait for the session to come back. Codex review of this branch."""
     main_mod.cmd_restart(_self_args())
     capsys.readouterr()
 
     main_mod.cmd_restart(_self_args())
+
+    assert "never reported back" not in capsys.readouterr().out
+
+
+def test_a_restart_still_in_flight_keeps_its_record(session):
+    """And the reason it matters: if that first helper later dies while the
+    second succeeds and clears its own token, this is the only thing left to
+    report the first."""
+    main_mod.cmd_restart(_self_args())
+
+    main_mod.cmd_restart(_self_args())
+
+    assert len(main_mod.restart_attempts(CWD)) == 2
+
+
+def test_once_its_helper_can_only_be_finished_it_is_reported(session, capsys):
+    """The bound is the helper's own worst case — its delay, the whole marker
+    it may spend asking, and the wait for the session to return."""
+    _aged()
+
+    main_mod.cmd_restart(_self_args(arm_only=True))
 
     assert "never reported back" in capsys.readouterr().out
 
@@ -420,7 +461,7 @@ def test_a_dry_run_reports_the_attempt_without_eating_it(session, capsys):
     """`--dry-run` promises to change nothing. Consuming the only record of an
     unreported restart on the way to saying it did nothing would leave no real
     invocation able to warn about it. Codex review of this branch."""
-    main_mod._record_attempt([CWD], "earlier")
+    _aged()
 
     main_mod.cmd_restart(_self_args(dry_run=True))
 
@@ -430,7 +471,7 @@ def test_a_dry_run_reports_the_attempt_without_eating_it(session, capsys):
 
 def test_the_next_real_restart_still_reports_it(session, capsys):
     """The half that matters: the dry run left it, so this one finds it."""
-    main_mod._record_attempt([CWD], "earlier")
+    _aged()
     main_mod.cmd_restart(_self_args(dry_run=True))
     capsys.readouterr()
 

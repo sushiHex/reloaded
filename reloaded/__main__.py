@@ -930,13 +930,21 @@ def _previous_attempt(cwd: str, *, consume: bool = True) -> None:
     """
     import datetime
 
-    outstanding = restart_attempts(cwd)
-    if not outstanding:
+    # Only the ones whose helper can no longer be working. Repeating `--self`
+    # while the first helper is still inside its delay, its patience, or its
+    # wait for the session to come back finds a record that has neither failed
+    # nor finished - and clearing it meant that if that helper later died while
+    # the newer one succeeded and cleared its own, nothing was left to report
+    # the first. Overlapping dispatches are the case token-named files exist
+    # for; they have to survive being overlapped. Codex review of this branch.
+    settled = [p for p in restart_attempts(cwd)
+               if _attempt_age(p) > SELF_ATTEMPT_SETTLES_AFTER]
+    if not settled:
         return
     # The newest, because that is the one whose promise is still ringing. Older
     # ones are cleared below without being narrated: a list of every restart
     # that ever went unreported is a worse answer than the last one.
-    path = outstanding[-1]
+    path = settled[-1]
     try:
         stamp = float(path.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
@@ -951,11 +959,32 @@ def _previous_attempt(cwd: str, *, consume: bool = True) -> None:
     print(f"    What it did get to say is in {log_path()}.")
     if not consume:
         return
-    for stale in outstanding:
+    for stale in settled:
         try:
             stale.unlink(missing_ok=True)
         except OSError:
             pass
+
+
+def _attempt_age(path) -> float:
+    """How long ago the attempt at `path` was dispatched, in seconds.
+
+    From the timestamp it recorded, and from its mtime when that cannot be
+    read - a helper that died mid-write is exactly the case worth ageing
+    correctly rather than discarding.
+    """
+    import time
+
+    try:
+        return time.time() - float(path.read_text(encoding="utf-8").strip())
+    except (OSError, ValueError):
+        pass
+    try:
+        return time.time() - path.stat().st_mtime
+    except OSError:
+        # Unreachable file: treat it as old rather than as forever young, so a
+        # record that cannot be read can still be cleared away.
+        return float("inf")
 
 
 def _nothing_running_there(cwds, live) -> str:
@@ -1225,6 +1254,15 @@ SELF_RESTART_DELAY_SECONDS = 5.0
 # its marker good until +120s. Being patient for more types at a session whose
 # exit would close the tab instead of relaunching it.
 SELF_EXIT_PATIENCE_SECONDS = deploy_mod.RESTART_MARKER_TTL_SECONDS
+# After this long a dispatched helper is finished, one way or another: its own
+# delay before it starts, the whole marker it may spend asking, and the wait
+# for the session to come back. Added rather than chosen - it is the helper's
+# own worst case, so an attempt younger than this has not failed, it has not
+# ended. A caller that passes a larger `--after` is outside it, and buys itself
+# a record settled early; the default path is what this protects.
+SELF_ATTEMPT_SETTLES_AFTER = (SELF_RESTART_DELAY_SECONDS
+                              + SELF_EXIT_PATIENCE_SECONDS
+                              + RELAUNCH_WAIT_SECONDS)
 
 
 def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str,
