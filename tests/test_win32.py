@@ -94,7 +94,7 @@ def test_set_geometry_refuses_a_hwnd_that_is_no_longer_a_wt_window(monkeypatch):
     Windows can hand that same numeric HWND to an unrelated window — this
     must refuse to move/resize whatever it now points at."""
     monkeypatch.setattr(win32_mod, "_class_name", lambda hwnd: "SomeUnrelatedApp")
-    assert set_geometry(12345, [0, 0, 100, 100], "normal") is False
+    assert set_geometry(12345, [0, 0, 100, 100], "normal").ok is False
 
 
 def test_set_geometry_class_check_runs_before_any_placement_call(monkeypatch):
@@ -107,7 +107,7 @@ def test_set_geometry_class_check_runs_before_any_placement_call(monkeypatch):
         raise AssertionError("GetWindowPlacement must not be called")
 
     monkeypatch.setattr(win32_mod._u32, "GetWindowPlacement", boom)
-    assert set_geometry(12345, [0, 0, 100, 100], "normal") is False
+    assert set_geometry(12345, [0, 0, 100, 100], "normal").ok is False
 
 
 def test_set_geometry_applies_exactly_once_no_settle_no_retry(monkeypatch):
@@ -122,7 +122,7 @@ def test_set_geometry_applies_exactly_once_no_settle_no_retry(monkeypatch):
     monkeypatch.setattr(
         win32_mod._u32, "SetWindowPlacement", lambda hwnd, ref: calls.append("set") or True
     )
-    assert set_geometry(12345, [0, 0, 100, 100], "normal") is True
+    assert set_geometry(12345, [0, 0, 100, 100], "normal").ok is True
     assert calls == ["get", "set"]
 
 
@@ -136,7 +136,7 @@ def test_verify_and_fix_geometry_refuses_a_hwnd_that_is_no_longer_a_wt_window(mo
         raise AssertionError("get_geometry must not be called")
 
     monkeypatch.setattr(win32_mod, "get_geometry", boom)
-    assert verify_and_fix_geometry(12345, [0, 0, 100, 100], "normal") is False
+    assert verify_and_fix_geometry(12345, [0, 0, 100, 100], "normal").ok is False
 
 
 def test_verify_and_fix_geometry_does_nothing_when_placement_already_stuck(monkeypatch):
@@ -152,7 +152,7 @@ def test_verify_and_fix_geometry_does_nothing_when_placement_already_stuck(monke
         raise AssertionError("must not reapply when nothing drifted")
 
     monkeypatch.setattr(win32_mod._u32, "SetWindowPlacement", boom)
-    assert verify_and_fix_geometry(12345, [0, 0, 100, 100], "normal") is True
+    assert verify_and_fix_geometry(12345, [0, 0, 100, 100], "normal").ok is True
 
 
 def test_verify_and_fix_geometry_reapplies_when_rect_drifted(monkeypatch):
@@ -167,7 +167,7 @@ def test_verify_and_fix_geometry_reapplies_when_rect_drifted(monkeypatch):
     monkeypatch.setattr(
         win32_mod._u32, "SetWindowPlacement", lambda hwnd, ref: calls.append("set") or True
     )
-    assert verify_and_fix_geometry(12345, [0, 0, 100, 100], "normal") is True
+    assert verify_and_fix_geometry(12345, [0, 0, 100, 100], "normal").ok is True
     assert calls == ["get", "set"]
 
 
@@ -187,7 +187,7 @@ def test_verify_and_fix_geometry_reapplies_when_state_drifted(monkeypatch):
     monkeypatch.setattr(
         win32_mod._u32, "ShowWindow", lambda hwnd, cmd: calls.append(("show", cmd))
     )
-    assert verify_and_fix_geometry(12345, [0, 0, 100, 100], "maximized") is True
+    assert verify_and_fix_geometry(12345, [0, 0, 100, 100], "maximized").ok is True
     assert calls == ["set", ("show", win32_mod.SW_MAXIMIZED)]
 
 

@@ -21,7 +21,12 @@ cost of hiding later conversation-name changes in the tab strip.
 
 Live discovery and restart markers are keyed by normalized working directory.
 Multiple simultaneous sessions in the same repository are therefore not tracked
-as independent identities. A restored layout records an agent kind and command,
+as independent identities: the layout saves one tab for that directory and a
+restore brings back one session, whichever kind was recorded. `status` names any
+directory hosting more than one agent, because the loss is otherwise discovered
+only at the next logon. It is reported there rather than during capture, which
+the reconcile runs every five minutes and which would then pay a second process
+sweep forever. A restored layout records an agent kind and command,
 not a separate conversation ID. See [Codex session identity](codex-session-identity.md)
 for the investigation and limits of reconstructing identities from rollout files.
 
@@ -64,6 +69,15 @@ capture deliberately in both commands; for a restart the message names
 Each tab runs its captured command, or the agent kind's fallback, inside a
 PowerShell loop. PowerShell 7 is selected when available, otherwise Windows
 PowerShell 5.1. Startup is staggered by four seconds between sessions.
+
+That stagger is a sleep inside each launched shell, not something the deploy
+waits out, so a thirteen-session restore is still starting its last session
+nearly a minute after the deploy returns. A deploy therefore leaves a marker
+covering that window: a capture taken inside it would see tabs whose agents
+have not started, read them as closed, and write a layout with them missing.
+The marker expires on its own, because the process that wrote it returns long
+before the sessions it started have finished starting. For the same reason a
+deploy only reports a tab as failed once its own staggered turn has passed.
 A run ending within the ten-second startup grace leaves its shell visible so
 an error can be read; a longer completed run closes its tab.
 

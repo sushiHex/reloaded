@@ -356,9 +356,9 @@ def test_execute_batches_the_settle_wait_once_not_per_window(monkeypatch):
     the whole point of moving the wait out of win32.set_geometry."""
     hwnds = iter([100, 200, 300])
     monkeypatch.setattr(deploy_mod, "launch_window", lambda argv, tabs: next(hwnds))
-    monkeypatch.setattr(deploy_mod.win32, "set_geometry", lambda hwnd, rect, state: True)
+    monkeypatch.setattr(deploy_mod.win32, "set_geometry", lambda hwnd, rect, state: deploy_mod.win32.Placed(True, ""))
     monkeypatch.setattr(
-        deploy_mod.win32, "verify_and_fix_geometry", lambda hwnd, rect, state: True
+        deploy_mod.win32, "verify_and_fix_geometry", lambda hwnd, rect, state: deploy_mod.win32.Placed(True, "")
     )
     sleeps = []
     monkeypatch.setattr(deploy_mod.time, "sleep", lambda s: sleeps.append(s))
@@ -371,12 +371,13 @@ def test_execute_batches_the_settle_wait_once_not_per_window(monkeypatch):
 
 def test_execute_verifies_each_placed_window_with_its_own_target_after_the_wait(monkeypatch):
     monkeypatch.setattr(deploy_mod, "launch_window", lambda argv, tabs: 100)
-    monkeypatch.setattr(deploy_mod.win32, "set_geometry", lambda hwnd, rect, state: True)
+    monkeypatch.setattr(deploy_mod.win32, "set_geometry", lambda hwnd, rect, state: deploy_mod.win32.Placed(True, ""))
     verify_calls = []
     monkeypatch.setattr(
         deploy_mod.win32,
         "verify_and_fix_geometry",
-        lambda hwnd, rect, state: verify_calls.append((hwnd, rect, state)) or True,
+        lambda hwnd, rect, state: verify_calls.append((hwnd, rect, state))
+        or deploy_mod.win32.Placed(True, ""),
     )
     monkeypatch.setattr(deploy_mod.time, "sleep", lambda s: None)
 
@@ -403,7 +404,7 @@ def test_execute_skips_settle_and_verify_when_launch_fails(monkeypatch):
 
 def test_execute_skips_settle_and_verify_when_initial_placement_fails(monkeypatch):
     monkeypatch.setattr(deploy_mod, "launch_window", lambda argv, tabs: 100)
-    monkeypatch.setattr(deploy_mod.win32, "set_geometry", lambda hwnd, rect, state: False)
+    monkeypatch.setattr(deploy_mod.win32, "set_geometry", lambda hwnd, rect, state: deploy_mod.win32.Placed(False, "refused"))
 
     def boom(*a, **k):
         raise AssertionError("must not sleep/verify a placement that never succeeded")
@@ -412,7 +413,15 @@ def test_execute_skips_settle_and_verify_when_initial_placement_fails(monkeypatc
     monkeypatch.setattr(deploy_mod.time, "sleep", boom)
 
     results = execute([_entry("w1")])
-    assert results == [LaunchResult(window_id="w1", hwnd=100, placed=False)]
+    # The reason travels with the result: a failure that reached the log as
+    # "geometry could not be applied" and nothing else is what left a real
+    # wrong-monitor logon undiagnosable.
+    #
+    # `spawned_at` is a measured duration, so it is checked for presence rather
+    # than value - pinning a clock reading would fail on a slower machine.
+    assert [(r.window_id, r.hwnd, r.placed, r.why) for r in results] == [
+        ("w1", 100, False, "refused")]
+    assert results[0].spawned_at is not None
 
 
 def test_execute_final_placed_reflects_the_verify_step_not_just_the_initial_apply(monkeypatch):
@@ -420,9 +429,9 @@ def test_execute_final_placed_reflects_the_verify_step_not_just_the_initial_appl
     status is whatever verify_and_fix_geometry ultimately determines - it
     may have had to correct drift, or found the window gone by then."""
     monkeypatch.setattr(deploy_mod, "launch_window", lambda argv, tabs: 100)
-    monkeypatch.setattr(deploy_mod.win32, "set_geometry", lambda hwnd, rect, state: True)
+    monkeypatch.setattr(deploy_mod.win32, "set_geometry", lambda hwnd, rect, state: deploy_mod.win32.Placed(True, ""))
     monkeypatch.setattr(
-        deploy_mod.win32, "verify_and_fix_geometry", lambda hwnd, rect, state: False
+        deploy_mod.win32, "verify_and_fix_geometry", lambda hwnd, rect, state: deploy_mod.win32.Placed(False, "drift")
     )
     monkeypatch.setattr(deploy_mod.time, "sleep", lambda s: None)
 

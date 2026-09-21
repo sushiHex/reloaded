@@ -140,6 +140,36 @@ def _no_real_desktop_effects(monkeypatch):
 
         monkeypatch.setattr(win32_mod._u32, name, _blocked)
 
+@pytest.fixture(autouse=True)
+def _no_real_state_dir(monkeypatch, tmp_path_factory):
+    """Keep the suite out of the user's real ~/.reloaded. autouse, so it
+    cannot be forgotten.
+
+    The blast door above covers the desktop. It did not cover the state
+    directory, and that gap got out: `deploy.execute` marks a restore in
+    progress, `tests/test_deploy.py` calls `execute` five times, and none of
+    those tests isolated the path - so running the suite wrote a real
+    `restoring.marker` into `~/.reloaded` and the next reconcile declined to
+    save the user's layout. Observed in the log, not theorised:
+
+        02:36:54  [reloaded] a restore is still starting (2s left) —
+                  not overwriting the layout
+
+    Same reasoning as poisoning `uiautomation` rather than each sender: three
+    test modules were isolating `state_dir` by hand, which means every module
+    that forgets is a live write. One autouse redirect, at the one function
+    every state path is built from, cannot be forgotten.
+
+    Beside each test's `tmp_path` rather than inside it: a test that lists its
+    own tmp_path is entitled to see only what it put there, and one of them
+    asserts exactly that.
+    """
+    root = tmp_path_factory.mktemp("reloaded-state")
+    import reloaded.paths as paths_mod
+
+    monkeypatch.setattr(paths_mod, "state_dir", lambda: root)
+
+
 PRIMARY = r"\\.\DISPLAY1"
 SECONDARY = r"\\.\DISPLAY2"
 

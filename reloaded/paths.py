@@ -40,6 +40,16 @@ def log_path() -> pathlib.Path:
     return state_dir() / "reloaded.log"
 
 
+def restore_marker() -> pathlib.Path:
+    """The file a deploy leaves while its sessions are still starting.
+
+    One per machine rather than one per layout: what it says is "agent sessions
+    are coming up right now", which is true of the desktop, not of a file. The
+    reconcile reads it whichever layout it was installed with.
+    """
+    return state_dir() / "restoring.marker"
+
+
 def restart_marker_dir() -> pathlib.Path:
     """Where restart markers live. Swept by directory, so it has a name of its
     own rather than being reached through some arbitrary marker's parent."""

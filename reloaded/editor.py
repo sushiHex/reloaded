@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import os
 
+import math
+
 from . import capture as capture_mod
+from . import deploy as deploy_mod
 from . import layout as layout_mod
 from . import tabs as tabs_mod
 from .layout import Layout, Tab, Window
@@ -124,6 +127,17 @@ def run(lo: Layout, layout_file, repos_root: str) -> int:
             return 0
 
         if cmd == "c":
+            left = deploy_mod.restoring_for()
+            if left:
+                # The third way to write a layout missing every session that
+                # has not started yet. `capture` and `restart` already stand
+                # down; recapturing here and saving with `s` would do the same
+                # damage by a different door.
+                print(f"a restore is still starting ({math.ceil(left)}s left) "
+                      "— not recapturing yet.")
+                print("    Sessions that have not started read as closed. "
+                      "Try again shortly.")
+                continue
             try:
                 fresh = capture_mod.capture_live(repos_root, lo)
             except tabs_mod.UIAUnavailable as exc:

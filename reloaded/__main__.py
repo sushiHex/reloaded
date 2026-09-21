@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import sys
+import time
 from dataclasses import dataclass
 
 from . import agents as agents_mod
@@ -100,6 +102,30 @@ def _announce_quit(plans) -> dict[str, str]:
     return kinds
 
 
+def _restore_in_flight(args) -> bool:
+    """Whether a restore is still starting its sessions, reported.
+
+    A restore still staggering its launches has tabs whose agents have not
+    started, and a session that has not started is absent from `live` - which
+    is indistinguishable from one the user closed. The shrinkage guard cannot
+    tell those apart, so the capture must not be taken at all rather than taken
+    and second-guessed.
+    """
+    left = deploy_mod.restoring_for()
+    if not left or getattr(args, "force", False):
+        return False
+
+    # Rounded up: "0s left" while refusing reads as a contradiction.
+    message = (f"[reloaded] a restore is still starting "
+               f"({math.ceil(left)}s left) — not overwriting the layout")
+    _record(message)
+    print(message)
+    print("    Sessions that have not started yet read as closed, and a "
+          "capture now would drop them.")
+    print("    It resolves itself; pass --force to capture anyway.")
+    return True
+
+
 def _saved_repos(path) -> set[str]:
     """Repos in the layout on disk, or none when there is no readable one.
 
@@ -169,6 +195,14 @@ def _capture_layout(args):
 
 
 def cmd_capture(args) -> int:
+    # First, before the UIA tab scan and the transcript walk below. A capture
+    # taken inside a restore is going to be discarded anyway, and driving a
+    # per-window tab scan against Windows Terminal while it is creating
+    # thirteen tabs is the condition `_capture_shrinkage` blames for its own
+    # failure mode.
+    if _restore_in_flight(args):
+        return 1
+
     try:
         lo, path, live, _title_map = _capture_layout(args)
     except tabs_mod.UIAUnavailable as exc:
@@ -201,6 +235,13 @@ def cmd_capture(args) -> int:
         cost="Saving now would drop them from `up`.",
         escape="Re-run once they read cleanly, or pass --force to accept it.",
     ):
+        return 1
+
+    # Again, here. The entrance check was seconds ago, and the scans between
+    # then and now are exactly where a logon restore starts - an `up` that
+    # began inside them wrote its marker after that check passed, and this
+    # snapshot was taken while its sessions were still coming up.
+    if _restore_in_flight(args):
         return 1
 
     before = _saved_repos(path)
@@ -422,6 +463,7 @@ def _deploy_layout(lo, args) -> int:
         elif outcome:
             say(f"[reloaded] repaired torn transcript: {transcript_path}")
 
+    started_at = time.monotonic()
     results = deploy_mod.execute(plan)
     failures = 0
     for r in results:
@@ -431,12 +473,15 @@ def _deploy_layout(lo, args) -> int:
             failures += 1
         elif not r.placed:
             say(f"[warn] window {r.window_id}: launched but geometry could "
+                f"not be applied — {r.why}" if r.why else
+                f"[warn] window {r.window_id}: launched but geometry could "
                 "not be applied")
             failures += 1
     launched = sum(len(e.tabs) for e in plan)
     say(f"Launched {launched} session(s) in {len(plan)} window(s).", blank=True)
 
-    silent = _never_started(plan, discover_mod.live_sessions())
+    elapsed = time.monotonic() - started_at
+    silent = _never_started(plan, results, discover_mod.live_sessions(), elapsed)
     if silent:
         say(f"[reloaded] {len(silent)} tab(s) opened but no session started:",
             blank=True)
@@ -446,11 +491,25 @@ def _deploy_layout(lo, args) -> int:
         say("    before it starts. Answer it in the tab - this tool will not")
         say("    answer a security question on your behalf.")
 
+    pending = _still_starting(plan, results, elapsed)
+    if pending:
+        last = max(d for entry in plan for d in entry.delays)
+        say(f"[reloaded] {len(pending)} session(s) still starting; the last "
+            f"begins {last}s in.", blank=True)
+        say("    `reloaded status` afterwards shows any that did not come up.")
+
     return 1 if failures else 0
 
 
-def _never_started(plan, live) -> list[str]:
-    """Tabs THIS deploy opened that have no live session behind them.
+def _never_started(plan, results, live, elapsed: float) -> list[str]:
+    """Tabs THIS deploy opened whose turn has come and gone without a session.
+
+    `elapsed` is how long ago the launches were spawned, and it is the whole
+    point. The stagger is a `Start-Sleep` inside each launched shell, not
+    something `execute` waits out, so a tab scheduled at +44s has not been
+    asked to do anything when `execute` returns. Judging it then reported 12
+    of 13 tabs as failed five seconds into a forty-eight second start, under
+    an explanation about a Codex trust prompt that had not been shown yet.
 
     Usually Codex asking whether to trust a directory it has not seen: the tab
     opens, the prompt waits, and no session ever appears. Reported rather than
@@ -466,7 +525,40 @@ def _never_started(plan, live) -> list[str]:
     started", under an explanation about a trust prompt that had nothing to do
     with it. A tab that was never opened cannot have failed to start.
     """
-    return [t.cwd for entry in plan for t in entry.tabs if norm(t.cwd) not in live]
+    return [
+        t.cwd
+        for entry, spawned_at in _spawn_offsets(plan, results)
+        for t, delay in zip(entry.tabs, entry.delays)
+        if spawned_at is not None
+        and spawned_at + delay + deploy_mod.SESSION_START_ALLOWANCE <= elapsed
+        and norm(t.cwd) not in live
+    ]
+
+
+def _spawn_offsets(plan, results):
+    """Each plan entry paired with when its window was actually spawned.
+
+    A window whose HWND was never identified has no spawn time, and a tab in it
+    has had no turn to miss - blaming it would be blaming it for the window's
+    failure, which is reported separately and by name.
+    """
+    return [(entry, result.spawned_at) for entry, result in zip(plan, results)]
+
+
+def _still_starting(plan, results, elapsed: float) -> list[str]:
+    """Tabs whose launch delay has not run out yet.
+
+    Named because the alternative is silence: a restore that launched thirteen
+    sessions and reported nothing about twelve of them reads as one that did
+    nothing.
+    """
+    return [
+        t.cwd
+        for entry, spawned_at in _spawn_offsets(plan, results)
+        for t, delay in zip(entry.tabs, entry.delays)
+        if spawned_at is None
+        or spawned_at + delay + deploy_mod.SESSION_START_ALLOWANCE > elapsed
+    ]
 
 
 def cmd_up(args) -> int:
@@ -1199,6 +1291,12 @@ def cmd_restart(args) -> int:
     if repos:
         return cmd_restart_one(args, repos)
 
+    # The same blind spot as `capture`, and a worse outcome: a restart saves
+    # its fresh capture and then deploys from it, so a session that has not
+    # finished starting is dropped from the layout and not relaunched.
+    if _restore_in_flight(args):
+        return 1
+
     try:
         lo, path, live, title_map = _capture_layout(args)
     except tabs_mod.UIAUnavailable as exc:
@@ -1248,6 +1346,13 @@ def cmd_restart(args) -> int:
         return 1 if refused else 0
 
     if refused:
+        return 1
+
+    # Again, here. The entrance check was seconds ago, and the scans between
+    # then and now are exactly where a logon restore starts - an `up` that
+    # began inside them wrote its marker after that check passed, and this
+    # snapshot was taken while its sessions were still coming up.
+    if _restore_in_flight(args):
         return 1
 
     before = _saved_repos(path)
@@ -1312,7 +1417,13 @@ def cmd_install_tasks(args) -> int:
     import pathlib
 
     package_dir = str(pathlib.Path(__file__).resolve().parents[1])
-    return tasks_mod.install(package_dir, args.layout, args.repos_root)
+    # Resolved here, not passed through. A relative root is legal everywhere
+    # else because `resolve_repo` reads it against the caller's directory, but
+    # a scheduled task starts somewhere else entirely - `..\repos` baked into
+    # the launcher means a different directory at every logon, and
+    # `resolve_tab` then joins tab titles to a place that does not exist.
+    repos_root = str(pathlib.Path(args.repos_root).expanduser().resolve())
+    return tasks_mod.install(package_dir, args.layout, repos_root)
 
 
 def cmd_uninstall_tasks(args) -> int:
@@ -1321,11 +1432,24 @@ def cmd_uninstall_tasks(args) -> int:
 
 def cmd_status(args) -> int:
     path = layout_path(args.layout)
-    live = discover_mod.live_sessions()
+    live, crowded = discover_mod.sweep()
 
     print(f"live sessions : {len(live)}")
     for cwd in sorted(live):
         print(f"    {cwd}")
+
+    # Here rather than in `capture`: this needs a process sweep of its own, and
+    # the reconcile runs capture every five minutes forever. `status` is the
+    # command someone runs to find out what is going on, which is also the
+    # moment this is worth knowing - the loss it describes happens at the next
+    # restore, not now.
+    for cwd, kinds in sorted(crowded.items()):
+        print(f"\n[warn] {len(kinds)} agent sessions share {cwd} "
+              f"({', '.join(kinds)}).")
+        print("       Sessions are tracked by directory, so only one is saved "
+              "and only one")
+        print("       comes back. Move one to its own directory, or expect to "
+              "reopen it by hand.")
 
     if not path.exists():
         print(f"\nno layout saved at {path} — run `reloaded capture`")
@@ -1440,6 +1564,10 @@ def cmd_edit(args) -> int:
         lo = layout_mod.load(path)
     else:
         print(f"No layout at {path} — capturing the current arrangement to start from.")
+        # The `c` command already stands down; this is the other capture the
+        # editor does, and `s` persists it just the same.
+        if _restore_in_flight(args):
+            return 1
         try:
             lo, path, _live, _title_map = _capture_layout(args)
         except tabs_mod.UIAUnavailable as exc:
@@ -1461,7 +1589,8 @@ def build_parser() -> argparse.ArgumentParser:
     cap = sub.add_parser("capture", help="snapshot the current arrangement into the layout")
     cap.add_argument(
         "--force", action="store_true",
-        help="save even if the capture holds fewer sessions than the saved layout",
+        help="save even if a restore is still starting, or the capture holds "
+             "fewer sessions than the saved layout",
     )
 
     up = sub.add_parser("up", help="deploy the saved layout")
