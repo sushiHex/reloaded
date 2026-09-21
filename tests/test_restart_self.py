@@ -552,6 +552,20 @@ def test_cancel_says_what_it_does_to_a_dispatched_restart(session, capsys):
     assert "opening delay" in out, "it never says which case is which"
 
 
+def test_the_cli_help_knows_cancel_reaches_a_dispatched_helper(capsys):
+    """`--help` is where a user who does not read docs/usage.md finds out.
+    It said `--cancel` applied only "with --self --arm-only", which is the one
+    path this branch did not change. Read the way a user reads it, through the
+    command rather than through argparse's internals. Codex review of this
+    branch."""
+    with pytest.raises(SystemExit):
+        main_mod.build_parser().parse_args(["restart", "--help"])
+
+    help_text = " ".join(capsys.readouterr().out.split())
+    assert "arm-only" in help_text, "it no longer says what it always did"
+    assert "dispatched" in help_text, "it still hides the path that now works"
+
+
 # ── finding the session you are inside ───────────────────────────────────
 
 

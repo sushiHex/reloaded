@@ -364,12 +364,13 @@ def execute_down(
     exit, and each target's marker would age through every earlier target's
     wait. `--self` is always exactly one target.
 
-    ``still_wanted(cwd)`` is asked before every resend and stops them when it
-    answers False. The concrete case is `restart --self --cancel`, which
-    deletes the marker but cannot recall the detached helper that is typing:
-    keys that land after the marker has gone end a session that nothing will
-    bring back. One knock was a small window for that; a window as long as the
-    marker's life needs a way to notice.
+    ``still_wanted(cwd)`` is asked on every poll and before every key, and a
+    False answer ends the wait rather than merely declining to knock. The
+    concrete case is `restart --self --cancel`, which deletes the marker: keys
+    that land after it has gone end a session that nothing will bring back.
+    One knock was a small window for that; a window as long as the marker's
+    life needs a way to notice. Asking this often is also what makes the cancel
+    work at all on a dispatched helper, which is otherwise beyond recall.
     """
     exited: list[tuple[str, str]] = []
     timed_out: list[tuple[str, str]] = []

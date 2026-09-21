@@ -859,11 +859,12 @@ def cmd_restart_one(args, repos: list[str]) -> int:
 def _still_armed(cwd: str) -> bool:
     """Whether typing at `cwd` again could still produce a restart.
 
-    `restart --self --cancel` deletes the marker and says plainly that it
-    cannot recall a helper already dispatched. That helper is the thing typing,
-    and a key it lands after the cancel ends a session nothing will bring back.
-    While the wait was twenty seconds that race was small; it is now as long as
-    the marker's life, so the helper asks.
+    `restart --self --cancel` deletes the marker, and this is what makes that
+    mean something for a helper already dispatched: the helper is the thing
+    typing, and a key it lands after the cancel ends a session nothing will
+    bring back. While the wait was twenty seconds that race was small; it is
+    now as long as the marker's life, so the helper asks - before every key and
+    on every poll, which is why a cancel after arming genuinely stops one.
 
     The marker being gone *while the session is still running* has one cause.
     The shell only consumes it after its agent exits, and by then the poll that
@@ -1221,7 +1222,8 @@ def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> 
             argv, creationflags=base | CREATE_BREAKAWAY_FROM_JOB, **kw).pid
     except OSError:
         pid = subprocess.Popen(argv, creationflags=base, **kw).pid
-    if account is not subprocess.DEVNULL:
+    has_account = account is not subprocess.DEVNULL
+    if has_account:
         # Which session asked, since the helper's own output never says - and
         # by the time it writes, that session has gone. Written after the spawn
         # so it can name the pid whose lines follow it.
@@ -1229,14 +1231,18 @@ def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> 
         # Swallowed, because the helper is already running. A full disk here
         # would otherwise raise out of a function that has successfully
         # dispatched, and the caller treats an exception as "nothing was
-        # spawned": it would clear the attempt file and tell the user to start
-        # another restart, on top of the one now typing at their session.
+        # spawned": it would tell the user to start another restart, on top of
+        # the one now typing at their session.
         try:
             account.write(_stamped(
                 f"[reloaded] restart --self dispatched for {repo} "
                 f"(helper pid {pid})") + "\n")
         except OSError:
-            pass
+            # Swallowed, but not forgotten: the open succeeded and the first
+            # write did not, so the promise the caller builds from this flag
+            # is already false. A disk that filled between the two is the
+            # whole reason the flag exists. Codex review of this branch.
+            has_account = False
         # Closed here, not left to interpreter exit: Popen has already given
         # the child its own duplicate of the handle, so the helper keeps
         # writing, and this process should not be holding the log open while
@@ -1250,7 +1256,7 @@ def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> 
     # `_open_account` can fall back to DEVNULL - which would make that promise
     # point at a log containing no explanation, leaving the new reporting
     # exactly as silent as the old. Codex review of this branch.
-    return Dispatched(pid=pid, account=account is not subprocess.DEVNULL)
+    return Dispatched(pid=pid, account=has_account)
 
 
 class Dispatched(NamedTuple):
@@ -1815,7 +1821,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     restart.add_argument(
         "--cancel", action="store_true",
-        help="with --self --arm-only, disarm instead of arming",
+        help="with --self, remove the restart marker: disarms a waiting "
+             "--arm-only, and calls off a dispatched helper once it has armed",
     )
     restart.add_argument(
         "--after", type=float, default=0.0, metavar="SECONDS",

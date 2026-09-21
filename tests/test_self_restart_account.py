@@ -131,8 +131,12 @@ def test_a_log_that_fills_after_the_spawn_is_not_a_spawn_failure(spawn,
 
     monkeypatch.setattr(main_mod, "_open_account", lambda: _Full())
 
-    assert main_mod._dispatch_restart(CWD, "default", 5.0,
-                                      r"C:\repos").pid == 4242
+    dispatched = main_mod._dispatch_restart(CWD, "default", 5.0, r"C:\repos")
+
+    assert dispatched.pid == 4242
+    assert dispatched.account is False, (
+        "the open succeeded and the first write did not, so there is no "
+        "account to promise")
 
 
 def test_a_log_that_cannot_be_opened_does_not_stop_the_restart(monkeypatch,
