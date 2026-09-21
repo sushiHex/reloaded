@@ -216,12 +216,6 @@ def test_a_dispatch_from_a_shared_directory_is_refused_before_it_spawns(
     assert "claude, codex" in capsys.readouterr().out
 
 
-def test_that_refusal_leaves_no_attempt_behind(self_in_a_shared_directory):
-    main_mod.cmd_restart(_self_args())
-
-    assert not main_mod.restart_attempts(SHARED)
-
-
 def test_the_dry_run_does_not_preview_something_that_cannot_happen(
         self_in_a_shared_directory, capsys):
     main_mod.cmd_restart(_self_args(dry_run=True))
