@@ -166,23 +166,32 @@ def _args(**kw):
 TOKEN = "tok0123456789abc"
 
 
-def _aged(token="earlier", *, unreadable=False):
-    """An attempt whose helper can no longer be in flight.
+def _settled(token="earlier", *, unreadable=False):
+    """An attempt whose helper can no longer be working.
 
-    A record younger than that is not a failure, it is a restart still
-    happening, so every test about *reporting* has to age its own.
+    A record that has not reached its deadline is not a failure, it is a
+    restart still happening, so every test about *reporting* has to write one
+    that has.
     """
+    import os
     import time
 
     path = main_mod.restart_attempt(CWD, token)
-    old = time.time() - main_mod.SELF_ATTEMPT_SETTLES_AFTER - 1
-    path.write_text("" if unreadable else f"{old:.0f}", encoding="utf-8")
+    old = time.time() - main_mod._attempt_budget(0.0) - 1
+    path.write_text("" if unreadable else f"{old:.0f} {old:.0f}",
+                    encoding="utf-8")
     if unreadable:
-        # No timestamp to read, so the age has to come from the mtime.
-        import os
-
+        # No deadline to read, so settlement has to come from the mtime.
         os.utime(path, (old, old))
     return path
+
+
+def _record(token, after=0.0):
+    """Record an attempt the way `cmd_restart_self` does."""
+    import time
+
+    main_mod._record_attempt([CWD], token,
+                             time.time() + main_mod._attempt_budget(after))
 
 
 @pytest.fixture
@@ -216,7 +225,7 @@ def restart_one(monkeypatch):
 
 
 def test_a_dispatched_restart_that_works_clears_the_attempt(restart_one):
-    main_mod._record_attempt([CWD], TOKEN)
+    _record(TOKEN)
 
     main_mod.cmd_restart_one(_args(after=5.0, attempt=TOKEN), [CWD])
 
@@ -225,7 +234,7 @@ def test_a_dispatched_restart_that_works_clears_the_attempt(restart_one):
 
 def test_a_dispatched_restart_that_fails_leaves_its_attempt(restart_one):
     restart_one["came_back"] = False
-    main_mod._record_attempt([CWD], TOKEN)
+    _record(TOKEN)
 
     main_mod.cmd_restart_one(_args(after=5.0, attempt=TOKEN), [CWD])
 
@@ -238,8 +247,8 @@ def test_a_helper_does_not_settle_a_later_helpers_attempt(restart_one):
     the older helper — which may have waited out a whole marker — settles the
     newer one's record and the newer one then dies, nothing is left to report
     the death this file exists for. Codex review of this branch."""
-    main_mod._record_attempt([CWD], TOKEN)
-    main_mod._record_attempt([CWD], "the-newer-dispatch")
+    _record(TOKEN)
+    _record("the-newer-dispatch")
 
     main_mod.cmd_restart_one(_args(after=5.0, attempt=TOKEN), [CWD])
 
@@ -253,8 +262,8 @@ def test_each_dispatch_owns_a_path_rather_than_a_line_in_one(restart_one):
     read-then-delete, and a newer dispatch taking that path over between the
     two steps put the loss straight back — rarer, not removed. Codex second
     pass on this branch."""
-    main_mod._record_attempt([CWD], "one")
-    main_mod._record_attempt([CWD], "two")
+    _record("one")
+    _record("two")
 
     assert len(main_mod.restart_attempts(CWD)) == 2, (
         "two outstanding restarts share one record")
@@ -263,8 +272,8 @@ def test_each_dispatch_owns_a_path_rather_than_a_line_in_one(restart_one):
 def test_reporting_clears_every_settled_attempt(session, capsys):
     """Reported once means once. Leaving the older files behind would have the
     next restart announce a restart from two restarts ago."""
-    _aged("one")
-    _aged("two")
+    _settled("one")
+    _settled("two")
 
     main_mod.cmd_restart(_self_args(arm_only=True))
 
@@ -283,7 +292,7 @@ def test_a_refusal_before_any_keystroke_leaves_it_too(restart_one, monkeypatch):
     """
     monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: {})
     monkeypatch.setattr(main_mod.discover_mod, "sweep", lambda: ({}, {}))
-    main_mod._record_attempt([CWD], TOKEN)
+    _record(TOKEN)
 
     assert main_mod.cmd_restart_one(_args(after=5.0, attempt=TOKEN), [CWD]) == 1
     assert main_mod.restart_attempts(CWD)
@@ -292,7 +301,7 @@ def test_a_refusal_before_any_keystroke_leaves_it_too(restart_one, monkeypatch):
 def test_a_restart_someone_is_watching_settles_nothing(restart_one):
     """Named from another tab, the failure is already on the caller's screen,
     and nothing dispatched it — so there is no attempt of its own to settle."""
-    main_mod._record_attempt([CWD], TOKEN)
+    _record(TOKEN)
 
     main_mod.cmd_restart_one(_args(), [CWD])
 
@@ -302,7 +311,7 @@ def test_a_restart_someone_is_watching_settles_nothing(restart_one):
 
 def test_a_dry_run_settles_nothing(restart_one, monkeypatch):
     monkeypatch.setattr(main_mod, "_preview_restart", lambda plans: None)
-    main_mod._record_attempt([CWD], TOKEN)
+    _record(TOKEN)
 
     main_mod.cmd_restart_one(_args(after=5.0, attempt=TOKEN, dry_run=True),
                              [CWD])
@@ -378,7 +387,7 @@ def _self_args(**kw):
 
 
 def test_the_next_restart_names_the_one_that_never_reported_back(session, capsys):
-    main_mod.restart_attempt(CWD, "earlier").write_text("1758445664", encoding="utf-8")
+    _settled()
 
     main_mod.cmd_restart(_self_args())
 
@@ -391,7 +400,7 @@ def test_it_does_not_claim_the_previous_one_failed(session, capsys):
     """Presence cannot establish failure. A helper killed moments after the
     session came back leaves the same file as one that achieved nothing, and
     only the log distinguishes them. Codex review of this branch."""
-    main_mod.restart_attempt(CWD, "earlier").write_text("1758445664", encoding="utf-8")
+    _settled()
 
     main_mod.cmd_restart(_self_args())
 
@@ -401,7 +410,7 @@ def test_it_does_not_claim_the_previous_one_failed(session, capsys):
 def test_an_unreadable_attempt_is_still_reported(session, capsys):
     """The helper dying hardest is exactly the case that must not fall
     silent."""
-    _aged(unreadable=True)
+    _settled(unreadable=True)
 
     main_mod.cmd_restart(_self_args())
 
@@ -415,7 +424,7 @@ def test_a_reported_attempt_is_not_reported_forever(session, capsys):
     Through `--arm-only`, which spawns nothing: a second dispatching call
     would leave an attempt of its own and be reporting that, which is correct
     and would prove nothing about the first."""
-    main_mod.restart_attempt(CWD, "earlier").write_text("1758445664", encoding="utf-8")
+    _settled()
 
     main_mod.cmd_restart(_self_args(arm_only=True))
     capsys.readouterr()
@@ -447,10 +456,31 @@ def test_a_restart_still_in_flight_keeps_its_record(session):
     assert len(main_mod.restart_attempts(CWD)) == 2
 
 
+def test_a_long_delay_is_part_of_the_record(session, capsys):
+    """`--after` takes an arbitrary delay, so a constant budget would settle a
+    record while its helper was still asleep — `--after 300` judged after 145
+    seconds. The deadline is written by the process that chose the delay.
+    Codex review of this branch."""
+    _record("slow", after=300.0)
+
+    main_mod.cmd_restart(_self_args(arm_only=True))
+
+    out = capsys.readouterr().out
+    assert "never reported back" not in out
+    assert main_mod.restart_attempts(CWD), "it consumed a helper still sleeping"
+
+
+def test_the_budget_counts_both_relaunch_waits(session):
+    """`_await_relaunch` spends one and then `_reopen_in_a_new_tab` spends
+    another, so budgeting one left the tail of the fallback path unprotected."""
+    assert main_mod._attempt_budget(0.0) >= (
+        main_mod.SELF_EXIT_PATIENCE_SECONDS + 2 * main_mod.RELAUNCH_WAIT_SECONDS)
+
+
 def test_once_its_helper_can_only_be_finished_it_is_reported(session, capsys):
     """The bound is the helper's own worst case — its delay, the whole marker
     it may spend asking, and the wait for the session to return."""
-    _aged()
+    _settled()
 
     main_mod.cmd_restart(_self_args(arm_only=True))
 
@@ -461,7 +491,7 @@ def test_a_dry_run_reports_the_attempt_without_eating_it(session, capsys):
     """`--dry-run` promises to change nothing. Consuming the only record of an
     unreported restart on the way to saying it did nothing would leave no real
     invocation able to warn about it. Codex review of this branch."""
-    _aged()
+    _settled()
 
     main_mod.cmd_restart(_self_args(dry_run=True))
 
@@ -471,7 +501,7 @@ def test_a_dry_run_reports_the_attempt_without_eating_it(session, capsys):
 
 def test_the_next_real_restart_still_reports_it(session, capsys):
     """The half that matters: the dry run left it, so this one finds it."""
-    _aged()
+    _settled()
     main_mod.cmd_restart(_self_args(dry_run=True))
     capsys.readouterr()
 

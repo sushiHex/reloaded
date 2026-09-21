@@ -874,20 +874,26 @@ def _new_attempt_token() -> str:
     return uuid.uuid4().hex[:16]
 
 
-def _record_attempt(cwds: list[str], token: str) -> None:
+def _record_attempt(cwds: list[str], token: str, settles_at: float) -> None:
     """Leave a file per target saying a dispatched restart is in flight.
 
     Presence is the signal for "still outstanding", so a helper killed outright
     still reports correctly - the case a written verdict would miss entirely.
-    The contents are only a timestamp, for the report; the token that makes one
-    dispatch's record its own is in the filename.
+    The token that makes one dispatch's record its own is in the filename.
+
+    Two numbers: when it was dispatched, which is what the report says, and
+    when it can be judged, which nothing else is in a position to know.
+    `--after` takes an arbitrary delay, so a constant here is a guess about
+    somebody else's argument - `--after 300` would have this record settled and
+    consumed while its helper was still asleep. The process that chose the
+    delay is the one that writes the deadline. Codex review of this branch.
     """
     import time
 
     for cwd in cwds:
         try:
             restart_attempt(cwd, token).write_text(
-                f"{time.time():.0f}", encoding="utf-8")
+                f"{time.time():.0f} {settles_at:.0f}", encoding="utf-8")
         except OSError:
             # Same rule as the log: bookkeeping must never fail the restart it
             # is bookkeeping for.
@@ -937,8 +943,7 @@ def _previous_attempt(cwd: str, *, consume: bool = True) -> None:
     # the newer one succeeded and cleared its own, nothing was left to report
     # the first. Overlapping dispatches are the case token-named files exist
     # for; they have to survive being overlapped. Codex review of this branch.
-    settled = [p for p in restart_attempts(cwd)
-               if _attempt_age(p) > SELF_ATTEMPT_SETTLES_AFTER]
+    settled = [p for p in restart_attempts(cwd) if _attempt_settled(p)]
     if not settled:
         return
     # The newest, because that is the one whose promise is still ringing. Older
@@ -966,25 +971,37 @@ def _previous_attempt(cwd: str, *, consume: bool = True) -> None:
             pass
 
 
-def _attempt_age(path) -> float:
-    """How long ago the attempt at `path` was dispatched, in seconds.
+def _attempt_settled(path) -> bool:
+    """Whether the helper behind `path` can no longer be working.
 
-    From the timestamp it recorded, and from its mtime when that cannot be
-    read - a helper that died mid-write is exactly the case worth ageing
-    correctly rather than discarding.
+    From the deadline its dispatcher wrote, which is the only place the real
+    `--after` was known. A record with no readable deadline falls back to its
+    mtime plus the default budget - a truncated file is still a dispatch, and
+    treating it as forever unsettled would leave it on disk for good.
     """
     import time
 
     try:
-        return time.time() - float(path.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
+        return time.time() >= float(path.read_text(encoding="utf-8").split()[1])
+    except (OSError, ValueError, IndexError):
         pass
     try:
-        return time.time() - path.stat().st_mtime
+        return time.time() >= path.stat().st_mtime + _attempt_budget(0.0)
     except OSError:
-        # Unreachable file: treat it as old rather than as forever young, so a
-        # record that cannot be read can still be cleared away.
-        return float("inf")
+        # Unreachable file: settled, so a record that cannot be read at all can
+        # still be reported and cleared rather than accumulating.
+        return True
+
+
+def _attempt_budget(after: float) -> float:
+    """How long a dispatched helper can still be working, given its delay.
+
+    Its own worst case, added rather than chosen: the delay it was told to
+    wait, the whole marker it may spend asking the session to quit, and the
+    relaunch wait - twice, because `_await_relaunch` spends one and then
+    `_reopen_in_a_new_tab` spends another.
+    """
+    return after + SELF_EXIT_PATIENCE_SECONDS + 2 * RELAUNCH_WAIT_SECONDS
 
 
 def _nothing_running_there(cwds, live) -> str:
@@ -1254,15 +1271,6 @@ SELF_RESTART_DELAY_SECONDS = 5.0
 # its marker good until +120s. Being patient for more types at a session whose
 # exit would close the tab instead of relaunching it.
 SELF_EXIT_PATIENCE_SECONDS = deploy_mod.RESTART_MARKER_TTL_SECONDS
-# After this long a dispatched helper is finished, one way or another: its own
-# delay before it starts, the whole marker it may spend asking, and the wait
-# for the session to come back. Added rather than chosen - it is the helper's
-# own worst case, so an attempt younger than this has not failed, it has not
-# ended. A caller that passes a larger `--after` is outside it, and buys itself
-# a record settled early; the default path is what this protects.
-SELF_ATTEMPT_SETTLES_AFTER = (SELF_RESTART_DELAY_SECONDS
-                              + SELF_EXIT_PATIENCE_SECONDS
-                              + RELAUNCH_WAIT_SECONDS)
 
 
 def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str,
@@ -1513,8 +1521,12 @@ def cmd_restart_self(args) -> int:
         # _dispatch_restart documents as possible - never runs a line. The
         # cases this file exists to report are exactly the cases the helper is
         # not around for.
+        import time
+
         token = _new_attempt_token()
-        _record_attempt([cwd], token)
+        # The deadline travels with the record because `after` is known here
+        # and nowhere else. See _record_attempt.
+        _record_attempt([cwd], token, time.time() + _attempt_budget(after))
         try:
             helper = _dispatch_restart(cwd, args.layout, after, helper_root,
                                        token)
