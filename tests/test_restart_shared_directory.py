@@ -179,6 +179,92 @@ def test_self_does_not_send_a_hand_started_session_somewhere_it_will_refuse(
     assert "own directory" in out
 
 
+@pytest.fixture
+def self_in_a_shared_directory(monkeypatch, tmp_path):
+    """A reloaded-launched session in a directory that holds two."""
+    spawned = []
+    monkeypatch.setattr(discover_mod, "owning_session",
+                        lambda: (111, SHARED, "claude"))
+    monkeypatch.setattr(discover_mod, "launcher_kind",
+                        lambda pid: discover_mod.RELOADED)
+    monkeypatch.setattr(main_mod, "restart_marker", lambda cwd: tmp_path / "m")
+    monkeypatch.setattr(main_mod.discover_mod, "crowded_dirs",
+                        lambda: {norm(SHARED): ["claude", "codex"]})
+    monkeypatch.setattr(main_mod, "_dispatch_restart",
+                        lambda *a, **k: spawned.append(a) or 4242)
+    return spawned
+
+
+def _self_args(**kw):
+    d = {"layout": "default", "repos_root": r"C:\repos", "dry_run": False,
+         "repos": [], "self_": True, "cancel": False, "arm_only": False,
+         "after": 0.0, "attempt": ""}
+    d.update(kw)
+    return types.SimpleNamespace(**d)
+
+
+def test_a_dispatch_from_a_shared_directory_is_refused_before_it_spawns(
+        self_in_a_shared_directory, capsys):
+    """The helper would reach `_shared_directory`'s refusal on its own — but
+    inside a detached process, after this command had printed success and the
+    user had been told their session was coming back. Which is the exact
+    failure the sibling branch exists to remove."""
+    rc = main_mod.cmd_restart(_self_args())
+
+    assert rc == 1
+    assert self_in_a_shared_directory == [], "it spawned a helper that will refuse"
+    assert "claude, codex" in capsys.readouterr().out
+
+
+def test_that_refusal_leaves_no_attempt_behind(self_in_a_shared_directory):
+    main_mod.cmd_restart(_self_args())
+
+    assert not main_mod.restart_attempt(SHARED).exists()
+
+
+def test_the_dry_run_does_not_preview_something_that_cannot_happen(
+        self_in_a_shared_directory, capsys):
+    main_mod.cmd_restart(_self_args(dry_run=True))
+
+    out = capsys.readouterr().out
+    assert "Would hand" not in out
+    assert "share" in out
+
+
+def test_arming_is_not_refused_in_a_shared_directory(monkeypatch, tmp_path):
+    """Arming needs no tab. The marker is read by the shell of whichever
+    session exits, and the session that exits is the one the user quits — so
+    the ambiguity that stops every other path does not arise here."""
+    marker = tmp_path / "m"
+    monkeypatch.setattr(discover_mod, "owning_session",
+                        lambda: (111, SHARED, "claude"))
+    monkeypatch.setattr(discover_mod, "launcher_kind",
+                        lambda pid: discover_mod.RELOADED)
+    monkeypatch.setattr(main_mod, "restart_marker", lambda cwd: marker)
+    monkeypatch.setattr(
+        main_mod.discover_mod, "crowded_dirs",
+        lambda: pytest.fail("arming asked a question it does not need"))
+
+    assert main_mod.cmd_restart(_self_args(arm_only=True)) == 0
+    assert marker.read_text(encoding="utf-8") == "restart"
+
+
+def test_a_dispatch_from_a_directory_of_its_own_still_works(monkeypatch,
+                                                            tmp_path):
+    spawned = []
+    monkeypatch.setattr(discover_mod, "owning_session",
+                        lambda: (111, ALONE, "claude"))
+    monkeypatch.setattr(discover_mod, "launcher_kind",
+                        lambda pid: discover_mod.RELOADED)
+    monkeypatch.setattr(main_mod, "restart_marker", lambda cwd: tmp_path / "m")
+    monkeypatch.setattr(main_mod.discover_mod, "crowded_dirs", lambda: {})
+    monkeypatch.setattr(main_mod, "_dispatch_restart",
+                        lambda *a, **k: spawned.append(a) or 4242)
+
+    assert main_mod.cmd_restart(_self_args()) == 0
+    assert len(spawned) == 1
+
+
 def test_self_still_gives_the_normal_advice_in_a_directory_of_its_own(
         monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(discover_mod, "owning_session",

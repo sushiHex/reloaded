@@ -894,6 +894,16 @@ def _nothing_running_there(cwds, live) -> str:
                      + ["", "`reloaded status` lists the live sessions."])
 
 
+def _shared_with(cwd: str) -> list | None:
+    """The agent kinds sharing `cwd`, or None when it holds one session.
+
+    A full `process_iter` walk, so it is asked only where the answer changes
+    what happens - never on `--arm-only`, which needs no tab and is the one
+    restart a shared directory cannot confuse.
+    """
+    return discover_mod.crowded_dirs().get(norm(cwd))
+
+
 def _shared_directory(cwds, crowded) -> str:
     """Why this batch cannot be aimed, or "" if every repo holds one session.
 
@@ -1452,7 +1462,7 @@ def cmd_restart_self(args) -> int:
         # holding two sessions, `restart <repo>` refuses for its own reasons
         # (see _shared_directory), and sending someone there would be sending
         # them to a second refusal that does not mention this one.
-        sharing = discover_mod.crowded_dirs().get(norm(cwd))
+        sharing = _shared_with(cwd)
         if sharing:
             print(f"    {len(sharing)} agent sessions share this directory "
                   f"({', '.join(sharing)}), so `reloaded restart")
@@ -1471,6 +1481,30 @@ def cmd_restart_self(args) -> int:
     helper_root = os.path.dirname(cwd.rstrip("\\/")) or args.repos_root
 
     if not arm_only:
+        # Synchronously, before anything is spawned. The helper runs the named
+        # path and would reach `_shared_directory`'s refusal - but it reaches
+        # it inside a detached process, after this command has printed success
+        # and the user has been told their session is coming back. That is the
+        # exact shape this branch's sibling work exists to remove, and letting
+        # a new refusal reintroduce it would be worse than not having it.
+        # Codex review of this branch.
+        sharing = _shared_with(cwd)
+        if sharing:
+            print(f"{len(sharing)} agent sessions share {cwd} "
+                  f"({', '.join(sharing)}).")
+            print("\n    The helper this would hand the job to has to find "
+                  "your tab, and nothing")
+            print("    connects a tab to the process inside it — so it would "
+                  "refuse, in a detached")
+            print("    process, after this command had already said the "
+                  "session was coming back.")
+            # Not a consolation prize: arming needs no tab at all. The marker
+            # is read by the shell of whichever session exits, and the session
+            # that exits is the one the user quits.
+            print(f"\n    `reloaded restart --self --arm-only` does work here: "
+                  f"it types at nothing, and")
+            print(f"    your own {label} is what the marker waits for.")
+            return 1
         if args.dry_run:
             # The command as it will really run, not a readable summary of it:
             # this preview is the last chance to notice the helper has been
