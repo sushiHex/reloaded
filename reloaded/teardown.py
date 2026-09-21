@@ -465,9 +465,15 @@ def execute_down(
                                   quit_keys=quit_keys, pid=pid).reached:
                         # A zero here is the session ending mid-resend, which
                         # the enclosing loop is about to notice anyway.
+                        # Elapsed, not the constant. A patient teardown knocks
+                        # around 6s, 26s, 46s, 66s and 86s, and printing
+                        # EXIT_RETRY_AFTER_SECONDS for all five said "after
+                        # 6s" every time - in the only live account of a
+                        # dispatched restart, about the one thing worth
+                        # timing, which is when focus was actually taken.
                         log(
                             f"    {title} still running after "
-                            f"{EXIT_RETRY_AFTER_SECONDS:.0f}s - resending {agent.quit_label}"
+                            f"{now - start:.0f}s - resending {agent.quit_label}"
                         )
                     else:
                         log(

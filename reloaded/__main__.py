@@ -780,8 +780,14 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     # did not survive (the breakaway fallback is documented as "may not
     # survive"), would never reach this line. An attempt only recorded by
     # helpers that lived is an attempt file that cannot report the deaths.
-    # Codex review of this branch. Cleared below, once the session is back.
-    dispatched = getattr(args, "dispatched", False) and not args.dry_run
+    # Codex review of this branch. Settled below, once the session is back.
+    #
+    # `--attempt` carries both facts at once: that this run was dispatched, and
+    # which dispatch it is. Read from a value nobody else sets rather than
+    # inferred from `--after`, which is a public option a named restart takes
+    # alongside any number of repos.
+    token = getattr(args, "attempt", "") or ""
+    dispatched = bool(token) and not args.dry_run
 
     live = discover_mod.live_sessions()
 
@@ -840,7 +846,7 @@ def cmd_restart_one(args, repos: list[str]) -> int:
             came_back = _await_relaunch(s, tabs_before)
         failed = failed or not came_back
     if dispatched and not failed:
-        _clear_attempts(cwds)
+        _clear_attempts(cwds, token)
     return 1 if failed else 0
 
 
@@ -860,29 +866,48 @@ def _still_armed(cwd: str) -> bool:
     return restart_marker(cwd).exists()
 
 
-def _record_attempt(cwds: list[str]) -> None:
+def _new_attempt_token() -> str:
+    """A name for one dispatch, so a helper can only settle its own record."""
+    import uuid
+
+    return uuid.uuid4().hex[:16]
+
+
+def _record_attempt(cwds: list[str], token: str) -> None:
     """Leave a file per target saying a dispatched restart is in flight.
 
-    Its contents are never read - presence is the signal - so a helper killed
-    outright still reports correctly, which is the case a written verdict would
-    miss entirely.
+    Presence is the signal for "still outstanding", so a helper killed outright
+    still reports correctly - the case a written verdict would miss entirely.
+    The token is not a verdict: it is whose attempt this is, and it exists only
+    so the clear below cannot settle somebody else's.
     """
     import time
 
     for cwd in cwds:
         try:
             restart_attempt(cwd).write_text(
-                f"{time.time():.0f} {os.getpid()}", encoding="utf-8")
+                f"{time.time():.0f} {token}", encoding="utf-8")
         except OSError:
             # Same rule as the log: bookkeeping must never fail the restart it
             # is bookkeeping for.
             pass
 
 
-def _clear_attempts(cwds: list[str]) -> None:
+def _clear_attempts(cwds: list[str], token: str) -> None:
+    """Settle this dispatch's records, and only this dispatch's.
+
+    Attempts are keyed by directory, so a second `--self` for the same
+    repository overwrites the first's file. Clearing unconditionally then lets
+    the older helper - which may finish later, having waited out a marker -
+    delete the newer one's record, and if that newer helper dies there is
+    nothing left to report it. Which is the one thing this file is for.
+    """
     for cwd in cwds:
+        path = restart_attempt(cwd)
         try:
-            restart_attempt(cwd).unlink(missing_ok=True)
+            if path.read_text(encoding="utf-8").split(" ")[-1] != token:
+                continue
+            path.unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -1193,7 +1218,8 @@ SELF_RESTART_DELAY_SECONDS = 5.0
 SELF_EXIT_PATIENCE_SECONDS = deploy_mod.RESTART_MARKER_TTL_SECONDS
 
 
-def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> int:
+def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str,
+                      token: str = "") -> int:
     """Start `restart <repo>` in a process that outlives this session.
 
     `repo` is an absolute path, not a name. The helper is a fresh process with
@@ -1243,7 +1269,7 @@ def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> 
     bootstrap = (
         f"import sys; sys.path.insert(0, {package_dir!r}); "
         f"from reloaded.__main__ import main; "
-        f"raise SystemExit(main({['--layout', layout, '--repos-root', repos_root, 'restart', repo, '--after', str(after), '--dispatched']!r}))"
+        f"raise SystemExit(main({['--layout', layout, '--repos-root', repos_root, 'restart', repo, '--after', str(after), '--attempt', token]!r}))"
     )
 
     DETACHED_PROCESS = 0x00000008
@@ -1277,14 +1303,26 @@ def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> 
         # Which session asked, since the helper's own output never says - and
         # by the time it writes, that session has gone. Written after the spawn
         # so it can name the pid whose lines follow it.
-        account.write(_stamped(
-            f"[reloaded] restart --self dispatched for {repo} "
-            f"(helper pid {pid})") + "\n")
+        #
+        # Swallowed, because the helper is already running. A full disk here
+        # would otherwise raise out of a function that has successfully
+        # dispatched, and the caller treats an exception as "nothing was
+        # spawned": it would clear the attempt file and tell the user to start
+        # another restart, on top of the one now typing at their session.
+        try:
+            account.write(_stamped(
+                f"[reloaded] restart --self dispatched for {repo} "
+                f"(helper pid {pid})") + "\n")
+        except OSError:
+            pass
         # Closed here, not left to interpreter exit: Popen has already given
         # the child its own duplicate of the handle, so the helper keeps
         # writing, and this process should not be holding the log open while
         # it waits to be ended.
-        account.close()
+        try:
+            account.close()
+        except OSError:
+            pass
     return pid
 
 
@@ -1428,13 +1466,15 @@ def cmd_restart_self(args) -> int:
         # _dispatch_restart documents as possible - never runs a line. The
         # cases this file exists to report are exactly the cases the helper is
         # not around for.
-        _record_attempt([cwd])
+        token = _new_attempt_token()
+        _record_attempt([cwd], token)
         try:
-            helper = _dispatch_restart(cwd, args.layout, after, helper_root)
+            helper = _dispatch_restart(cwd, args.layout, after, helper_root,
+                                       token)
         except Exception as exc:
             # Nothing was dispatched, so nothing is outstanding. Leaving it
             # would have the next `--self` report a helper that never existed.
-            _clear_attempts([cwd])
+            _clear_attempts([cwd], token)
             print(f"[warn] could not start the restart: {exc}")
             print(f"    Fall back to `reloaded restart --self --arm-only` and "
                   f"quit with {label}.")
@@ -1853,8 +1893,13 @@ def build_parser() -> argparse.ArgumentParser:
     # owner is sitting there watching - and left an attempt file per repo for
     # a failure they already saw. The comment saying "only --self sets this"
     # was true of intent and of nothing the parser enforced.
+    #
+    # A value rather than a flag, because the same argument answers "was this
+    # dispatched" and "by which dispatch": attempts are keyed by directory, so
+    # two overlapping `--self` calls share one file and a helper must be able
+    # to tell whether the record it is about to settle is its own.
     restart.add_argument(
-        "--dispatched", action="store_true", help=argparse.SUPPRESS,
+        "--attempt", default="", metavar="TOKEN", help=argparse.SUPPRESS,
     )
     restart.add_argument(
         "--dry-run", action="store_true", help="print what would be captured/exited/relaunched, do nothing"

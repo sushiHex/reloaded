@@ -114,6 +114,26 @@ def test_the_dispatch_is_announced_in_the_log(spawn):
     assert "4242" in text, "the helper's pid is how its lines are identified"
 
 
+def test_a_log_that_fills_after_the_spawn_is_not_a_spawn_failure(spawn,
+                                                                 monkeypatch):
+    """The helper is already running by then. Raising out of here would have
+    the caller clear the attempt file and tell the user to start another
+    restart, on top of the one now typing at their session. Codex review of
+    this branch."""
+    class _Full:
+        name = "full"
+
+        def write(self, text):
+            raise OSError("no space left on device")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(main_mod, "_open_account", lambda: _Full())
+
+    assert main_mod._dispatch_restart(CWD, "default", 5.0, r"C:\repos") == 4242
+
+
 def test_a_log_that_cannot_be_opened_does_not_stop_the_restart(monkeypatch,
                                                                tmp_path):
     """Losing the account is bad. Refusing to restart because the account
@@ -138,9 +158,12 @@ def test_a_log_that_cannot_be_opened_does_not_stop_the_restart(monkeypatch,
 
 def _args(**kw):
     d = {"layout": "default", "repos_root": r"C:\repos", "dry_run": False,
-         "after": 0.0, "force": False, "dispatched": False}
+         "after": 0.0, "force": False, "attempt": ""}
     d.update(kw)
     return types.SimpleNamespace(**d)
+
+
+TOKEN = "tok0123456789abc"
 
 
 @pytest.fixture
@@ -174,38 +197,52 @@ def restart_one(monkeypatch):
 
 
 def test_a_dispatched_restart_that_works_clears_the_attempt(restart_one):
-    main_mod._record_attempt([CWD])
+    main_mod._record_attempt([CWD], TOKEN)
 
-    main_mod.cmd_restart_one(_args(after=5.0, dispatched=True), [CWD])
+    main_mod.cmd_restart_one(_args(after=5.0, attempt=TOKEN), [CWD])
 
     assert not main_mod.restart_attempt(CWD).exists()
 
 
 def test_a_dispatched_restart_that_fails_leaves_its_attempt(restart_one):
     restart_one["came_back"] = False
-    main_mod._record_attempt([CWD])
+    main_mod._record_attempt([CWD], TOKEN)
 
-    main_mod.cmd_restart_one(_args(after=5.0, dispatched=True), [CWD])
+    main_mod.cmd_restart_one(_args(after=5.0, attempt=TOKEN), [CWD])
 
     assert main_mod.restart_attempt(CWD).exists(), (
         "nothing on disk says the restart did not happen")
+
+
+def test_a_helper_does_not_settle_a_later_helpers_attempt(restart_one):
+    """Attempts are keyed by directory, so a second `--self` for the same
+    repository overwrites the first's file. If the older helper — which may
+    have waited out a whole marker — then succeeds and clears it, and the
+    newer one dies, nothing is left to report the death this file exists for.
+    Codex review of this branch."""
+    main_mod._record_attempt([CWD], "the-newer-dispatch")
+
+    main_mod.cmd_restart_one(_args(after=5.0, attempt=TOKEN), [CWD])
+
+    assert main_mod.restart_attempt(CWD).exists(), (
+        "an older helper settled a record that was not its own")
 
 
 def test_a_refusal_before_any_keystroke_leaves_it_too(monkeypatch):
     """`_nothing_running_there` and `_no_tab_to_type_into` are exactly the
     silent failures the dispatcher's docstring warned about: the helper
     refuses into DEVNULL after the caller has already promised a restart."""
-    monkeypatch.setattr(main_mod.discover_mod, "sweep", lambda: ({}, {}))
-    main_mod._record_attempt([CWD])
+    monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: {})
+    main_mod._record_attempt([CWD], TOKEN)
 
-    assert main_mod.cmd_restart_one(_args(after=5.0, dispatched=True), [CWD]) == 1
+    assert main_mod.cmd_restart_one(_args(after=5.0, attempt=TOKEN), [CWD]) == 1
     assert main_mod.restart_attempt(CWD).exists()
 
 
-def test_a_restart_someone_is_watching_clears_nothing(restart_one):
+def test_a_restart_someone_is_watching_settles_nothing(restart_one):
     """Named from another tab, the failure is already on the caller's screen,
     and nothing dispatched it — so there is no attempt of its own to settle."""
-    main_mod._record_attempt([CWD])
+    main_mod._record_attempt([CWD], TOKEN)
 
     main_mod.cmd_restart_one(_args(), [CWD])
 
@@ -215,9 +252,9 @@ def test_a_restart_someone_is_watching_clears_nothing(restart_one):
 
 def test_a_dry_run_settles_nothing(restart_one, monkeypatch):
     monkeypatch.setattr(main_mod, "_preview_restart", lambda plans: None)
-    main_mod._record_attempt([CWD])
+    main_mod._record_attempt([CWD], TOKEN)
 
-    main_mod.cmd_restart_one(_args(after=5.0, dispatched=True, dry_run=True),
+    main_mod.cmd_restart_one(_args(after=5.0, attempt=TOKEN, dry_run=True),
                              [CWD])
 
     assert main_mod.restart_attempt(CWD).exists()
