@@ -446,6 +446,11 @@ def execute_down(
             # Only reached with a real pid, which plan_down could only have
             # produced via discover.live_sessions() - psutil is therefore
             # already imported, and imported again just above.
+            # What has actually gone out, which is what makes a cancel
+            # recallable or not. `sent.keys` is a count, not a promise: zero
+            # means the sequence stopped before its first key.
+            keys_out = sent.keys
+            too_late = False
             start = time.time()
             limit = EXIT_TIMEOUT_SECONDS if patience is None else patience
             deadline = start + limit
@@ -465,12 +470,36 @@ def execute_down(
                 # report that check exists to prevent. One `Path.exists()` per
                 # half-second, against a walk of the process table this file
                 # already refuses to do per tick. Codex review of this branch.
-                if wanted is not None and not wanted():
-                    log(f"    {title} was disarmed while waiting — not "
-                        f"restarted  [{cwd}]")
-                    disarmed.append((title, cwd))
-                    all_exited = False
-                    break
+                if wanted is not None and not wanted() and not too_late:
+                    if not keys_out:
+                        log(f"    {title} was disarmed while waiting — not "
+                            f"restarted  [{cwd}]")
+                        disarmed.append((title, cwd))
+                        all_exited = False
+                        break
+                    # A quit key is already in that tab and cannot be taken
+                    # back. Claude's `/exit` sits unsent in the prompt until
+                    # some Enter submits it - the user's own, later - and
+                    # Codex quits on the first interrupt, so it may be ending
+                    # already. Either way the marker has gone, so that exit
+                    # closes the tab instead of relaunching, and calling this
+                    # "disarmed" would report a session as safe while it
+                    # carries a quit nobody typed. Codex review of this branch.
+                    #
+                    # Nothing is retracted. This package cannot read that
+                    # screen, and typing more at a session it was just told to
+                    # stop typing at is how it would do real damage. It says
+                    # so instead, once, and keeps waiting.
+                    too_late = True
+                    stop_resending = now
+                    log(f"    [warn] {title} was disarmed after "
+                        f"{agent.quit_label} had already been sent — that "
+                        "cannot be recalled.")
+                    log(f"        Its marker has gone, so if it does exit its "
+                        f"tab closes rather than relaunching. Look at "
+                        f"{cwd}:")
+                    log(f"        a {agent.quit_label} may be sitting unsent "
+                        "in its prompt.")
                 if now >= deadline:
                     timed_out.append((title, cwd))
                     # Nothing is escalated here, ever. This package types and
@@ -508,6 +537,7 @@ def execute_down(
                     resent = _send_exit(plan.hwnd, item, dismiss_overlay=False,
                                         quit_keys=quit_keys, pid=pid,
                                         still_wanted=wanted)
+                    keys_out += resent.keys
                     if resent.reached and resent.keys:
                         # `keys` as well as `reached`, which is what the
                         # initial send above has always checked and this one

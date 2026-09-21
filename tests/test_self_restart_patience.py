@@ -179,31 +179,35 @@ def test_a_disarmed_send_is_not_reported_as_a_vanished_session(monkeypatch,
         "it waited out the whole marker for an exit nobody wanted")
 
 
-def test_a_disarm_after_the_keys_went_out_ends_the_wait(monkeypatch, clock):
-    """`--cancel` between Claude's `/exit` and its Enter leaves keys already
-    sent, so the zero-key exit never fires. Stopping only the resends left a
-    live session polled to the deadline and logged as a timeout — the
-    contradictory report the zero-key case exists to prevent, reached another
-    way. Codex review of this branch."""
+def test_a_disarm_during_the_wait_with_nothing_sent_ends_it(monkeypatch, clock):
+    """The other half of the tick's check. Nothing went out — the target could
+    not be typed at when its turn came — so a cancel during the wait is a
+    clean one and there is no reason to keep polling.
+
+    This test used to assert the opposite for a cancel that landed *after* a
+    key: that it ended the wait and counted as disarmed. It does not, and
+    saying so was how a session carrying an unsent `/exit` got reported as
+    safely called off. See the test below."""
     logs = []
     armed = {"yes": True}
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
     monkeypatch.setattr(teardown_mod.tabs, "tab_is_selected", lambda item: True)
     monkeypatch.setattr(teardown_mod.win32, "is_foreground", lambda hwnd: True)
-
-    def _keys(quit_keys, *, dismiss_overlay=True, still_needed=None):
-        armed["yes"] = False   # cancelled between this key and the next
-        return 1
-
-    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", _keys)
+    monkeypatch.setattr(
+        teardown_mod.tabs, "send_quit_keystrokes",
+        lambda keys, *, dismiss_overlay=True, still_needed=None: 0)
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
     start = clock["t"]
 
+    def _cancel_after_the_first_tick(cwd):
+        was, armed["yes"] = armed["yes"], False
+        return was
+
     result = teardown_mod.execute_down(
         [_plan()], log=logs.append,
         patience=deploy_mod.RESTART_MARKER_TTL_SECONDS,
-        still_wanted=lambda cwd: armed["yes"])
+        still_wanted=_cancel_after_the_first_tick)
 
     out = "\n".join(logs)
     assert "disarmed" in out
@@ -289,6 +293,83 @@ def test_a_hand_built_result_without_the_new_bucket_still_prints(capsys):
         {"exited": [], "timed_out": [], "closed": [], "left_open": []})
 
     assert "called off" not in capsys.readouterr().out
+
+
+def test_a_cancel_after_a_key_went_out_is_not_called_a_clean_cancel(monkeypatch,
+                                                                    clock):
+    """`--cancel` between Claude's `/exit` and its Enter leaves the word
+    sitting unsent in the prompt. The user's own next Enter submits it, the
+    marker has gone, and the tab closes instead of relaunching — while the
+    command reported the restart called off. Codex review of this branch."""
+    logs = []
+    armed = {"yes": True}
+    monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
+    monkeypatch.setattr(teardown_mod.tabs, "tab_is_selected", lambda item: True)
+    monkeypatch.setattr(teardown_mod.win32, "is_foreground", lambda hwnd: True)
+
+    def _keys(quit_keys, *, dismiss_overlay=True, still_needed=None):
+        armed["yes"] = False   # cancelled after `/exit`, before Enter
+        return 1
+
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", _keys)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+    monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
+
+    result = teardown_mod.execute_down(
+        [_plan()], log=logs.append,
+        patience=deploy_mod.RESTART_MARKER_TTL_SECONDS,
+        still_wanted=lambda cwd: armed["yes"])
+
+    out = "\n".join(logs)
+    assert result["disarmed"] == [], (
+        "a session carrying an unsent quit was reported as safely called off")
+    assert "cannot be recalled" in out
+    assert "sitting unsent" in out, "it never says what is left in the prompt"
+    assert "tab closes" in out, "it never says what that costs"
+
+
+def test_the_too_late_warning_is_said_once(monkeypatch, clock):
+    """It is polled twice a second for two minutes. Repeating it would bury
+    everything else in the account it is written to."""
+    logs = []
+    monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
+    monkeypatch.setattr(teardown_mod.tabs, "tab_is_selected", lambda item: True)
+    monkeypatch.setattr(teardown_mod.win32, "is_foreground", lambda hwnd: True)
+    monkeypatch.setattr(
+        teardown_mod.tabs, "send_quit_keystrokes",
+        lambda keys, *, dismiss_overlay=True, still_needed=None: 1)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+    monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
+
+    teardown_mod.execute_down(
+        [_plan()], log=logs.append,
+        patience=deploy_mod.RESTART_MARKER_TTL_SECONDS,
+        still_wanted=lambda cwd: False)
+
+    assert len([x for x in logs if "cannot be recalled" in x]) == 1
+
+
+def test_nothing_more_is_typed_after_a_late_cancel(monkeypatch, clock):
+    """It cannot take the key back. It can stop adding to it."""
+    sends = []
+    monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
+    monkeypatch.setattr(teardown_mod.tabs, "tab_is_selected", lambda item: True)
+    monkeypatch.setattr(teardown_mod.win32, "is_foreground", lambda hwnd: True)
+
+    def _keys(quit_keys, *, dismiss_overlay=True, still_needed=None):
+        sends.append(clock["t"])
+        return 1
+
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", _keys)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+    monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
+
+    teardown_mod.execute_down(
+        [_plan()], log=lambda *_: None,
+        patience=deploy_mod.RESTART_MARKER_TTL_SECONDS,
+        still_wanted=lambda cwd: False)
+
+    assert len(sends) == 1, "it kept resending after the cancel came too late"
 
 
 def test_a_session_that_really_went_is_still_reported_as_gone(monkeypatch,
