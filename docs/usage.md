@@ -122,6 +122,12 @@ recognized targets and exited; ordinary tabs or unresponsive sessions keep it
 open. Quit attempts wait up to 20 seconds per session and include a retry.
 Prompts or active work may consume the keystrokes instead of exiting.
 
+A restart dispatched by `--self` is the exception, because it is aimed at a
+session that is by construction in the middle of a turn. It waits as long as
+its restart marker can still deliver — two minutes — resending every twenty
+seconds and then going quiet well before the deadline, so that a session acting
+on a late keystroke does not exit after the marker has gone stale.
+
 Full `restart` saves a fresh capture **before** teardown, then deploys it and
 skips sessions that stayed alive. If that capture loses a repository that is
 still running — a window that read as empty rather than a session that went
