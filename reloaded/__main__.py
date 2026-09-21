@@ -1562,6 +1562,15 @@ def cmd_restart_self(args) -> int:
         print("\nDry run — nothing written.")
         return 0
 
+    # The crowding refusal above is a snapshot, and this file outlives it by
+    # two minutes. A second reloaded tab opened in this directory before the
+    # user quits gets a shell watching this very marker, and whichever exits
+    # first consumes it - the same wrong-session relaunch, through a window the
+    # scan cannot see. Not closable here: a marker names a directory, because
+    # `deploy.restart_loop` bakes that path into PowerShell that is already
+    # running in every open tab and cannot be updated for them. See #37, and
+    # the "no generation or nonce" note in docs/architecture.md that this is
+    # one consequence of. Codex review of this branch.
     try:
         marker.write_text("restart", encoding="utf-8")
     except OSError as exc:

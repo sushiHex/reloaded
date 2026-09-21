@@ -44,6 +44,13 @@ either. Every reloaded shell in that directory watches the same file, so
 whichever exits first consumes it — relaunching the other session and then
 closing the caller's tab when its own quit finds nothing left to read.
 
+That refusal is a snapshot, and an armed marker outlives it by two minutes. A
+second session opened in the same directory before the caller quits reaches the
+same hazard through a window the scan cannot see. Closing it needs a marker
+that names a session rather than a directory, which the launcher's generated
+PowerShell cannot be given retroactively — it is already running in every open
+tab.
+
 ## Capture and placement
 
 `layout.py` stores windows, ordered tabs, monitor identifiers, DPI, and pixel
