@@ -44,7 +44,7 @@ def _plan(*cwds):
 
 def _args(**kw):
     d = {"layout": "default", "repos_root": r"C:\repos", "dry_run": False,
-         "after": 0.0, "force": False, "dispatched": False}
+         "after": 0.0, "force": False, "attempt": ""}
     d.update(kw)
     return types.SimpleNamespace(**d)
 
@@ -171,7 +171,7 @@ def test_self_does_not_send_a_hand_started_session_somewhere_it_will_refuse(
 
     rc = main_mod.cmd_restart(types.SimpleNamespace(
         layout="default", repos_root=r"C:\repos", dry_run=False, repos=[],
-        self_=True, cancel=False, arm_only=False, after=0.0, dispatched=False))
+        self_=True, cancel=False, arm_only=False, after=0.0, attempt=""))
 
     out = capsys.readouterr().out
     assert rc == 1
@@ -219,7 +219,7 @@ def test_a_dispatch_from_a_shared_directory_is_refused_before_it_spawns(
 def test_that_refusal_leaves_no_attempt_behind(self_in_a_shared_directory):
     main_mod.cmd_restart(_self_args())
 
-    assert not main_mod.restart_attempt(SHARED).exists()
+    assert not main_mod.restart_attempts(SHARED)
 
 
 def test_the_dry_run_does_not_preview_something_that_cannot_happen(
@@ -276,6 +276,6 @@ def test_self_still_gives_the_normal_advice_in_a_directory_of_its_own(
 
     main_mod.cmd_restart(types.SimpleNamespace(
         layout="default", repos_root=r"C:\repos", dry_run=False, repos=[],
-        self_=True, cancel=False, arm_only=False, after=0.0, dispatched=False))
+        self_=True, cancel=False, arm_only=False, after=0.0, attempt=""))
 
     assert "restart <repo>" in capsys.readouterr().out
