@@ -166,7 +166,8 @@ def test_a_disarmed_send_is_not_reported_as_a_vanished_session(monkeypatch,
     out = "\n".join(logs)
     assert "disarmed" in out
     assert "had already gone" not in out, "a live session reported as vanished"
-    assert result["timed_out"] == [("app", CWD)]
+    assert result["disarmed"] == [("app", CWD)]
+    assert result["timed_out"] == [], "a cancel counted as a timeout"
     assert clock["t"] - start < deploy_mod.RESTART_MARKER_TTL_SECONDS, (
         "it waited out the whole marker for an exit nobody wanted")
 
@@ -200,8 +201,35 @@ def test_a_disarm_after_the_keys_went_out_ends_the_wait(monkeypatch, clock):
     out = "\n".join(logs)
     assert "disarmed" in out
     assert "did not exit within" not in out, "it reported a timeout for a cancel"
-    assert result["timed_out"] == [("app", CWD)]
+    assert result["disarmed"] == [("app", CWD)]
+    assert result["timed_out"] == [], "a cancel counted as a timeout"
     assert clock["t"] - start < deploy_mod.RESTART_MARKER_TTL_SECONDS
+
+
+def test_a_cancel_is_never_printed_as_a_missed_deadline(capsys):
+    """`_print_down_result` renders `timed_out` as "did not exit in time", and
+    `cmd_restart_one` routes it to `_report_never_exited`. A session called
+    off on purpose is neither, so putting it in that bucket relocated the
+    contradictory report rather than removing it. Codex review of this
+    branch."""
+    main_mod._print_down_result(
+        {"exited": [], "timed_out": [], "closed": [], "left_open": [],
+         "disarmed": [("app", CWD)]},
+        timed_out_note=" — not restarted")
+
+    out = capsys.readouterr().out
+    assert "called off" in out
+    assert "did not exit in time" not in out
+
+
+def test_a_hand_built_result_without_the_new_bucket_still_prints(capsys):
+    """Every other caller of `execute_down` passes no `still_wanted` and can
+    never produce one, and the suite builds this dict by hand in a dozen
+    places."""
+    main_mod._print_down_result(
+        {"exited": [], "timed_out": [], "closed": [], "left_open": []})
+
+    assert "called off" not in capsys.readouterr().out
 
 
 def test_a_session_that_really_went_is_still_reported_as_gone(monkeypatch,

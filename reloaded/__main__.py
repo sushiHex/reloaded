@@ -70,6 +70,13 @@ def _print_down_result(result: dict, *, timed_out_note: str = "") -> None:
         print(f"[warn] {len(result['timed_out'])} session(s) did not exit in time{timed_out_note}:")
         for title, cwd in result["timed_out"]:
             print(f"    - {title}  [{cwd}]")
+    # `.get`, because callers in the suite build this dict by hand and a
+    # teardown that was never given `still_wanted` cannot produce one.
+    if result.get("disarmed"):
+        print(f"{len(result['disarmed'])} session(s) called off before they "
+              "were restarted:")
+        for title, cwd in result["disarmed"]:
+            print(f"    - {title}  [{cwd}]")
     if result["left_open"]:
         print(f"{len(result['left_open'])} window(s) left open (see warnings above).")
 
@@ -826,9 +833,18 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     _print_down_result(down, timed_out_note=" — not restarted")
 
     stuck = {norm(cwd) for _t, cwd in down["timed_out"]}
+    called_off = {norm(cwd) for _t, cwd in down.get("disarmed", ())}
     print("\nWaiting for them to come back...")
     failed = False
     for s in sessions:
+        if s.key in called_off:
+            # Not routed to `_report_never_exited`, which would say "never
+            # exited" about a session nobody finished asking, and then read a
+            # marker that was deliberately removed. And not a failure: the
+            # cancel is a request, and this is it being honoured.
+            print(f"    {s.cwd} was called off — still running as pid "
+                  f"{s.pid}, not restarted")
+            continue
         if s.key in stuck:
             came_back = _report_never_exited(s)
         elif s.launcher == discover_mod.HAND:

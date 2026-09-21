@@ -373,6 +373,12 @@ def execute_down(
     """
     exited: list[tuple[str, str]] = []
     timed_out: list[tuple[str, str]] = []
+    # Its own bucket, not a kind of timeout. `timed_out` is read by
+    # `_print_down_result` as "did not exit in time" and by `cmd_restart_one`
+    # as "route this to _report_never_exited", and a session called off on
+    # purpose is neither. Putting it there relocated the contradictory report
+    # rather than removing it. Codex review of this branch.
+    disarmed: list[tuple[str, str]] = []
     closed: list[int] = []
     left_open: list[int] = []
 
@@ -419,7 +425,7 @@ def execute_down(
                 # Codex review of this branch.
                 log(f"    {title} was disarmed before any quit key was sent "
                     f"— not restarted  [{cwd}]")
-                timed_out.append((title, cwd))
+                disarmed.append((title, cwd))
                 all_exited = False
                 continue
             else:
@@ -461,7 +467,7 @@ def execute_down(
                 if wanted is not None and not wanted():
                     log(f"    {title} was disarmed while waiting — not "
                         f"restarted  [{cwd}]")
-                    timed_out.append((title, cwd))
+                    disarmed.append((title, cwd))
                     all_exited = False
                     break
                 if now >= deadline:
@@ -571,6 +577,7 @@ def execute_down(
     return {
         "exited": exited,
         "timed_out": timed_out,
+        "disarmed": disarmed,
         "closed": closed,
         "left_open": left_open,
     }
