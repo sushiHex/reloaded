@@ -328,6 +328,32 @@ def test_a_cancel_after_a_key_went_out_is_not_called_a_clean_cancel(monkeypatch,
     assert "tab closes" in out, "it never says what that costs"
 
 
+def test_a_codex_tab_is_not_told_to_look_for_unsent_text(monkeypatch, clock):
+    """An interrupt is not buffered text. It arrived, and something happened —
+    the quit chord, a cancelled review, a return to the main thread — none of
+    which leaves anything sitting in a prompt. Codex review of this branch."""
+    logs = []
+    monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
+    monkeypatch.setattr(teardown_mod.tabs, "tab_is_selected", lambda item: True)
+    monkeypatch.setattr(teardown_mod.win32, "is_foreground", lambda hwnd: True)
+    monkeypatch.setattr(
+        teardown_mod.tabs, "send_quit_keystrokes",
+        lambda keys, *, dismiss_overlay=True, still_needed=None: 1)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+    monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
+
+    teardown_mod.execute_down(
+        [_plan()], log=logs.append,
+        patience=deploy_mod.RESTART_MARKER_TTL_SECONDS,
+        kinds={main_mod.norm(CWD): "codex"},
+        still_wanted=lambda cwd: False)
+
+    out = "\n".join(logs)
+    assert "sitting unsent" not in out, "an interrupt described as prompt text"
+    assert "already reached it" in out
+    assert "cancelled a review" in out, "it never says the session may live"
+
+
 def test_the_too_late_warning_is_said_once(monkeypatch, clock):
     """It is polled twice a second for two minutes. Repeating it would bury
     everything else in the account it is written to."""

@@ -202,10 +202,13 @@ dispatched helper has got to. There are three outcomes:
 - **Armed, nothing typed yet**, it works. The helper re-reads the marker before
   every keystroke and on every poll, so it stops and leaves the session running.
 - **After it has typed a quit key**, it is too late. That key cannot be
-  recalled — Claude's `/exit` sits unsent in the prompt until some Enter
-  submits it, and Codex quits on the first interrupt — and because the marker
-  has now gone, the exit it causes closes the tab instead of relaunching it.
-  The helper says so and stops adding to it, but the tab needs looking at.
+  recalled, and because the marker has now gone, an exit it causes closes the
+  tab instead of relaunching it. The helper says so and stops adding to it, but
+  the tab needs looking at. What is waiting there differs by agent: Claude's
+  `/exit` is buffered text that your own next Enter would submit, while an
+  interrupt sent to Codex has already been acted on — raising its quit chord,
+  or cancelling a review, or returning it to the main thread, which are not
+  distinguishable from outside.
 
 Likewise, a timed-out named restart may still relaunch if the agent exits
 before its marker expires. Do not delete restart markers manually while another

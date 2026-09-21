@@ -1371,8 +1371,8 @@ def cmd_restart_self(args) -> int:
               "recalled, and without")
         print("         this marker the exit it causes closes the tab "
               "instead of relaunching.")
-        print(f"         Look at {cwd}: {label} may be sitting unsent in its "
-              "prompt.)")
+        print(f"         Look at {cwd}:")
+        print(f"         {agents_mod.for_kind(kind).unsent_quit}.)")
         return 0
 
     ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS

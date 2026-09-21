@@ -504,8 +504,7 @@ def execute_down(
                     log(f"        Its marker has gone, so if it does exit its "
                         f"tab closes rather than relaunching. Look at "
                         f"{cwd}:")
-                    log(f"        a {agent.quit_label} may be sitting unsent "
-                        "in its prompt.")
+                    log(f"        {agent.unsent_quit}.")
                 if now >= deadline:
                     timed_out.append((title, cwd))
                     # Nothing is escalated here, ever. This package types and
