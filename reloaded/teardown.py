@@ -450,6 +450,20 @@ def execute_down(
                               else deadline - EXIT_RESEND_CUTOFF_SECONDS)
             while psutil.pid_exists(pid):
                 now = time.time()
+                # Asked every tick rather than only when a resend is due. A
+                # `--cancel` between Claude's `/exit` and its Enter leaves keys
+                # already sent, so the zero-key exit above never fires, and
+                # stopping only the resends left a live session polled to the
+                # deadline and then logged as a timeout - the contradictory
+                # report that check exists to prevent. One `Path.exists()` per
+                # half-second, against a walk of the process table this file
+                # already refuses to do per tick. Codex review of this branch.
+                if wanted is not None and not wanted():
+                    log(f"    {title} was disarmed while waiting — not "
+                        f"restarted  [{cwd}]")
+                    timed_out.append((title, cwd))
+                    all_exited = False
+                    break
                 if now >= deadline:
                     timed_out.append((title, cwd))
                     # Nothing is escalated here, ever. This package types and
@@ -472,12 +486,10 @@ def execute_down(
                     all_exited = False
                     break
                 if resend_at <= now < stop_resending:
-                    if still_wanted is not None and not still_wanted(cwd):
-                        log(f"    {title} is no longer armed — not asking it "
-                            "to quit again")
-                        stop_resending = now
-                        time.sleep(EXIT_POLL_SECONDS)
-                        continue
+                    # No disarm check here any more: the tick above has already
+                    # made one this half-second, and it breaks rather than
+                    # merely declining to knock.
+                    #
                     # Scheduled forward rather than latched off, so a caller
                     # with patience knocks again and one without never does.
                     resend_at = (float("inf") if patience is None

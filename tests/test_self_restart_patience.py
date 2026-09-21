@@ -171,6 +171,39 @@ def test_a_disarmed_send_is_not_reported_as_a_vanished_session(monkeypatch,
         "it waited out the whole marker for an exit nobody wanted")
 
 
+def test_a_disarm_after_the_keys_went_out_ends_the_wait(monkeypatch, clock):
+    """`--cancel` between Claude's `/exit` and its Enter leaves keys already
+    sent, so the zero-key exit never fires. Stopping only the resends left a
+    live session polled to the deadline and logged as a timeout — the
+    contradictory report the zero-key case exists to prevent, reached another
+    way. Codex review of this branch."""
+    logs = []
+    armed = {"yes": True}
+    monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
+    monkeypatch.setattr(teardown_mod.tabs, "tab_is_selected", lambda item: True)
+    monkeypatch.setattr(teardown_mod.win32, "is_foreground", lambda hwnd: True)
+
+    def _keys(quit_keys, *, dismiss_overlay=True, still_needed=None):
+        armed["yes"] = False   # cancelled between this key and the next
+        return 1
+
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", _keys)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+    monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
+    start = clock["t"]
+
+    result = teardown_mod.execute_down(
+        [_plan()], log=logs.append,
+        patience=deploy_mod.RESTART_MARKER_TTL_SECONDS,
+        still_wanted=lambda cwd: armed["yes"])
+
+    out = "\n".join(logs)
+    assert "disarmed" in out
+    assert "did not exit within" not in out, "it reported a timeout for a cancel"
+    assert result["timed_out"] == [("app", CWD)]
+    assert clock["t"] - start < deploy_mod.RESTART_MARKER_TTL_SECONDS
+
+
 def test_a_session_that_really_went_is_still_reported_as_gone(monkeypatch,
                                                               clock):
     """The other cause, unchanged: zero keys because the target had already
