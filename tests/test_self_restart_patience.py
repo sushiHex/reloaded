@@ -220,7 +220,8 @@ def restart_one(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod, "_warn_about_empty_relaunches", lambda s: None)
     monkeypatch.setattr(main_mod, "_print_down_result", lambda *a, **k: None)
     monkeypatch.setattr(main_mod, "_await_relaunch", lambda s, before: True)
-    monkeypatch.setattr(main_mod, "restart_attempt", lambda cwd: tmp_path / "a")
+    monkeypatch.setattr(main_mod, "restart_attempt",
+                        lambda cwd, token: tmp_path / f"{token}.a")
 
     def _execute_down(plans, **kw):
         asked["patience"] = kw.get("patience")

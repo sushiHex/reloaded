@@ -27,6 +27,7 @@ from .paths import (
     relaunch_script_path,
     resolve_repo,
     restart_attempt,
+    restart_attempts,
     restart_marker,
     restart_marker_dir,
 )
@@ -878,15 +879,15 @@ def _record_attempt(cwds: list[str], token: str) -> None:
 
     Presence is the signal for "still outstanding", so a helper killed outright
     still reports correctly - the case a written verdict would miss entirely.
-    The token is not a verdict: it is whose attempt this is, and it exists only
-    so the clear below cannot settle somebody else's.
+    The contents are only a timestamp, for the report; the token that makes one
+    dispatch's record its own is in the filename.
     """
     import time
 
     for cwd in cwds:
         try:
-            restart_attempt(cwd).write_text(
-                f"{time.time():.0f} {token}", encoding="utf-8")
+            restart_attempt(cwd, token).write_text(
+                f"{time.time():.0f}", encoding="utf-8")
         except OSError:
             # Same rule as the log: bookkeeping must never fail the restart it
             # is bookkeeping for.
@@ -896,18 +897,15 @@ def _record_attempt(cwds: list[str], token: str) -> None:
 def _clear_attempts(cwds: list[str], token: str) -> None:
     """Settle this dispatch's records, and only this dispatch's.
 
-    Attempts are keyed by directory, so a second `--self` for the same
-    repository overwrites the first's file. Clearing unconditionally then lets
-    the older helper - which may finish later, having waited out a marker -
-    delete the newer one's record, and if that newer helper dies there is
-    nothing left to report it. Which is the one thing this file is for.
+    One path per dispatch, so this is a delete and not a compare-then-delete.
+    Reading a token out of a shared file first left a window in which a newer
+    dispatch could take that path over between the check and the unlink, and
+    the older helper would delete the newer one's record after all - the same
+    loss, made rarer rather than removed.
     """
     for cwd in cwds:
-        path = restart_attempt(cwd)
         try:
-            if path.read_text(encoding="utf-8").split(" ")[-1] != token:
-                continue
-            path.unlink(missing_ok=True)
+            restart_attempt(cwd, token).unlink(missing_ok=True)
         except OSError:
             pass
 
@@ -927,12 +925,15 @@ def _previous_attempt(cwd: str) -> None:
     """
     import datetime
 
-    path = restart_attempt(cwd)
-    if not path.exists():
+    outstanding = restart_attempts(cwd)
+    if not outstanding:
         return
+    # The newest, because that is the one whose promise is still ringing. Older
+    # ones are cleared below without being narrated: a list of every restart
+    # that ever went unreported is a worse answer than the last one.
+    path = outstanding[-1]
     try:
-        when, _, _ = path.read_text(encoding="utf-8").partition(" ")
-        stamp = float(when)
+        stamp = float(path.read_text(encoding="utf-8").strip())
     except (OSError, ValueError):
         # An unreadable attempt is still an attempt. Falling silent here would
         # turn the one case where the helper died hardest into the one case
@@ -943,10 +944,11 @@ def _previous_attempt(cwd: str) -> None:
     print(f"The last restart of this session, dispatched at {at}, never "
           "reported back.")
     print(f"    What it did get to say is in {log_path()}.")
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        pass
+    for stale in outstanding:
+        try:
+            stale.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _nothing_running_there(cwds, live) -> str:

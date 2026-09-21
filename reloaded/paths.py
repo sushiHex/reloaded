@@ -82,7 +82,7 @@ def relaunch_script_path(cwd: str) -> pathlib.Path:
     return d / f"{_digest(cwd)}.ps1"
 
 
-def restart_attempt(cwd: str) -> pathlib.Path:
+def restart_attempt(cwd: str, token: str) -> pathlib.Path:
     """What a restart dispatched by `--self` leaves behind until it succeeds.
 
     `--self` cannot watch its own restart: it dies with the session it ends, so
@@ -95,10 +95,27 @@ def restart_attempt(cwd: str) -> pathlib.Path:
     whole signal - nothing parses the contents - which is what makes a helper
     that was killed outright report correctly rather than not at all.
 
+    `token` names one dispatch and is in the FILENAME, not the contents. Two
+    overlapping `--self` calls for one repository would otherwise share a path:
+    the older helper, finishing late, would settle the newer one's record, and
+    if that newer helper then died there would be nothing left to report it.
+    Carrying the token inside the file made that a read-then-delete race
+    instead of a fix. A path of its own has no such window - each helper
+    deletes exactly the file it was given and looks at nobody else's.
+
     Beside the marker, and deliberately not named `.marker`: `_sweep_stale_markers`
     globs that suffix, and an attempt outlives the marker's TTL on purpose.
     """
-    return restart_marker_dir() / f"{_digest(cwd)}.attempt"
+    return restart_marker_dir() / f"{_digest(cwd)}.{token}.attempt"
+
+
+def restart_attempts(cwd: str) -> list:
+    """Every dispatched restart of `cwd` still outstanding, newest last."""
+    try:
+        found = restart_marker_dir().glob(f"{_digest(cwd)}.*.attempt")
+        return sorted(found, key=lambda p: p.stat().st_mtime)
+    except OSError:
+        return []
 
 
 def restart_marker(cwd: str) -> pathlib.Path:
