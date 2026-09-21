@@ -191,7 +191,8 @@ def self_in_a_shared_directory(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod.discover_mod, "crowded_dirs",
                         lambda: {norm(SHARED): ["claude", "codex"]})
     monkeypatch.setattr(main_mod, "_dispatch_restart",
-                        lambda *a, **k: spawned.append(a) or 4242)
+                        lambda *a, **k: spawned.append(a) or main_mod.Dispatched(
+                            pid=4242, account=True))
     return spawned
 
 
@@ -253,7 +254,8 @@ def test_a_dispatch_from_a_directory_of_its_own_still_works(monkeypatch,
     monkeypatch.setattr(main_mod, "restart_marker", lambda cwd: tmp_path / "m")
     monkeypatch.setattr(main_mod.discover_mod, "crowded_dirs", lambda: {})
     monkeypatch.setattr(main_mod, "_dispatch_restart",
-                        lambda *a, **k: spawned.append(a) or 4242)
+                        lambda *a, **k: spawned.append(a) or main_mod.Dispatched(
+                            pid=4242, account=True))
 
     assert main_mod.cmd_restart(_self_args()) == 0
     assert len(spawned) == 1
