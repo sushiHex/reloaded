@@ -195,12 +195,17 @@ reloaded restart --self --cancel
 ```
 
 Cancellation clears only the marker, and what that achieves depends on where a
-dispatched helper has got to. The helper arms this same marker when it reaches
-your tab, and it checks the marker before every keystroke and on every poll
-afterwards — so removing it at that point does call the restart off: the helper
-stops typing and leaves the session running. Removing it during the helper's
-opening delay changes nothing, because there is nothing armed yet and the
-helper will arm and proceed.
+dispatched helper has got to. There are three outcomes:
+
+- **During its opening delay**, nothing. Nothing is armed yet, and the helper
+  will arm and proceed as though the cancel had not happened.
+- **Armed, nothing typed yet**, it works. The helper re-reads the marker before
+  every keystroke and on every poll, so it stops and leaves the session running.
+- **After it has typed a quit key**, it is too late. That key cannot be
+  recalled — Claude's `/exit` sits unsent in the prompt until some Enter
+  submits it, and Codex quits on the first interrupt — and because the marker
+  has now gone, the exit it causes closes the tab instead of relaunching it.
+  The helper says so and stops adding to it, but the tab needs looking at.
 
 Likewise, a timed-out named restart may still relaunch if the agent exits
 before its marker expires. Do not delete restart markers manually while another

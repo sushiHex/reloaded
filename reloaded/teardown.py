@@ -371,6 +371,12 @@ def execute_down(
     One knock was a small window for that; a window as long as the marker's
     life needs a way to notice. Asking this often is also what makes the cancel
     work at all on a dispatched helper, which is otherwise beyond recall.
+
+    A False answer *after* a key has gone out is a different outcome again: the
+    key cannot be recalled, so the wait continues, nothing more is typed, and
+    the target is not counted as cleanly disarmed. Nothing is retracted - this
+    cannot read the screen, and typing more at a session it was told to stop
+    typing at is how it would do real damage.
     """
     exited: list[tuple[str, str]] = []
     timed_out: list[tuple[str, str]] = []

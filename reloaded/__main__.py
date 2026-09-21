@@ -866,6 +866,10 @@ def _still_armed(cwd: str) -> bool:
     now as long as the marker's life, so the helper asks - before every key and
     on every poll, which is why a cancel after arming genuinely stops one.
 
+    Up to the point it has typed. After that the key is out, the cancel cannot
+    recall it, and `execute_down` reports that as its own outcome rather than
+    as a clean stop.
+
     The marker being gone *while the session is still running* has one cause.
     The shell only consumes it after its agent exits, and by then the poll that
     calls this has already ended.
@@ -1349,17 +1353,26 @@ def cmd_restart_self(args) -> int:
         # This used to say a dispatched restart could not be called off at all.
         # That was true when nothing consulted the marker again after arming;
         # the helper now asks before every key and on every poll, so removing
-        # it does stop one - but only once there is one to remove. Which of the
-        # two a user is in depends on where the helper is, and this command
-        # cannot see that, so it says both rather than picking the flattering
-        # one. Codex review of this branch.
+        # it does stop one - but only once there is one to remove, and only
+        # until it has typed. Three outcomes, and this command cannot see which
+        # one it is in, so it says all three rather than the flattering one.
+        # The third is the dangerous one and was missing for a round: a quit
+        # key already sent cannot be recalled, and the marker this just removed
+        # is what would have turned the resulting exit into a relaunch.
+        # Codex review of this branch.
         print("    (A restart dispatched by `--self` runs outside this "
-              "session and arms this same marker")
-        print("     when it reaches your tab. Removing it after that does "
-              "call it off: it stops typing")
-        print("     and leaves the session running. Removing it before that "
-              "changes nothing — the helper")
-        print("     is still in its opening delay and will arm and proceed.)")
+              "session. What removing this")
+        print("     marker does depends on where it has got to:")
+        print("       still in its opening delay — nothing. It will arm and "
+              "proceed.")
+        print(f"       armed, nothing typed yet — it stops, and leaves the "
+              f"session running.")
+        print(f"       already typed {label} — too late. That key cannot be "
+              "recalled, and without")
+        print("         this marker the exit it causes closes the tab "
+              "instead of relaunching.")
+        print(f"         Look at {cwd}: {label} may be sitting unsent in its "
+              "prompt.)")
         return 0
 
     ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS
@@ -1822,7 +1835,8 @@ def build_parser() -> argparse.ArgumentParser:
     restart.add_argument(
         "--cancel", action="store_true",
         help="with --self, remove the restart marker: disarms a waiting "
-             "--arm-only, and calls off a dispatched helper once it has armed",
+             "--arm-only, and calls off a dispatched helper once it has armed "
+             "and before it has typed",
     )
     restart.add_argument(
         "--after", type=float, default=0.0, metavar="SECONDS",

@@ -547,8 +547,10 @@ def test_cancel_says_what_it_does_to_a_dispatched_restart(session, capsys):
     main_mod.cmd_restart(_args(cancel=True))
 
     out = capsys.readouterr().out
-    assert "does call it off" in out, "it never says a cancel can work"
-    assert "changes nothing" in out, "it never says when a cancel cannot work"
+    assert "it stops" in out, "it never says a cancel can work"
+    assert "nothing. It will arm" in out, "it never says when it does nothing"
+    assert "too late" in out, "it never says when the cancel arrives too late"
+    assert "closes the tab" in out, "it never says what too late costs"
     assert "opening delay" in out, "it never says which case is which"
 
 
