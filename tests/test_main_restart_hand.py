@@ -49,6 +49,8 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod, "layout_path", lambda n: tmp_path / "l.json")
     monkeypatch.setattr(main_mod.discover_mod, "transcript_index", lambda *a, **k: {})
     monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: dict(w["pids"]))
+    monkeypatch.setattr(main_mod.discover_mod, "sweep",
+                        lambda: (main_mod.discover_mod.live_sessions(), {}))
     monkeypatch.setattr(main_mod.discover_mod, "launcher_kind",
                         lambda pid: w["kinds"][
                             next(c for c, p in w["pids"].items() if p == pid)])

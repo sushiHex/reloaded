@@ -51,6 +51,8 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod.discover_mod, "transcript_index", lambda *a, **k: {})
     monkeypatch.setattr(main_mod.discover_mod, "live_sessions",
                         lambda: {norm(CWD): 111} if 111 in w["alive"] else {})
+    monkeypatch.setattr(main_mod.discover_mod, "sweep",
+                        lambda: (main_mod.discover_mod.live_sessions(), {}))
     monkeypatch.setattr(main_mod.discover_mod, "live_agents",
                         lambda: {norm(CWD): "codex"})
     monkeypatch.setattr(main_mod.discover_mod, "launcher_kind", lambda pid: HAND)

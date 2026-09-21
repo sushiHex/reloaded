@@ -26,9 +26,30 @@ restore brings back one session, whichever kind was recorded. `status` names any
 directory hosting more than one agent, because the loss is otherwise discovered
 only at the next logon. It is reported there rather than during capture, which
 the reconcile runs every five minutes and which would then pay a second process
-sweep forever. A restored layout records an agent kind and command,
-not a separate conversation ID. See [Codex session identity](codex-session-identity.md)
+sweep forever. A restored layout records an agent kind and command, not a
+separate conversation ID. See [Codex session identity](codex-session-identity.md)
 for the investigation and limits of reconstructing identities from rollout files.
+
+`restart <repo>` refuses such a directory outright, and refuses the whole batch
+rather than the one repository. Two independent choices go into a target —
+discovery keeps the last process enumerated at a cwd, `plan_down` keeps the
+first tab that resolves to it — so the result can carry one session's pid
+beside another session's tab: the quit keys reach one, the wait watches the
+other, and the outcome is reported against the wrong one. `restart --self`
+refuses for the same reason before dispatching, since its helper would
+otherwise reach that refusal inside a detached process after the calling
+session had been told it was coming back. `--arm-only` refuses too, for a
+different reason: arming needs no tab, but the marker does not name a session
+either. Every reloaded shell in that directory watches the same file, so
+whichever exits first consumes it — relaunching the other session and then
+closing the caller's tab when its own quit finds nothing left to read.
+
+That refusal is a snapshot, and an armed marker outlives it by two minutes. A
+second session opened in the same directory before the caller quits reaches the
+same hazard through a window the scan cannot see. Closing it needs a marker
+that names a session rather than a directory, which the launcher's generated
+PowerShell cannot be given retroactively — it is already running in every open
+tab.
 
 ## Capture and placement
 

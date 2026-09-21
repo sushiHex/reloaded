@@ -46,6 +46,12 @@ def session(monkeypatch, tmp_path):
     monkeypatch.setattr(discover_mod, "launcher_kind",
                         lambda pid: state["launcher"])
     monkeypatch.setattr(main_mod, "restart_marker", lambda cwd: state["marker"])
+    # Both `--self` paths now ask whether this directory is shared, which is a
+    # full walk of the process table. Unstubbed it costs seconds per test and
+    # makes the answer depend on what the developer has open — the shape that
+    # took three teardown files from 0.70s to 28.40s in #14 while staying
+    # green. The shared-directory behaviour has its own file.
+    monkeypatch.setattr(main_mod.discover_mod, "crowded_dirs", lambda: {})
     return state
 
 

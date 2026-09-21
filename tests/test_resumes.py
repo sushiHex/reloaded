@@ -122,6 +122,8 @@ def test_the_warning_comes_before_anything_is_exited(monkeypatch, capsys):
                                 "app", r"C:\repos\app", 111, object())])])
     monkeypatch.setattr(main_mod.discover_mod, "live_sessions",
                         lambda: {main_mod.norm(r"C:\repos\app"): 111})
+    monkeypatch.setattr(main_mod.discover_mod, "sweep",
+                        lambda: (main_mod.discover_mod.live_sessions(), {}))
     monkeypatch.setattr(main_mod, "_snapshot_restarts", lambda p, a: [_session()])
     monkeypatch.setattr(main_mod, "_sweep_stale_markers", lambda: None)
     monkeypatch.setattr(main_mod, "resolve_repo", lambda r, root: r"C:\repos\app")

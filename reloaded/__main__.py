@@ -788,9 +788,17 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     # there watching.
     dispatched = getattr(args, "dispatched", False) and not args.dry_run
 
-    live = discover_mod.live_sessions()
+    # Both halves of one walk. Asking `live_sessions()` and `crowded_dirs()`
+    # separately pays two full process_iter sweeps for one question - 1.47s
+    # each against 679 processes on the machine this was measured on.
+    live, crowded = discover_mod.sweep()
 
     refusal = _nothing_running_there(cwds, live)
+    if refusal:
+        print(refusal)
+        return 1
+
+    refusal = _shared_directory(cwds, crowded)
     if refusal:
         print(refusal)
         return 1
@@ -884,6 +892,57 @@ def _nothing_running_there(cwds, live) -> str:
         return ""
     return "\n".join([f"Not running: {c}" for c in missing]
                      + ["", "`reloaded status` lists the live sessions."])
+
+
+def _shared_with(cwd: str) -> list | None:
+    """The agent kinds sharing `cwd`, or None when it holds one session.
+
+    A full `process_iter` walk, so it is asked only where the answer changes
+    what happens - never on `--arm-only`, which needs no tab and is the one
+    restart a shared directory cannot confuse.
+    """
+    return discover_mod.crowded_dirs().get(norm(cwd))
+
+
+def _shared_directory(cwds, crowded) -> str:
+    """Why this batch cannot be aimed, or "" if every repo holds one session.
+
+    Two agents in one directory are one entry everywhere downstream, and the
+    two choices that produce a target are made independently: `_sessions` keeps
+    the last process enumerated at a cwd, `plan_down` keeps the first tab that
+    resolves to it and says in its own log that which one cannot be
+    established. The `Target` can therefore carry one session's pid beside
+    another session's tab - quit keys to one, the wait watching the other, the
+    outcome reported against the wrong one.
+
+    `status` already names these directories. This is the command that types.
+
+    Refused whole rather than per repo, matching `_no_tab_to_type_into`: acting
+    on the resolvable subset restarts some, skips the rest without a word, and
+    returns 0.
+
+    Counted, not compared: two Claude sessions are exactly as unidentifiable as
+    a Claude and a Codex. Refusing only the mixed pair would answer the example
+    rather than the problem.
+    """
+    shared = [(c, crowded[norm(c)]) for c in cwds if norm(c) in crowded]
+    if not shared:
+        return ""
+    lines = []
+    for cwd, kinds in shared:
+        lines.append(f"{len(kinds)} agent sessions share {cwd} "
+                     f"({', '.join(kinds)}).")
+    lines += [
+        "",
+        "    Nothing connects a Windows Terminal tab to the process inside "
+        "it, so which tab holds",
+        "    which session cannot be established — and restarting the wrong "
+        "one ends a session you",
+        "    did not ask to end. Move one to its own directory, or restart it "
+        "by hand.",
+        "    Nothing was restarted.",
+    ]
+    return "\n".join(lines)
 
 
 def _no_tab_to_type_into(cwds, plans) -> str:
@@ -1399,6 +1458,19 @@ def cmd_restart_self(args) -> int:
             print("    `--self` will not make that change to the session it is "
                   "called from")
             print("    on one keystroke.")
+        # The way out this names has to be one that will work. In a directory
+        # holding two sessions, `restart <repo>` refuses for its own reasons
+        # (see _shared_directory), and sending someone there would be sending
+        # them to a second refusal that does not mention this one.
+        sharing = _shared_with(cwd)
+        if sharing:
+            print(f"    {len(sharing)} agent sessions share this directory "
+                  f"({', '.join(sharing)}), so `reloaded restart")
+            print("    <repo>` cannot be aimed at it either — which tab holds "
+                  "which session is not")
+            print("    something anything can establish. Move one to its own "
+                  "directory first.")
+            return 1
         print("    Restart it once from another session with `reloaded restart "
               "<repo>`, which makes")
         print("    that change deliberately; after that this works.")
@@ -1407,6 +1479,42 @@ def cmd_restart_self(args) -> int:
     # The root the helper resolves tab titles against, derived from the session
     # itself rather than from this process's flag. See _dispatch_restart.
     helper_root = os.path.dirname(cwd.rstrip("\\/")) or args.repos_root
+
+    # Both paths, and synchronously.
+    #
+    # The dispatch would otherwise reach `_shared_directory`'s refusal inside a
+    # detached process, after this command had said the session was coming
+    # back - the shape the sibling branch exists to remove.
+    #
+    # And `--arm-only` is not the safe alternative this used to offer it as.
+    # Arming needs no tab, which is true and was the whole of my reasoning, but
+    # the marker does not name a session either: `deploy.restart_loop` gives
+    # every reloaded tab in this directory a shell watching the same file, and
+    # whichever exits first consumes it. That can relaunch the other session
+    # and then close this one's tab when its own quit finds nothing left to
+    # read - the wrong-session outcome the rest of this refuses to risk,
+    # reached by the path I had called exempt. Codex review of this branch.
+    sharing = _shared_with(cwd)
+    if sharing:
+        print(f"{len(sharing)} agent sessions share {cwd} "
+              f"({', '.join(sharing)}).")
+        if arm_only:
+            print("\n    Arming needs no tab, but the marker does not name a "
+                  "session. Every reloaded")
+            print("    shell in this directory watches the same file, and "
+                  "whichever exits first")
+            print(f"    consumes it — which can relaunch the other session and "
+                  f"then close this tab")
+            print(f"    when your own {label} finds nothing left to read.")
+        else:
+            print("\n    The helper this would hand the job to has to find "
+                  "your tab, and nothing")
+            print("    connects a tab to the process inside it — so it would "
+                  "refuse, in a detached")
+            print("    process, after this command had already said the "
+                  "session was coming back.")
+        print("\n    Move one of them to its own directory.")
+        return 1
 
     if not arm_only:
         if args.dry_run:
@@ -1454,6 +1562,15 @@ def cmd_restart_self(args) -> int:
         print("\nDry run — nothing written.")
         return 0
 
+    # The crowding refusal above is a snapshot, and this file outlives it by
+    # two minutes. A second reloaded tab opened in this directory before the
+    # user quits gets a shell watching this very marker, and whichever exits
+    # first consumes it - the same wrong-session relaunch, through a window the
+    # scan cannot see. Not closable here: a marker names a directory, because
+    # `deploy.restart_loop` bakes that path into PowerShell that is already
+    # running in every open tab and cannot be updated for them. See #37, and
+    # the "no generation or nonce" note in docs/architecture.md that this is
+    # one consequence of. Codex review of this branch.
     try:
         marker.write_text("restart", encoding="utf-8")
     except OSError as exc:

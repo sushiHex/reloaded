@@ -117,7 +117,7 @@ def test_the_dispatch_is_announced_in_the_log(spawn):
 def test_a_log_that_fills_after_the_spawn_is_not_a_spawn_failure(spawn,
                                                                  monkeypatch):
     """The helper is already running by then. Raising out of here would have
-    the caller clear the attempt file and tell the user to start another
+    the caller report a spawn failure and send the user to start another
     restart, on top of the one now typing at their session. Codex review of
     this branch."""
     class _Full:

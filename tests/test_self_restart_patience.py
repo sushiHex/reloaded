@@ -522,6 +522,8 @@ def restart_one(monkeypatch, tmp_path):
 
     monkeypatch.setattr(main_mod.discover_mod, "live_sessions",
                         lambda: {main_mod.norm(CWD): 111})
+    monkeypatch.setattr(main_mod.discover_mod, "sweep",
+                        lambda: (main_mod.discover_mod.live_sessions(), {}))
     monkeypatch.setattr(main_mod.teardown_mod, "plan_down",
                         lambda *a, **k: [_plan()])
     monkeypatch.setattr(main_mod, "_snapshot_restarts", lambda plans, args: [session])
