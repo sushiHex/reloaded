@@ -387,7 +387,11 @@ def _helper_argv(spawned):
     """
     import ast
 
-    source = spawned[0][2]
+    # Found by the flag rather than by index: the interpreter's own options
+    # sit in front of it and gaining one (`-u`, so the account is not lost in
+    # a buffer when the helper is killed) should not break this reader.
+    argv = spawned[0]
+    source = argv[argv.index("-c") + 1]
     start = source.index("[", source.index("main("))
     return ast.literal_eval(source[start:source.rindex("]") + 1])
 
@@ -397,8 +401,31 @@ def test_the_bootstrap_carries_the_absolute_path_and_the_root(bootstrap):
 
     assert _helper_argv(bootstrap) == [
         "--layout", "work", "--repos-root", r"D:\work",
-        "restart", r"D:\work\app", "--after", "7.0",
+        "restart", r"D:\work\app", "--after", "7.0", "--dispatched",
     ]
+
+
+def test_the_helper_is_told_it_was_dispatched(bootstrap):
+    """The marker-long patience and the attempt file belong to a restart
+    nobody is watching, and `--after` cannot stand in for that: it is a public
+    option a named restart accepts alongside any number of repos."""
+    main_mod._dispatch_restart(r"D:\work\app", "work", 7.0, r"D:\work")
+
+    assert main_mod.build_parser().parse_args(
+        _helper_argv(bootstrap)).dispatched is True
+
+
+def test_a_hand_typed_restart_is_not_dispatched(bootstrap):
+    assert main_mod.build_parser().parse_args(
+        ["restart", "app", "--after", "5"]).dispatched is False
+
+
+def test_the_helper_does_not_buffer_its_account(bootstrap):
+    """It is a process that gets killed rather than closed, and the lines
+    worth keeping are the last ones it writes."""
+    main_mod._dispatch_restart(r"D:\work\app", "work", 7.0, r"D:\work")
+
+    assert "-u" in bootstrap[0]
 
 
 def test_the_global_options_precede_the_subcommand(bootstrap):
@@ -458,7 +485,11 @@ def test_it_says_the_helper_outlives_this_session(dispatched, capsys):
     out = capsys.readouterr().out
     assert "4242" in out, "the helper pid is not named"
     assert "outside this session" in out
-    assert "Nothing further to do" in out
+    # It used to end "Nothing further to do." - printed the instant the helper
+    # was spawned, by a process about to die, about work not yet attempted. A
+    # dispatched restart that failed said nothing anywhere; see
+    # tests/test_self_restart_account.py.
+    assert "Nothing further to do" not in out
 
 
 def test_the_delay_is_passed_through(dispatched, session):

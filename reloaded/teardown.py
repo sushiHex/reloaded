@@ -40,6 +40,22 @@ EXIT_POLL_SECONDS = 0.5
 # first /exit alone does not satisfy, verified against the changelog
 # ("Fixed /exit incorrectly warning about running background agents...").
 EXIT_RETRY_AFTER_SECONDS = 6.0
+# Only reached by a caller that asked for `patience`; see execute_down. Every
+# resend steals keyboard focus through UI Automation, so a longer window buys
+# more attempts, not denser ones - at this spacing the full marker TTL is five
+# knocks rather than twenty.
+EXIT_RESEND_EVERY_SECONDS = 20.0
+# And the last of them stops this far short of the deadline. Keys that land in
+# the final moments provoke an exit that arrives after the restart marker has
+# gone stale, and a stale marker makes the tab's shell leave its restart loop
+# and close the tab - ending the session the restart was asked to bring back.
+#
+# This narrows that window rather than closing it. Nothing here bounds the time
+# between a key being sent and the shell reading the marker: _send_exit proves
+# where it is typing, never that anything accepted what it typed. A session
+# that acts on a key minutes later still misses the deadline. The honest claim
+# is a quiet tail, not a guarantee.
+EXIT_RESEND_CUTOFF_SECONDS = 25.0
 
 
 class Target(NamedTuple):
@@ -297,6 +313,8 @@ def execute_down(
     close_emptied: bool = True,
     before_exit=None,
     kinds: dict | None = None,
+    patience: float | None = None,
+    still_wanted=None,
 ) -> dict:
     """Send /exit to every planned tab, wait for each to actually end, then
     close each window whose tabs were all Claude sessions and all exited.
@@ -320,6 +338,30 @@ def execute_down(
     otherwise have to stay valid across every earlier target's wait — which is
     how `restart`'s marker TTL used to be a function of batch size rather than
     of one tab's exit.
+
+    ``patience`` replaces EXIT_TIMEOUT_SECONDS for each target's wait, and is
+    the only thing that makes the quit keys go out more than twice. Omitted —
+    every `down`, every `up --restart`, every named restart — nothing changes:
+    one send, one resend at EXIT_RETRY_AFTER_SECONDS, twenty seconds and out.
+
+    It exists for `restart --self`, which is the one caller that cannot watch
+    its own outcome and cannot simply be run again: the session that would read
+    the failure is the session being ended. It is also the one caller aimed at
+    a session that is *known* to be busy — the tool call that dispatched the
+    helper has to return and the reply after it has to land, and that turn has
+    been measured at eighty-one seconds. Twenty is a number for an idle target.
+
+    The serial-wait warning above is why this is not simply the new default. A
+    batch of eight targets would spend sixteen minutes on the ones that never
+    exit, and each target's marker would age through every earlier target's
+    wait. `--self` is always exactly one target.
+
+    ``still_wanted(cwd)`` is asked before every resend and stops them when it
+    answers False. The concrete case is `restart --self --cancel`, which
+    deletes the marker but cannot recall the detached helper that is typing:
+    keys that land after the marker has gone end a session that nothing will
+    bring back. One knock was a small window for that; a window as long as the
+    marker's life needs a way to notice.
     """
     exited: list[tuple[str, str]] = []
     timed_out: list[tuple[str, str]] = []
@@ -373,9 +415,14 @@ def execute_down(
             import psutil
 
             start = time.time()
-            deadline = start + EXIT_TIMEOUT_SECONDS
-            retry_at = start + EXIT_RETRY_AFTER_SECONDS
-            retried = False
+            deadline = start + (EXIT_TIMEOUT_SECONDS if patience is None
+                                else patience)
+            resend_at = start + EXIT_RETRY_AFTER_SECONDS
+            # Without patience this is the deadline itself, which leaves the
+            # single resend below exactly where it has always been: scheduled
+            # at +6s, and never rescheduled.
+            stop_resending = (deadline if patience is None
+                              else deadline - EXIT_RESEND_CUTOFF_SECONDS)
             while psutil.pid_exists(pid):
                 now = time.time()
                 if now >= deadline:
@@ -394,8 +441,17 @@ def execute_down(
                         "may be waiting on a prompt that ate the keys")
                     all_exited = False
                     break
-                if not retried and now >= retry_at:
-                    retried = True
+                if resend_at <= now < stop_resending:
+                    if still_wanted is not None and not still_wanted(cwd):
+                        log(f"    {title} is no longer armed — not asking it "
+                            "to quit again")
+                        stop_resending = now
+                        time.sleep(EXIT_POLL_SECONDS)
+                        continue
+                    # Scheduled forward rather than latched off, so a caller
+                    # with patience knocks again and one without never does.
+                    resend_at = (float("inf") if patience is None
+                                 else now + EXIT_RESEND_EVERY_SECONDS)
                     # dismiss_overlay=False: Escape would cancel rather than
                     # answer Claude Code's background-agent /exit
                     # confirmation - the exact thing this resend exists to
