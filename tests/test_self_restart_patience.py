@@ -66,13 +66,20 @@ def clock(monkeypatch):
 
 @pytest.fixture
 def busy_session(monkeypatch, clock):
-    """A session that never exits, and a record of when keys were sent to it."""
+    """A session that never exits, and a record of when keys were sent to it.
+
+    It returns a key count, as the real `send_quit_keystrokes` does. Returning
+    None read as zero keys everywhere that counts them, which is how this
+    fixture hid a resend line that should not have been printed.
+    """
     sent = []
+
+    def _keys(quit_keys, *, dismiss_overlay=True, still_needed=None):
+        sent.append(clock["t"])
+        return len(quit_keys)
+
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
-    monkeypatch.setattr(
-        teardown_mod.tabs, "send_quit_keystrokes",
-        lambda keys, *, dismiss_overlay=True, still_needed=None:
-            sent.append(clock["t"]))
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", _keys)
     monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
     return sent
@@ -204,6 +211,58 @@ def test_a_disarm_after_the_keys_went_out_ends_the_wait(monkeypatch, clock):
     assert result["disarmed"] == [("app", CWD)]
     assert result["timed_out"] == [], "a cancel counted as a timeout"
     assert clock["t"] - start < deploy_mod.RESTART_MARKER_TTL_SECONDS
+
+
+def test_a_resend_that_sent_nothing_does_not_claim_to_have_resent(monkeypatch,
+                                                                  clock):
+    """A cancel landing between the tick's check and the resend's first key
+    gives `reached=True, keys=0`. Checking only `reached` put "resending"
+    in the log immediately before the line reporting the restart disarmed —
+    the initial send has always checked `keys`; this one never did.
+    Codex review of this branch."""
+    logs = []
+    armed = {"yes": True}
+    monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
+    monkeypatch.setattr(teardown_mod.tabs, "tab_is_selected", lambda item: True)
+    monkeypatch.setattr(teardown_mod.win32, "is_foreground", lambda hwnd: True)
+
+    def _keys(quit_keys, *, dismiss_overlay=True, still_needed=None):
+        if not armed["yes"]:
+            return 0           # the per-key predicate stopped it at key zero
+        armed["yes"] = False   # cancelled right after the initial send
+        return len(quit_keys)
+
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", _keys)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+    monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
+
+    # The disarm is invisible to the tick until after the resend has been
+    # attempted, which is the window this is about.
+    seen = {"ticks": 0}
+
+    def _wanted(cwd):
+        seen["ticks"] += 1
+        return seen["ticks"] <= 14
+
+    teardown_mod.execute_down(
+        [_plan()], log=logs.append,
+        patience=deploy_mod.RESTART_MARKER_TTL_SECONDS, still_wanted=_wanted)
+
+    out = "\n".join(logs)
+    assert "resending" not in out, "it claimed a resend that sent no keys"
+    assert "disarmed" in out
+
+
+def test_a_resend_that_really_went_out_is_still_logged(busy_session, clock):
+    """The line is load-bearing: it is how the account says when focus was
+    taken. Only zero-key resends go quiet."""
+    logs = []
+
+    teardown_mod.execute_down(
+        [_plan()], log=logs.append,
+        patience=deploy_mod.RESTART_MARKER_TTL_SECONDS)
+
+    assert "resending" in "\n".join(logs)
 
 
 def test_a_cancel_is_never_printed_as_a_missed_deadline(capsys):

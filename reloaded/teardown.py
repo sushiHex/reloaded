@@ -504,11 +504,19 @@ def execute_down(
                     # answer Claude Code's background-agent /exit
                     # confirmation - the exact thing this resend exists to
                     # get past. See tabs.send_exit_keystrokes.
-                    if _send_exit(plan.hwnd, item, dismiss_overlay=False,
-                                  quit_keys=quit_keys, pid=pid,
-                                  still_wanted=wanted).reached:
-                        # A zero here is the session ending mid-resend, which
-                        # the enclosing loop is about to notice anyway.
+                    resent = _send_exit(plan.hwnd, item, dismiss_overlay=False,
+                                        quit_keys=quit_keys, pid=pid,
+                                        still_wanted=wanted)
+                    if resent.reached and resent.keys:
+                        # `keys` as well as `reached`, which is what the
+                        # initial send above has always checked and this one
+                        # never did. A zero means the sequence stopped before
+                        # its first key - the session ending mid-resend, or a
+                        # cancel landing between the tick's check and the key
+                        # - and saying "resending" about it put that line in
+                        # the log immediately before the one reporting the
+                        # restart disarmed. Codex review of this branch.
+                        #
                         # Elapsed, not the constant. A patient teardown knocks
                         # around 6s, 26s, 46s, 66s and 86s, and printing
                         # EXIT_RETRY_AFTER_SECONDS for all five said "after
@@ -519,7 +527,7 @@ def execute_down(
                             f"    {title} still running after "
                             f"{now - start:.0f}s - resending {agent.quit_label}"
                         )
-                    else:
+                    elif not resent.reached:
                         log(
                             f"    [warn] could not bring window 0x{plan.hwnd:X} "
                             f"to the foreground to resend {agent.quit_label} -> {title!r}"
