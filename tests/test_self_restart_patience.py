@@ -220,8 +220,6 @@ def restart_one(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod, "_warn_about_empty_relaunches", lambda s: None)
     monkeypatch.setattr(main_mod, "_print_down_result", lambda *a, **k: None)
     monkeypatch.setattr(main_mod, "_await_relaunch", lambda s, before: True)
-    monkeypatch.setattr(main_mod, "restart_attempt",
-                        lambda cwd, token: tmp_path / f"{token}.a")
 
     def _execute_down(plans, **kw):
         asked["patience"] = kw.get("patience")
@@ -234,13 +232,13 @@ def restart_one(monkeypatch, tmp_path):
 
 def _args(**kw):
     d = {"layout": "default", "repos_root": r"C:\repos", "dry_run": False,
-         "after": 0.0, "force": False, "attempt": ""}
+         "after": 0.0, "force": False, "dispatched": False}
     d.update(kw)
     return types.SimpleNamespace(**d)
 
 
 def test_a_dispatched_restart_asks_for_the_markers_whole_life(restart_one):
-    main_mod.cmd_restart_one(_args(after=5.0, attempt="tok"), [CWD])
+    main_mod.cmd_restart_one(_args(after=5.0, dispatched=True), [CWD])
 
     assert restart_one["patience"] == deploy_mod.RESTART_MARKER_TTL_SECONDS
 
@@ -267,7 +265,7 @@ def test_the_public_delay_flag_does_not_buy_patience(restart_one):
 def test_a_dispatched_restart_stops_typing_once_it_is_disarmed(restart_one):
     """`--self --cancel` removes the marker and says plainly that it cannot
     recall the helper. The helper is what is typing."""
-    main_mod.cmd_restart_one(_args(after=5.0, attempt="tok"), [CWD])
+    main_mod.cmd_restart_one(_args(after=5.0, dispatched=True), [CWD])
 
     assert restart_one["still_wanted"] is not None
 

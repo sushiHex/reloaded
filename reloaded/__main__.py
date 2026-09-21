@@ -26,8 +26,6 @@ from .paths import (
     norm,
     relaunch_script_path,
     resolve_repo,
-    restart_attempt,
-    restart_attempts,
     restart_marker,
     restart_marker_dir,
 )
@@ -775,20 +773,12 @@ def cmd_restart_one(args, repos: list[str]) -> int:
         time.sleep(after)
 
     cwds = [resolve_repo(r, args.repos_root) for r in repos]
-    # The attempt file is NOT written here. It is written by the process that
-    # dispatched this one, before the spawn - this helper sleeps `--after`
-    # first, and a helper killed during that sleep, or one whose detached spawn
-    # did not survive (the breakaway fallback is documented as "may not
-    # survive"), would never reach this line. An attempt only recorded by
-    # helpers that lived is an attempt file that cannot report the deaths.
-    # Codex review of this branch. Settled below, once the session is back.
-    #
-    # `--attempt` carries both facts at once: that this run was dispatched, and
-    # which dispatch it is. Read from a value nobody else sets rather than
-    # inferred from `--after`, which is a public option a named restart takes
-    # alongside any number of repos.
-    token = getattr(args, "attempt", "") or ""
-    dispatched = bool(token) and not args.dry_run
+    # Not `--after > 0`. That is a public option a named restart takes
+    # alongside any number of repos, so reading it as "this was dispatched"
+    # would hand `restart a b c --after 5` the marker-long patience below on
+    # every one of them - minutes of typing at sessions whose owner is sitting
+    # there watching.
+    dispatched = getattr(args, "dispatched", False) and not args.dry_run
 
     live = discover_mod.live_sessions()
 
@@ -846,8 +836,6 @@ def cmd_restart_one(args, repos: list[str]) -> int:
         else:
             came_back = _await_relaunch(s, tabs_before)
         failed = failed or not came_back
-    if dispatched and not failed:
-        _clear_attempts(cwds, token)
     return 1 if failed else 0
 
 
@@ -865,143 +853,6 @@ def _still_armed(cwd: str) -> bool:
     calls this has already ended.
     """
     return restart_marker(cwd).exists()
-
-
-def _new_attempt_token() -> str:
-    """A name for one dispatch, so a helper can only settle its own record."""
-    import uuid
-
-    return uuid.uuid4().hex[:16]
-
-
-def _record_attempt(cwds: list[str], token: str, settles_at: float) -> None:
-    """Leave a file per target saying a dispatched restart is in flight.
-
-    Presence is the signal for "still outstanding", so a helper killed outright
-    still reports correctly - the case a written verdict would miss entirely.
-    The token that makes one dispatch's record its own is in the filename.
-
-    Two numbers: when it was dispatched, which is what the report says, and
-    when it can be judged, which nothing else is in a position to know.
-    `--after` takes an arbitrary delay, so a constant here is a guess about
-    somebody else's argument - `--after 300` would have this record settled and
-    consumed while its helper was still asleep. The process that chose the
-    delay is the one that writes the deadline. Codex review of this branch.
-    """
-    import time
-
-    for cwd in cwds:
-        try:
-            restart_attempt(cwd, token).write_text(
-                f"{time.time():.0f} {settles_at:.0f}", encoding="utf-8")
-        except OSError:
-            # Same rule as the log: bookkeeping must never fail the restart it
-            # is bookkeeping for.
-            pass
-
-
-def _clear_attempts(cwds: list[str], token: str) -> None:
-    """Settle this dispatch's records, and only this dispatch's.
-
-    One path per dispatch, so this is a delete and not a compare-then-delete.
-    Reading a token out of a shared file first left a window in which a newer
-    dispatch could take that path over between the check and the unlink, and
-    the older helper would delete the newer one's record after all - the same
-    loss, made rarer rather than removed.
-    """
-    for cwd in cwds:
-        try:
-            restart_attempt(cwd, token).unlink(missing_ok=True)
-        except OSError:
-            pass
-
-
-def _previous_attempt(cwd: str, *, consume: bool = True) -> None:
-    """Report a dispatched restart of `cwd` that never reported back, once.
-
-    "Never reported back" and not "failed": the file says the helper did not
-    reach its own ending, which covers a helper that was killed after the
-    session had already come back as readily as one that achieved nothing. The
-    log says which. Claiming failure here would be claiming to know something
-    presence alone cannot establish.
-
-    Consumed as it is read. A file that outlives its restart is a fact about
-    one moment, and repeating it before every future restart would bury the
-    next real failure under an old one.
-
-    Except under `--dry-run`, which promises to change nothing and would
-    otherwise destroy the only record of an unreported restart on its way to
-    saying it did nothing - after which no real invocation could warn about it.
-    Codex review of this branch.
-    """
-    import datetime
-
-    # Only the ones whose helper can no longer be working. Repeating `--self`
-    # while the first helper is still inside its delay, its patience, or its
-    # wait for the session to come back finds a record that has neither failed
-    # nor finished - and clearing it meant that if that helper later died while
-    # the newer one succeeded and cleared its own, nothing was left to report
-    # the first. Overlapping dispatches are the case token-named files exist
-    # for; they have to survive being overlapped. Codex review of this branch.
-    settled = [p for p in restart_attempts(cwd) if _attempt_settled(p)]
-    if not settled:
-        return
-    # The newest, because that is the one whose promise is still ringing. Older
-    # ones are cleared below without being narrated: a list of every restart
-    # that ever went unreported is a worse answer than the last one.
-    path = settled[-1]
-    try:
-        stamp = float(path.read_text(encoding="utf-8").strip())
-    except (OSError, ValueError):
-        # An unreadable attempt is still an attempt. Falling silent here would
-        # turn the one case where the helper died hardest into the one case
-        # nothing is said about.
-        stamp = None
-    at = ("an unknown time" if stamp is None else
-          datetime.datetime.fromtimestamp(stamp).strftime("%H:%M:%S"))
-    print(f"The last restart of this session, dispatched at {at}, never "
-          "reported back.")
-    print(f"    What it did get to say is in {log_path()}.")
-    if not consume:
-        return
-    for stale in settled:
-        try:
-            stale.unlink(missing_ok=True)
-        except OSError:
-            pass
-
-
-def _attempt_settled(path) -> bool:
-    """Whether the helper behind `path` can no longer be working.
-
-    From the deadline its dispatcher wrote, which is the only place the real
-    `--after` was known. A record with no readable deadline falls back to its
-    mtime plus the default budget - a truncated file is still a dispatch, and
-    treating it as forever unsettled would leave it on disk for good.
-    """
-    import time
-
-    try:
-        return time.time() >= float(path.read_text(encoding="utf-8").split()[1])
-    except (OSError, ValueError, IndexError):
-        pass
-    try:
-        return time.time() >= path.stat().st_mtime + _attempt_budget(0.0)
-    except OSError:
-        # Unreachable file: settled, so a record that cannot be read at all can
-        # still be reported and cleared rather than accumulating.
-        return True
-
-
-def _attempt_budget(after: float) -> float:
-    """How long a dispatched helper can still be working, given its delay.
-
-    Its own worst case, added rather than chosen: the delay it was told to
-    wait, the whole marker it may spend asking the session to quit, and the
-    relaunch wait - twice, because `_await_relaunch` spends one and then
-    `_reopen_in_a_new_tab` spends another.
-    """
-    return after + SELF_EXIT_PATIENCE_SECONDS + 2 * RELAUNCH_WAIT_SECONDS
 
 
 def _nothing_running_there(cwds, live) -> str:
@@ -1273,8 +1124,7 @@ SELF_RESTART_DELAY_SECONDS = 5.0
 SELF_EXIT_PATIENCE_SECONDS = deploy_mod.RESTART_MARKER_TTL_SECONDS
 
 
-def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str,
-                      token: str = "") -> int:
+def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> int:
     """Start `restart <repo>` in a process that outlives this session.
 
     `repo` is an absolute path, not a name. The helper is a fresh process with
@@ -1324,7 +1174,7 @@ def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str,
     bootstrap = (
         f"import sys; sys.path.insert(0, {package_dir!r}); "
         f"from reloaded.__main__ import main; "
-        f"raise SystemExit(main({['--layout', layout, '--repos-root', repos_root, 'restart', repo, '--after', str(after), '--attempt', token]!r}))"
+        f"raise SystemExit(main({['--layout', layout, '--repos-root', repos_root, 'restart', repo, '--after', str(after), '--dispatched']!r}))"
     )
 
     DETACHED_PROCESS = 0x00000008
@@ -1466,12 +1316,6 @@ def cmd_restart_self(args) -> int:
               "inside it.)")
         return 0
 
-    # Before anything else this session is told, because the most likely reason
-    # anyone is typing this command again is that the last one did nothing and
-    # said nothing. Past `--cancel`, which is about a marker rather than an
-    # attempt, and never on the way out of a refusal that has its own answer.
-    _previous_attempt(cwd, consume=not args.dry_run)
-
     ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS
     after = float(getattr(args, "after", 0) or 0) or SELF_RESTART_DELAY_SECONDS
     arm_only = getattr(args, "arm_only", False)
@@ -1515,25 +1359,9 @@ def cmd_restart_self(args) -> int:
                   f"starting in {after:.0f}s.")
             print("\nDry run — nothing spawned.")
             return 0
-        # Before the spawn, because the helper cannot be relied on to record
-        # its own existence: it sleeps `after` first, and one killed during
-        # that sleep - or one whose detached spawn did not survive, which
-        # _dispatch_restart documents as possible - never runs a line. The
-        # cases this file exists to report are exactly the cases the helper is
-        # not around for.
-        import time
-
-        token = _new_attempt_token()
-        # The deadline travels with the record because `after` is known here
-        # and nowhere else. See _record_attempt.
-        _record_attempt([cwd], token, time.time() + _attempt_budget(after))
         try:
-            helper = _dispatch_restart(cwd, args.layout, after, helper_root,
-                                       token)
+            helper = _dispatch_restart(cwd, args.layout, after, helper_root)
         except Exception as exc:
-            # Nothing was dispatched, so nothing is outstanding. Leaving it
-            # would have the next `--self` report a helper that never existed.
-            _clear_attempts([cwd], token)
             print(f"[warn] could not start the restart: {exc}")
             print(f"    Fall back to `reloaded restart --self --arm-only` and "
                   f"quit with {label}.")
@@ -1948,17 +1776,11 @@ def build_parser() -> argparse.ArgumentParser:
     # Not `--after > 0`, which is what the dispatched path used to be inferred
     # from. `--after` is a public option and a named restart takes any number
     # of repos, so `restart a b c --after 5` would have claimed the marker-long
-    # patience on every one of them - six minutes of typing at sessions whose
-    # owner is sitting there watching - and left an attempt file per repo for
-    # a failure they already saw. The comment saying "only --self sets this"
-    # was true of intent and of nothing the parser enforced.
-    #
-    # A value rather than a flag, because the same argument answers "was this
-    # dispatched" and "by which dispatch": attempts are keyed by directory, so
-    # two overlapping `--self` calls share one file and a helper must be able
-    # to tell whether the record it is about to settle is its own.
+    # patience on every one of them - minutes of typing at sessions whose owner
+    # is sitting there watching. The comment saying "only --self sets this" was
+    # true of intent and of nothing the parser enforced.
     restart.add_argument(
-        "--attempt", default="", metavar="TOKEN", help=argparse.SUPPRESS,
+        "--dispatched", action="store_true", help=argparse.SUPPRESS,
     )
     restart.add_argument(
         "--dry-run", action="store_true", help="print what would be captured/exited/relaunched, do nothing"

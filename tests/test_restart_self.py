@@ -279,8 +279,8 @@ def dispatched(monkeypatch, session):
     """Capture the delegate instead of spawning it."""
     calls = []
     monkeypatch.setattr(main_mod, "_dispatch_restart",
-                        lambda repo, layout, after, repos_root, token="":
-                            calls.append(
+                        lambda repo, layout, after, repos_root:
+                        calls.append(
                                 (repo, layout, after, repos_root)) or 4242)
     return calls
 
@@ -398,28 +398,27 @@ def _helper_argv(spawned):
 
 
 def test_the_bootstrap_carries_the_absolute_path_and_the_root(bootstrap):
-    main_mod._dispatch_restart(r"D:\work\app", "work", 7.0, r"D:\work", "tok")
+    main_mod._dispatch_restart(r"D:\work\app", "work", 7.0, r"D:\work")
 
     assert _helper_argv(bootstrap) == [
         "--layout", "work", "--repos-root", r"D:\work",
-        "restart", r"D:\work\app", "--after", "7.0", "--attempt", "tok",
+        "restart", r"D:\work\app", "--after", "7.0", "--dispatched",
     ]
 
 
-def test_the_helper_is_told_which_dispatch_it_is(bootstrap):
-    """One argument answers two questions — that this run was dispatched, and
-    by which dispatch. `--after` can answer neither: it is a public option a
-    named restart accepts alongside any number of repos, and it says nothing
-    about identity."""
-    main_mod._dispatch_restart(r"D:\work\app", "work", 7.0, r"D:\work", "tok")
+def test_the_helper_is_told_it_was_dispatched(bootstrap):
+    """The marker-long patience belongs to a restart nobody is watching, and
+    `--after` cannot stand in for that: it is a public option a named restart
+    accepts alongside any number of repos."""
+    main_mod._dispatch_restart(r"D:\work\app", "work", 7.0, r"D:\work")
 
     assert main_mod.build_parser().parse_args(
-        _helper_argv(bootstrap)).attempt == "tok"
+        _helper_argv(bootstrap)).dispatched is True
 
 
-def test_a_hand_typed_restart_carries_no_attempt(bootstrap):
+def test_a_hand_typed_restart_is_not_dispatched(bootstrap):
     assert main_mod.build_parser().parse_args(
-        ["restart", "app", "--after", "5"]).attempt == ""
+        ["restart", "app", "--after", "5"]).dispatched is False
 
 
 def test_the_helper_does_not_buffer_its_account(bootstrap):
