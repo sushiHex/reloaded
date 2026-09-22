@@ -40,22 +40,6 @@ EXIT_POLL_SECONDS = 0.5
 # first /exit alone does not satisfy, verified against the changelog
 # ("Fixed /exit incorrectly warning about running background agents...").
 EXIT_RETRY_AFTER_SECONDS = 6.0
-# Only reached by a caller that asked for `patience`; see execute_down. Every
-# resend steals keyboard focus through UI Automation, so a longer window buys
-# more attempts, not denser ones - at this spacing the full marker TTL is five
-# knocks rather than twenty.
-EXIT_RESEND_EVERY_SECONDS = 20.0
-# And the last of them stops this far short of the deadline. Keys that land in
-# the final moments provoke an exit that arrives after the restart marker has
-# gone stale, and a stale marker makes the tab's shell leave its restart loop
-# and close the tab - ending the session the restart was asked to bring back.
-#
-# This narrows that window rather than closing it. Nothing here bounds the time
-# between a key being sent and the shell reading the marker: _send_exit proves
-# where it is typing, never that anything accepted what it typed. A session
-# that acts on a key minutes later still misses the deadline. The honest claim
-# is a quiet tail, not a guarantee.
-EXIT_RESEND_CUTOFF_SECONDS = 25.0
 
 
 class Target(NamedTuple):
@@ -174,8 +158,7 @@ def plan_down(
 
 
 def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=None,
-               quit_keys=("/exit", "{Enter}"), pid: int | None = None,
-               still_wanted=None) -> "Sent":
+               quit_keys=("/exit", "{Enter}"), pid: int | None = None) -> "Sent":
     """Foreground `item`'s tab and type its agent's quit keys into it.
 
     Returns a `Sent`. `reached` False means the tab could not be confirmed and
@@ -220,13 +203,6 @@ def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=Non
 
             if not psutil.pid_exists(pid):
                 return False
-        # Asked per key, like the other three, because `--cancel` can land
-        # between the loop's check and any key in this sequence - and a key
-        # after the disarm ends a session whose tab will then close rather
-        # than relaunch. Checking only before the sequence made that race
-        # smaller rather than absent. Codex review of this branch.
-        if still_wanted is not None and not still_wanted():
-            return False
         return tabs.tab_is_selected(item) and win32.is_foreground(hwnd)
 
     keys = tabs.send_quit_keystrokes(quit_keys, dismiss_overlay=dismiss_overlay,
@@ -321,8 +297,6 @@ def execute_down(
     close_emptied: bool = True,
     before_exit=None,
     kinds: dict | None = None,
-    patience: float | None = None,
-    still_wanted=None,
 ) -> dict:
     """Send /exit to every planned tab, wait for each to actually end, then
     close each window whose tabs were all Claude sessions and all exited.
@@ -346,46 +320,9 @@ def execute_down(
     otherwise have to stay valid across every earlier target's wait — which is
     how `restart`'s marker TTL used to be a function of batch size rather than
     of one tab's exit.
-
-    ``patience`` replaces EXIT_TIMEOUT_SECONDS for each target's wait, and is
-    the only thing that makes the quit keys go out more than twice. Omitted —
-    every `down`, every `up --restart`, every named restart — nothing changes:
-    one send, one resend at EXIT_RETRY_AFTER_SECONDS, twenty seconds and out.
-
-    It exists for `restart --self`, which is the one caller that cannot watch
-    its own outcome and cannot simply be run again: the session that would read
-    the failure is the session being ended. It is also the one caller aimed at
-    a session that is *known* to be busy — the tool call that dispatched the
-    helper has to return and the reply after it has to land, and that turn has
-    been measured at eighty-one seconds. Twenty is a number for an idle target.
-
-    The serial-wait warning above is why this is not simply the new default. A
-    batch of eight targets would spend sixteen minutes on the ones that never
-    exit, and each target's marker would age through every earlier target's
-    wait. `--self` is always exactly one target.
-
-    ``still_wanted(cwd)`` is asked on every poll and before every key, and a
-    False answer ends the wait rather than merely declining to knock. The
-    concrete case is `restart --self --cancel`, which deletes the marker: keys
-    that land after it has gone end a session that nothing will bring back.
-    One knock was a small window for that; a window as long as the marker's
-    life needs a way to notice. Asking this often is also what makes the cancel
-    work at all on a dispatched helper, which is otherwise beyond recall.
-
-    A False answer *after* a key has gone out is a different outcome again: the
-    key cannot be recalled, so the wait continues, nothing more is typed, and
-    the target is not counted as cleanly disarmed. Nothing is retracted - this
-    cannot read the screen, and typing more at a session it was told to stop
-    typing at is how it would do real damage.
     """
     exited: list[tuple[str, str]] = []
     timed_out: list[tuple[str, str]] = []
-    # Its own bucket, not a kind of timeout. `timed_out` is read by
-    # `_print_down_result` as "did not exit in time" and by `cmd_restart_one`
-    # as "route this to _report_never_exited", and a session called off on
-    # purpose is neither. Putting it there relocated the contradictory report
-    # rather than removing it. Codex review of this branch.
-    disarmed: list[tuple[str, str]] = []
     closed: list[int] = []
     left_open: list[int] = []
 
@@ -403,11 +340,8 @@ def execute_down(
             # above, and all three in this package use it.
             agent = agents.for_kind((kinds or {}).get(norm(cwd)))
             quit_keys = agent.quit_keys
-            wanted = (None if still_wanted is None
-                      else (lambda c=cwd: still_wanted(c)))
             sent = _send_exit(plan.hwnd, item, before_send=arm,
-                              quit_keys=quit_keys, pid=pid,
-                              still_wanted=wanted)
+                              quit_keys=quit_keys, pid=pid)
             if not sent.reached:
                 log(
                     f"    [warn] could not bring window 0x{plan.hwnd:X} to the "
@@ -417,24 +351,8 @@ def execute_down(
                 all_exited = False
                 continue
 
-            import psutil
-
             if sent.keys:
                 log(f"    sent {agent.quit_label} -> {title}  [{cwd}]")
-            elif (wanted is not None and not wanted()
-                  and psutil.pid_exists(pid)):
-                # Zero keys now has two causes, and they are opposite. The
-                # session is still running, so the sequence stopped because
-                # the restart was disarmed mid-send - not because there was
-                # nothing left to type at. Reported as the other would be a
-                # lie, and waiting out the deadline for an exit nobody wants
-                # any more would then log a timeout contradicting it.
-                # Codex review of this branch.
-                log(f"    {title} was disarmed before any quit key was sent "
-                    f"— not restarted  [{cwd}]")
-                disarmed.append((title, cwd))
-                all_exited = False
-                continue
             else:
                 # Targets are handled one at a time with a wait on each, so a
                 # session can end on its own well before its turn. Saying
@@ -451,60 +369,15 @@ def execute_down(
             # this timescale (Windows does not aggressively recycle pids).
             # Only reached with a real pid, which plan_down could only have
             # produced via discover.live_sessions() - psutil is therefore
-            # already imported, and imported again just above.
-            # What has actually gone out, which is what makes a cancel
-            # recallable or not. `sent.keys` is a count, not a promise: zero
-            # means the sequence stopped before its first key.
-            keys_out = sent.keys
-            too_late = False
+            # already imported; this is a cached re-import, not a fresh load.
+            import psutil
+
             start = time.time()
-            limit = EXIT_TIMEOUT_SECONDS if patience is None else patience
-            deadline = start + limit
-            resend_at = start + EXIT_RETRY_AFTER_SECONDS
-            # Without patience this is the deadline itself, which leaves the
-            # single resend below exactly where it has always been: scheduled
-            # at +6s, and never rescheduled.
-            stop_resending = (deadline if patience is None
-                              else deadline - EXIT_RESEND_CUTOFF_SECONDS)
+            deadline = start + EXIT_TIMEOUT_SECONDS
+            retry_at = start + EXIT_RETRY_AFTER_SECONDS
+            retried = False
             while psutil.pid_exists(pid):
                 now = time.time()
-                # Asked every tick rather than only when a resend is due. A
-                # `--cancel` between Claude's `/exit` and its Enter leaves keys
-                # already sent, so the zero-key exit above never fires, and
-                # stopping only the resends left a live session polled to the
-                # deadline and then logged as a timeout - the contradictory
-                # report that check exists to prevent. One `Path.exists()` per
-                # half-second, against a walk of the process table this file
-                # already refuses to do per tick. Codex review of this branch.
-                if wanted is not None and not wanted() and not too_late:
-                    if not keys_out:
-                        log(f"    {title} was disarmed while waiting — not "
-                            f"restarted  [{cwd}]")
-                        disarmed.append((title, cwd))
-                        all_exited = False
-                        break
-                    # A quit key is already in that tab and cannot be taken
-                    # back. Claude's `/exit` sits unsent in the prompt until
-                    # some Enter submits it - the user's own, later - and
-                    # Codex quits on the first interrupt, so it may be ending
-                    # already. Either way the marker has gone, so that exit
-                    # closes the tab instead of relaunching, and calling this
-                    # "disarmed" would report a session as safe while it
-                    # carries a quit nobody typed. Codex review of this branch.
-                    #
-                    # Nothing is retracted. This package cannot read that
-                    # screen, and typing more at a session it was just told to
-                    # stop typing at is how it would do real damage. It says
-                    # so instead, once, and keeps waiting.
-                    too_late = True
-                    stop_resending = now
-                    log(f"    [warn] {title} was disarmed after "
-                        f"{agent.quit_label} had already been sent — that "
-                        "cannot be recalled.")
-                    log(f"        Its marker has gone, so if it does exit its "
-                        f"tab closes rather than relaunching. Look at "
-                        f"{cwd}:")
-                    log(f"        {agent.unsent_quit}.")
                 if now >= deadline:
                     timed_out.append((title, cwd))
                     # Nothing is escalated here, ever. This package types and
@@ -516,52 +389,27 @@ def execute_down(
                     # guessing at an answer to type into an unknown prompt is
                     # how a package like this does real damage. Point at the
                     # tab instead.
-                    # The limit actually waited, not the constant. A patient
-                    # teardown reaches here after two minutes, and this is now
-                    # the primary account of a dispatched restart's failure -
-                    # a log that says "did not exit within 20s" after waiting
-                    # 120 puts the reader on the wrong minute.
                     log(f"    [warn] {title} did not exit within "
-                        f"{limit:.0f}s - look at that tab, it "
+                        f"{EXIT_TIMEOUT_SECONDS:.0f}s - look at that tab, it "
                         "may be waiting on a prompt that ate the keys")
                     all_exited = False
                     break
-                if resend_at <= now < stop_resending:
-                    # No disarm check here any more: the tick above has already
-                    # made one this half-second, and it breaks rather than
-                    # merely declining to knock.
-                    #
-                    # Scheduled forward rather than latched off, so a caller
-                    # with patience knocks again and one without never does.
-                    resend_at = (float("inf") if patience is None
-                                 else now + EXIT_RESEND_EVERY_SECONDS)
+                if not retried and now >= retry_at:
+                    retried = True
                     # dismiss_overlay=False: Escape would cancel rather than
                     # answer Claude Code's background-agent /exit
                     # confirmation - the exact thing this resend exists to
                     # get past. See tabs.send_exit_keystrokes.
                     resent = _send_exit(plan.hwnd, item, dismiss_overlay=False,
-                                        quit_keys=quit_keys, pid=pid,
-                                        still_wanted=wanted)
-                    keys_out += resent.keys
+                                        quit_keys=quit_keys, pid=pid)
+                    # `keys` as well as `reached`: a zero with the tab reached
+                    # is the session ending mid-resend, which the enclosing
+                    # loop is about to notice. "Resending" would describe keys
+                    # that never went out.
                     if resent.reached and resent.keys:
-                        # `keys` as well as `reached`, which is what the
-                        # initial send above has always checked and this one
-                        # never did. A zero means the sequence stopped before
-                        # its first key - the session ending mid-resend, or a
-                        # cancel landing between the tick's check and the key
-                        # - and saying "resending" about it put that line in
-                        # the log immediately before the one reporting the
-                        # restart disarmed. Codex review of this branch.
-                        #
-                        # Elapsed, not the constant. A patient teardown knocks
-                        # around 6s, 26s, 46s, 66s and 86s, and printing
-                        # EXIT_RETRY_AFTER_SECONDS for all five said "after
-                        # 6s" every time - in the only live account of a
-                        # dispatched restart, about the one thing worth
-                        # timing, which is when focus was actually taken.
                         log(
                             f"    {title} still running after "
-                            f"{now - start:.0f}s - resending {agent.quit_label}"
+                            f"{EXIT_RETRY_AFTER_SECONDS:.0f}s - resending {agent.quit_label}"
                         )
                     elif not resent.reached:
                         log(
@@ -621,7 +469,6 @@ def execute_down(
     return {
         "exited": exited,
         "timed_out": timed_out,
-        "disarmed": disarmed,
         "closed": closed,
         "left_open": left_open,
     }

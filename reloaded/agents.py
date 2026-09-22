@@ -40,15 +40,6 @@ class Agent:
     # worse than a quiet one - the user reads it to decide whether to go
     # looking.
     quit_label: str
-    # Where a quit key that has gone out but not taken effect actually is, for
-    # a user being sent to look at the tab. A cancel cannot recall a keystroke,
-    # so something has to say what is now sitting in that session - and the two
-    # kinds differ completely. `/exit` is buffered text waiting for an Enter;
-    # an interrupt is not text at all and has already been acted on, by
-    # something that may not have been the quit. Written here because it is a
-    # fact about the agent, and the alternative was a per-kind branch in
-    # teardown's warning.
-    unsent_quit: str
     # Substrings that mean an invocation picks its conversation back up rather
     # than starting a fresh one. See `resumes`.
     resume_tokens: tuple
@@ -62,6 +53,15 @@ class Agent:
     # `thread/list` API. Kept because it is true, and marked because a plausible
     # index built on it would be confidently wrong.
     sessions_dir: str
+    # The flag that resumes one named conversation, and its short form, for a
+    # kind whose sessions can be named. Empty for one that cannot, which is
+    # left resuming however it already does. See `resume_exactly`.
+    resume_by_id: tuple = ()
+    # Options that take no value, and options that take every value after
+    # them. `resume_exactly` needs them to tell an opening prompt from an
+    # option's value; any option in neither is read as taking one.
+    bare_flags: tuple = ()
+    variadic_flags: tuple = ()
 
 
 def _codex_home() -> str:
@@ -83,10 +83,28 @@ CLAUDE = Agent(
     launch="claude --dangerously-skip-permissions --continue",
     quit_keys=("/exit", "{Enter}"),
     quit_label="/exit",
-    unsent_quit="`/exit` may be sitting unsent in its prompt, where your own "
-                "next Enter would submit it",
-    resume_tokens=("--continue", "-c", "--resume"),
+    # `--fork-session` only means anything beside a resume, where it makes it
+    # a new conversation: `resume_exactly` has to drop it with the rest.
+    resume_tokens=("--continue", "-c", "--resume", "-r", "--fork-session"),
     sessions_dir=os.path.join(os.path.expanduser("~"), ".claude", "projects"),
+    resume_by_id=("--resume", "-r"),
+    # From `claude --help`, 2.1.280: every option with no <value> or [value],
+    # and every one whose value is <values...>. A flag added later reads as
+    # taking one value, which at worst keeps a prompt - never drops a value.
+    bare_flags=(
+        "--allow-dangerously-skip-permissions", "--ax-screen-reader",
+        "--background", "--bare", "--bg", "--brief", "--chrome", "--continue",
+        "--dangerously-skip-permissions", "--disable-slash-commands",
+        "--exclude-dynamic-system-prompt-sections", "--fork-session",
+        "--forward-subagent-text", "--help", "--ide", "--include-hook-events",
+        "--include-partial-messages", "--no-chrome", "--no-session-persistence",
+        "--print", "--replay-user-messages", "--restricted", "--safe-mode",
+        "--strict-mcp-config", "--tmux", "--verbose", "--version",
+        "-c", "-h", "-p", "-v"),
+    variadic_flags=(
+        "--add-dir", "--allowed-tools", "--allowedTools", "--betas",
+        "--disallowed-tools", "--disallowedTools", "--file", "--mcp-config",
+        "--tools"),
 )
 
 CODEX = Agent(
@@ -108,13 +126,6 @@ CODEX = Agent(
     # If that is also eaten, it times out and says so. Nothing is forced.
     quit_keys=("{Ctrl}c", "{Ctrl}c"),
     quit_label="Ctrl+C",
-    # Not "sitting unsent": an interrupt is not buffered text. It arrived and
-    # something happened - the quit chord was raised, or, per the note above,
-    # a review was cancelled or a side conversation returned to the main
-    # thread. Which of those is not knowable from here.
-    unsent_quit="an interrupt has already reached it, which may have raised "
-                "its quit chord, cancelled a review, or returned it to the "
-                "main thread",
     resume_tokens=("resume",),
     sessions_dir=os.path.join(_codex_home(), "sessions"),
 )
@@ -143,6 +154,51 @@ def resumes(kind, command: str) -> bool:
     lowered = f" {command.lower()} "
     return any(f" {t} " in lowered or lowered.rstrip().endswith(f" {t}")
                for t in for_kind(kind).resume_tokens)
+
+
+def resume_exactly(kind, argv: list, session_id: str | None) -> list:
+    """`argv` rewritten to resume conversation `session_id` and no other.
+
+    Only for `/relaunch`, and the exception to `resumes`' rule against
+    rewriting the user's command: there the intent is a guess, here it is not -
+    "restart this session" means this conversation. Whatever resume flag was
+    there goes, with its value, and `--resume <id>` takes its place: bare
+    `--resume` opens a picker and plain `claude` starts empty, and neither is a
+    restart.
+
+    The opening prompt goes too - after a `--`, or as a bare word no option
+    claims - because resuming would send it into the conversation again.
+
+    With no `argv` - it could not be read - the kind's default launch is
+    rewritten instead, so a known id is not lost to it.
+
+    Unchanged for a kind whose sessions cannot be named, or with no id.
+    """
+    agent = for_kind(kind)
+    if not session_id or not agent.resume_by_id:
+        return list(argv)
+    argv = list(argv) or agent.launch.split()
+    if "--" in argv[1:]:
+        argv = argv[:argv.index("--", 1)]
+    # What the last option still accepts: nothing, one value, every value, or
+    # the conversation a dropped resume flag named.
+    kept, takes = [argv[0]], "none"
+    for arg in argv[1:]:
+        if arg.startswith("-"):
+            flag, has_value = arg.split("=", 1)[0], "=" in arg
+            if flag in agent.resume_tokens:
+                takes = ("named" if flag in agent.resume_by_id and not has_value
+                         else "none")
+                continue
+            kept.append(arg)
+            takes = ("none" if has_value or flag in agent.bare_flags
+                     else "every" if flag in agent.variadic_flags else "one")
+        elif takes in ("one", "every"):
+            kept.append(arg)
+            takes = "every" if takes == "every" else "none"
+        else:
+            takes = "none"  # a named conversation, or the opening prompt
+    return kept + [agent.resume_by_id[0], session_id]
 
 
 def for_kind(kind) -> Agent:

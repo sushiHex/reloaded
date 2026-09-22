@@ -81,7 +81,7 @@ before using those defaults.
 | `reloaded up` | Launch missing sessions from the saved layout. |
 | `reloaded open <repo>` | Add one repository as a tab in Terminal's current/recent window. |
 | `reloaded restart <repo>...` | Restart named live sessions, keeping their tabs where possible. |
-| `reloaded restart --self` | Hand off a restart of the calling agent session to a detached helper. |
+| `reloaded restart --self` | Restart the agent session it is run from, in the same tab. |
 | `reloaded restart` | Capture the live arrangement, exit its sessions, and redeploy it. |
 | `reloaded down` | Gracefully exit recognized live sessions and close eligible empty windows. |
 | `reloaded install-tasks` | Enable logon restoration and capture every five minutes. |
@@ -118,22 +118,19 @@ for timeouts, fallback tabs, and concurrent restart limits.
 
 Invoke Reloaded through your shell tool. Start with `reloaded status`, inspect
 the relevant `--dry-run`, and check the command's output and status afterward.
-An opened tab or successful helper dispatch does not prove a conversation resumed.
+An opened tab does not prove a conversation resumed.
 
-To restart the terminal session you are running inside:
+To restart the session you are running inside, in its own tab:
 
 ```powershell
 reloaded restart --self --dry-run
-reloaded restart --self --after 10
+reloaded restart --self
 ```
 
-Save useful handoff notes before dispatching and finish the turn within the
-delay. The default delay is five seconds. `--self` requires a recognized agent
-session using Reloaded's launcher and cannot take a repository name; it targets
-the calling session's own directory, wherever that is, and gives the helper the
-matching repository root so it can find that session's tab. For manual exit
-timing, cancellation limits, and hand-started sessions, read
-[self restart](docs/usage.md#self-restart).
+It ends the session immediately, so save anything worth keeping first. It works
+in a Reloaded tab and in a PowerShell tab started by hand, and cannot take a
+repository name. See [self restart](docs/usage.md#self-restart), which also has
+a `/relaunch` command for Claude Code.
 
 ## Restore at sign-in
 

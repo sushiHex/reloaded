@@ -146,3 +146,37 @@ def test_reading_a_window_is_not_blocked():
     also blocked reads would put ceremony on tests that were never dangerous,
     and a guard that cries wolf stops being read."""
     assert win32_mod.is_wt_window(12345) is False
+
+
+# ── /relaunch: ending a process, and writing into a console ──────────────
+
+
+def test_ending_a_real_process_is_refused():
+    """A test that forgot to stub owning_session() would find the agent
+    session running the suite, and relaunch would end it."""
+    import os
+
+    import psutil
+
+    with pytest.raises(AssertionError, match="end real pid"):
+        psutil.Process(os.getpid()).terminate()
+    with pytest.raises(AssertionError, match="end real pid"):
+        psutil.Process(os.getpid()).kill()
+
+
+def test_writing_into_a_real_console_is_refused():
+    import reloaded.relaunch as relaunch_mod
+
+    with pytest.raises(AssertionError, match="real console"):
+        relaunch_mod.type_into_console(1, "exit")
+
+
+def test_starting_relaunchs_helper_for_real_is_refused():
+    """It is detached, outlives the suite, and writes into a console once the
+    pid it watches ends."""
+    import subprocess
+    import sys
+
+    with pytest.raises(AssertionError, match="relaunch's helper"):
+        subprocess.Popen([sys.executable, "-c",
+                          "from reloaded.relaunch import bring_back"])

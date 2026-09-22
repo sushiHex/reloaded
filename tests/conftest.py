@@ -122,9 +122,42 @@ def _no_real_desktop_effects(monkeypatch):
                 "function that spawns it - _launch_single_tab, deploy.execute, "
                 "or whatever called Popen."
             )
+        if "bring_back" in " ".join(map(str, argv if isinstance(argv, (list, tuple)) else [argv])):
+            raise AssertionError(
+                "a test tried to start relaunch's helper for real. It is "
+                "detached, outlives the suite, and writes into a console once "
+                "the pid it watches ends. Stub relaunch._spawn_helper."
+            )
         return _real_popen(argv, *a, **kw)
 
     monkeypatch.setattr(subprocess, "Popen", _guarded_popen)
+
+    # `/relaunch` ends a process and writes into a console. Both at the
+    # boundary: a test that forgot to stub owning_session() would otherwise
+    # find the very agent session running the suite and end it.
+    import psutil
+
+    def _blocked_end(self, *a, **k):
+        raise AssertionError(
+            f"a test tried to end real pid {self.pid}. Under a test that is as "
+            "likely as not the agent session running the suite. Use a fake "
+            "process object."
+        )
+
+    monkeypatch.setattr(psutil.Process, "terminate", _blocked_end)
+    monkeypatch.setattr(psutil.Process, "kill", _blocked_end)
+
+    import reloaded.relaunch as relaunch_mod
+
+    for name in ("AttachConsole", "FreeConsole", "WriteConsoleInputW"):
+        def _blocked_console(*a, _name=name, **k):
+            raise AssertionError(
+                f"kernel32.{_name} was called for real during a test - it "
+                "attaches to, or types into, a real console. Stub "
+                "relaunch.type_into_console."
+            )
+
+        monkeypatch.setattr(relaunch_mod._k32, name, _blocked_console)
 
     for name, effect in (
         ("PostMessageW", "posts WM_CLOSE - it closes a real window and every session in it"),
