@@ -148,11 +148,17 @@ def _resume_command(session, kind: str) -> str:
 def _spawn_helper(session, shell, command: str, marker) -> None:
     """Start `bring_back` in a process that outlives the session.
 
-    DETACHED_PROCESS with CREATE_BREAKAWAY_FROM_JOB, so that a job this
-    process may be in cannot take the helper down with the session. There is
-    no fallback without it: CreateProcess refuses breakaway only when this
-    process is in a job that forbids it, which is exactly when a helper
-    started without it could die with the session. Refusing then ends nothing.
+    CREATE_BREAKAWAY_FROM_JOB, so that a job this process may be in cannot
+    take the helper down with the session. There is no fallback without it:
+    CreateProcess refuses breakaway only when this process is in a job that
+    forbids it, which is exactly when a helper started without it could die
+    with the session. Refusing then ends nothing.
+
+    CREATE_NO_WINDOW, not DETACHED_PROCESS. From a venv, python.exe is a
+    redirector whose child - a console program - does the work; detached, that
+    child found no console to inherit, was given a new one, and with Windows
+    Terminal as the default terminal that opened as a blank window on every
+    `/relaunch`. A windowless console is inherited instead. Measured.
 
     Bootstrapped through sys.path rather than the `reloaded` shim, which may
     not be on the PATH this process hands down.
@@ -163,7 +169,7 @@ def _spawn_helper(session, shell, command: str, marker) -> None:
     bootstrap = (f"import sys; sys.path.insert(0, {package_dir!r}); "
                  f"from reloaded.relaunch import bring_back; "
                  f"bring_back(*{call!r})")
-    base = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+    base = 0x08000000 | 0x00000200  # CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP
     try:
         account = open(log_path(), "a", buffering=1, encoding="utf-8")
     except OSError:

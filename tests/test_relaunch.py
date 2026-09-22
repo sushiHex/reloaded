@@ -234,6 +234,21 @@ def test_a_helper_is_never_started_without_breakaway(monkeypatch, tmp_path):
     assert len(calls) == 1 and calls[0] & 0x01000000
 
 
+def test_the_helper_opens_no_window(monkeypatch, tmp_path):
+    """Detached, a venv redirector's child was given a console of its own,
+    which Windows Terminal showed as a blank window on every `/relaunch`. A
+    windowless console is inherited instead; the two flags are exclusive."""
+    calls = []
+    monkeypatch.setattr(relaunch_mod.subprocess, "Popen",
+                        lambda argv, creationflags=0, **kw: calls.append(creationflags))
+    monkeypatch.setattr(relaunch_mod, "log_path", lambda: tmp_path / "log")
+
+    relaunch_mod._spawn_helper(_Proc(20), _Proc(10), "claude", tmp_path / "m")
+
+    assert calls[0] & 0x08000000, "CREATE_NO_WINDOW"
+    assert not calls[0] & 0x00000008, "DETACHED_PROCESS"
+
+
 def test_nothing_is_ended_if_this_process_is_not_inside_the_session(desk):
     """Without the whole line from here to the session there is no telling
     which descendants are safe to end - this process and the helper among
