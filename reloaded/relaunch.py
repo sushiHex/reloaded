@@ -98,9 +98,9 @@ def relaunch(pid: int, cwd: str, kind: str, *, dry_run: bool = False,
     except Exception as exc:
         # Nothing has been ended, so nothing is lost. A marker left behind
         # would fire on the user's next deliberate quit instead.
-        marker.unlink(missing_ok=True)
         say(f"Could not start the helper that brings {cwd} back: {exc}")
         say("    Nothing was ended.")
+        _disarm(marker, say)
         return 1
 
     say(f"Restarting {cwd}.")
@@ -109,10 +109,19 @@ def relaunch(pid: int, cwd: str, kind: str, *, dry_run: bool = False,
     except Exception as exc:
         # The helper times out on its own and types nothing; the marker has
         # to go now, or it would fire on the user's next deliberate quit.
-        marker.unlink(missing_ok=True)
         say(f"Could not end session {pid}: {exc}")
+        _disarm(marker, say)
         return 1
     return 0
+
+
+def _disarm(marker, say) -> None:
+    """Remove the marker, or say it is still armed and for how long."""
+    try:
+        marker.unlink(missing_ok=True)
+    except OSError as exc:
+        say(f"    The restart marker could not be removed ({exc}): quitting "
+            f"within {RESTART_MARKER_TTL_SECONDS}s would relaunch the session.")
 
 
 def _resume_command(session, kind: str) -> str:

@@ -196,6 +196,25 @@ def test_a_helper_that_cannot_start_ends_nothing(desk, monkeypatch):
     assert not desk.marker.exists()
 
 
+def test_a_marker_that_will_not_go_is_reported_not_raised(desk, monkeypatch):
+    """Still armed, it would relaunch the session on a quit the user meant.
+    That is theirs to know, and the reason nothing was ended still is."""
+    def _boom(*a):
+        raise OSError("no")
+
+    def _locked(self, missing_ok=False):
+        raise PermissionError("in use")
+
+    said = []
+    monkeypatch.setattr(relaunch_mod, "_spawn_helper", _boom)
+    monkeypatch.setattr(type(desk.marker), "unlink", _locked)
+
+    assert relaunch_mod.relaunch(desk.session.pid, CWD, "claude",
+                                 say=said.append) == 1
+    assert any("Nothing was ended" in s for s in said)
+    assert any("would relaunch the session" in s for s in said)
+
+
 def test_a_helper_is_never_started_without_breakaway(monkeypatch, tmp_path):
     """Windows refuses breakaway only to a process in a job that forbids it -
     exactly where a helper started without it could die with the session and
