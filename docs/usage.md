@@ -122,12 +122,6 @@ recognized targets and exited; ordinary tabs or unresponsive sessions keep it
 open. Quit attempts wait up to 20 seconds per session and include a retry.
 Prompts or active work may consume the keystrokes instead of exiting.
 
-A restart dispatched by `--self` is the exception, because it is aimed at a
-session that is by construction in the middle of a turn. It waits as long as
-its restart marker can still deliver — two minutes — resending every twenty
-seconds and then going quiet well before the deadline, so that a session acting
-on a late keystroke does not exit after the marker has gone stale.
-
 Full `restart` saves a fresh capture **before** teardown, then deploys it and
 skips sessions that stayed alive. If that capture loses a repository that is
 still running — a window that read as empty rather than a session that went
@@ -152,64 +146,58 @@ restart with named restarts. They share markers without transaction isolation.
 Periodic capture can also observe a session's restart gap and temporarily drop
 it; the next capture can add it back.
 
+A timed-out named restart may still relaunch if the agent exits before its
+marker expires. Do not delete restart markers manually while another session
+may be consuming them.
+
 ## Self restart
 
-An agent uses these shell commands **inside its own terminal session**:
+Run from inside an agent session — through its shell tool, or as `/relaunch`
+below — this restarts that session in the same tab:
 
 ```powershell
 reloaded restart --self --dry-run
-reloaded restart --self --after 10
+reloaded restart --self
 ```
 
-Reloaded identifies the caller through its parent process chain, not the shell's
-current directory. The normal path starts a detached helper with a five-second
-default delay; `--after` changes that delay. A successful return confirms
-handoff, not completion. Save a concise handoff note, finish the turn before
-the delay expires, and check the session after it returns.
+The session is found through the parent process chain, so it is exact even
+when another agent shares its directory. It is ended by pid, together with its
+MCP servers, rather than asked to quit: typing a quit command needs keyboard
+focus and an idle session, and the session running this command has neither.
+How it comes back depends on the tab:
 
-The detached helper receives the calling session's absolute directory, and a
-`--repos-root` derived from it — the session's own parent directory, not the
-one the calling process happens to be using. The path settles which session is
-restarted; the root is what lets the helper find that session's tab, since a
-Codex tab has no transcript title to match on and resolves by name under the
-root instead. A session outside the default root restarts correctly, and two
-checkouts sharing a basename cannot be confused. The dry run prints the command
-as it will really run, root included, so check it names the session you meant.
+- **A Reloaded tab** relaunches it from its restart marker, with its captured
+  command.
+- **A tab started by hand in PowerShell** gets the resume command written into
+  its shell's console input, which needs no focus. For Claude Code, which
+  hands its session id to the commands it runs, that command ends in
+  `--resume <session id>`, so the same conversation returns even when the
+  session was started with a bare `--resume` or with none. Codex gets its
+  original command line back. A hand tab under any other shell is refused
+  before anything is ended.
 
-`--self` cannot take repository names. It refuses an ordinary terminal and a
-hand-started session whose shell has no Reloaded loop. Restart a hand-started
-session once from another terminal using its repository path to upgrade it.
+A Reloaded tab replays its captured command, so what comes back is whatever
+that command resumes — `--continue`, by default, the directory's latest
+conversation.
 
-For manual exit timing, arm the marker without dispatching a helper:
+A successful return means the restart was handed off. A detached helper does
+the relaunch once the session is gone, and records what it did in
+`~/.reloaded/reloaded.log`. `--self` cannot take repository names.
 
-```powershell
-reloaded restart --self --arm-only
+As a Claude Code user command, `~/.claude/commands/relaunch.md`:
+
+```markdown
+---
+allowed-tools: Bash(reloaded restart --self)
+description: "Restart this session in place, now."
+effort: low
+---
+!`reloaded restart --self`
+
+The command above has already run. If this session is still here to read it,
+the restart did not happen: repeat its output in one line and stop.
 ```
 
-Quit through the agent's UI within two minutes. After that, the marker expires
-and an ordinary quit closes the tab instead of relaunching it. To disarm a
-waiting marker while still in that session:
-
-```powershell
-reloaded restart --self --cancel
-```
-
-Cancellation clears only the marker, and what that achieves depends on where a
-dispatched helper has got to. There are three outcomes:
-
-- **During its opening delay**, nothing. Nothing is armed yet, and the helper
-  will arm and proceed as though the cancel had not happened.
-- **Armed, nothing typed yet**, it works. The helper re-reads the marker before
-  every keystroke and on every poll, so it stops and leaves the session running.
-- **After it has typed a quit key**, it is too late. That key cannot be
-  recalled, and because the marker has now gone, an exit it causes closes the
-  tab instead of relaunching it. The helper says so and stops adding to it, but
-  the tab needs looking at. What is waiting there differs by agent: Claude's
-  `/exit` is buffered text that your own next Enter would submit, while an
-  interrupt sent to Codex has already been acted on — raising its quit chord,
-  or cancelling a review, or returning it to the main thread, which are not
-  distinguishable from outside.
-
-Likewise, a timed-out named restart may still relaunch if the agent exits
-before its marker expires. Do not delete restart markers manually while another
-session may be consuming them.
+Claude Code runs the `!` line while expanding the command, before the model is
+asked anything, and a successful run ends the session there. The prompt below
+it is only ever read when the restart was refused.

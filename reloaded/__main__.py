@@ -7,7 +7,6 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from typing import NamedTuple
 
 from . import agents as agents_mod
 from . import capture as capture_mod
@@ -16,6 +15,7 @@ from . import discover as discover_mod
 from . import editor as editor_mod
 from . import layout as layout_mod
 from . import readiness as readiness_mod
+from . import relaunch as relaunch_mod
 from . import tabs as tabs_mod
 from . import tasks as tasks_mod
 from . import teardown as teardown_mod
@@ -70,13 +70,6 @@ def _print_down_result(result: dict, *, timed_out_note: str = "") -> None:
     if result["timed_out"]:
         print(f"[warn] {len(result['timed_out'])} session(s) did not exit in time{timed_out_note}:")
         for title, cwd in result["timed_out"]:
-            print(f"    - {title}  [{cwd}]")
-    # `.get`, because callers in the suite build this dict by hand and a
-    # teardown that was never given `still_wanted` cannot produce one.
-    if result.get("disarmed"):
-        print(f"{len(result['disarmed'])} session(s) called off before they "
-              "were restarted:")
-        for title, cwd in result["disarmed"]:
             print(f"    - {title}  [{cwd}]")
     if result["left_open"]:
         print(f"{len(result['left_open'])} window(s) left open (see warnings above).")
@@ -768,25 +761,7 @@ def _sweep_stale_markers() -> None:
 
 def cmd_restart_one(args, repos: list[str]) -> int:
     """Restart only the named sessions, in place, without closing their tabs."""
-    after = float(getattr(args, "after", 0) or 0)
-    if after > 0:
-        # Only `--self` sets this, and only for the session that dispatched
-        # this process. It has to finish the turn it is in the middle of before
-        # anything types into it - the tool call that spawned us has to return,
-        # and the reply after it has to land. Typing early is not fatal (the
-        # resend in execute_down covers it) but it is a keystroke aimed at a
-        # session that is still writing.
-        import time
-
-        time.sleep(after)
-
     cwds = [resolve_repo(r, args.repos_root) for r in repos]
-    # Not `--after > 0`. That is a public option a named restart takes
-    # alongside any number of repos, so reading it as "this was dispatched"
-    # would hand `restart a b c --after 5` the marker-long patience below on
-    # every one of them - minutes of typing at sessions whose owner is sitting
-    # there watching.
-    dispatched = getattr(args, "dispatched", False) and not args.dry_run
 
     # Both halves of one walk. Asking `live_sessions()` and `crowded_dirs()`
     # separately pays two full process_iter sweeps for one question - 1.47s
@@ -836,24 +811,13 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     down = teardown_mod.execute_down(
         plans, close_emptied=False, before_exit=arm,
         kinds={s.key: s.agent for s in sessions},
-        patience=SELF_EXIT_PATIENCE_SECONDS if dispatched else None,
-        still_wanted=_still_armed if dispatched else None,
     )
     _print_down_result(down, timed_out_note=" — not restarted")
 
     stuck = {norm(cwd) for _t, cwd in down["timed_out"]}
-    called_off = {norm(cwd) for _t, cwd in down.get("disarmed", ())}
     print("\nWaiting for them to come back...")
     failed = False
     for s in sessions:
-        if s.key in called_off:
-            # Not routed to `_report_never_exited`, which would say "never
-            # exited" about a session nobody finished asking, and then read a
-            # marker that was deliberately removed. And not a failure: the
-            # cancel is a request, and this is it being honoured.
-            print(f"    {s.cwd} was called off — still running as pid "
-                  f"{s.pid}, not restarted")
-            continue
         if s.key in stuck:
             came_back = _report_never_exited(s)
         elif s.launcher == discover_mod.HAND:
@@ -864,27 +828,6 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     return 1 if failed else 0
 
 
-def _still_armed(cwd: str) -> bool:
-    """Whether typing at `cwd` again could still produce a restart.
-
-    `restart --self --cancel` deletes the marker, and this is what makes that
-    mean something for a helper already dispatched: the helper is the thing
-    typing, and a key it lands after the cancel ends a session nothing will
-    bring back. While the wait was twenty seconds that race was small; it is
-    now as long as the marker's life, so the helper asks - before every key and
-    on every poll, which is why a cancel after arming genuinely stops one.
-
-    Up to the point it has typed. After that the key is out, the cancel cannot
-    recall it, and `execute_down` reports that as its own outcome rather than
-    as a clean stop.
-
-    The marker being gone *while the session is still running* has one cause.
-    The shell only consumes it after its agent exits, and by then the poll that
-    calls this has already ended.
-    """
-    return restart_marker(cwd).exists()
-
-
 def _nothing_running_there(cwds, live) -> str:
     """Why this batch cannot start, or "" if every named repo has a session."""
     missing = [c for c in cwds if norm(c) not in live]
@@ -892,16 +835,6 @@ def _nothing_running_there(cwds, live) -> str:
         return ""
     return "\n".join([f"Not running: {c}" for c in missing]
                      + ["", "`reloaded status` lists the live sessions."])
-
-
-def _shared_with(cwd: str) -> list | None:
-    """The agent kinds sharing `cwd`, or None when it holds one session.
-
-    A full `process_iter` walk, so it is asked only where the answer changes
-    what happens - never on `--arm-only`, which needs no tab and is the one
-    restart a shared directory cannot confuse.
-    """
-    return discover_mod.crowded_dirs().get(norm(cwd))
 
 
 def _shared_directory(cwds, crowded) -> str:
@@ -1079,11 +1012,8 @@ def _report_never_exited(s: _Restarting) -> bool:
     # hand-launched session, which is armed with nothing by design.
     if s.launcher != discover_mod.RELOADED:
         return False
-    # Read, not assumed. This used to print the TTL as a constant, which was
-    # near enough while the wait before it was twenty seconds. A dispatched
-    # restart now waits out the whole marker, so by the time it reaches here
-    # the marker is expired - and "it will restart if it exits within 2 min"
-    # would be describing a window that closed while the caller waited.
+    # Read, not assumed: the marker has been ageing through the whole wait, so
+    # quoting the TTL as a constant would describe a window that is partly gone.
     left = _marker_life_left(s.cwd)
     if left > 0:
         print(f"        its restart is still armed: it will restart if it "
@@ -1193,185 +1123,13 @@ def _reopen_in_a_new_tab(s: _Restarting) -> bool:
 # directory on the next run.
 
 
-SELF_RESTART_DELAY_SECONDS = 5.0
-# How long a dispatched helper keeps asking its target to quit. Not a number of
-# its own: the tab's shell compares the marker's age at the moment the agent
-# exits against deploy.RESTART_MARKER_TTL_SECONDS, so that span is exactly the
-# one in which exiting still means coming back. Being patient for less throws
-# away time the restart could still have used - measured, 2026-09-21: the
-# helper gave up at +30s against a session that became reachable at +83s with
-# its marker good until +120s. Being patient for more types at a session whose
-# exit would close the tab instead of relaunching it.
-SELF_EXIT_PATIENCE_SECONDS = deploy_mod.RESTART_MARKER_TTL_SECONDS
-
-
-def _dispatch_restart(repo: str, layout: str, after: float, repos_root: str) -> int:
-    """Start `restart <repo>` in a process that outlives this session.
-
-    `repo` is an absolute path, not a name. The helper is a fresh process with
-    its own working directory and its own idea of a default root, so a name is
-    only as good as the root it is resolved against - and two checkouts called
-    `app` under different roots are the same name. The path is the identity.
-
-    `repos_root` is a separate need, and the caller's own `--repos-root` is the
-    wrong value for it. Routing is settled by the absolute path, but the helper
-    still has to find the session's TAB, and `capture.resolve_tab` falls back to
-    matching a title against a root - a Codex tab is never in the transcript
-    title map, so that fallback is its only route.
-
-    Someone running `--self` from outside the default root has no reason to have
-    typed `--repos-root`: they are not naming a repo. Forwarding their flag
-    hands the helper `~/repos` in precisely the case this exists for, and the
-    failure is silent - the target is unambiguous, the tab is unfindable,
-    `_no_tab_to_type_into` refuses the batch, and the refusal goes to the
-    helper's DEVNULL after the dispatching session has said "Nothing further to
-    do."
-
-    So the caller passes `os.path.dirname(cwd)`: the path already in hand
-    reconstructs the guess exactly, for a session under the default root and one
-    anywhere else alike.
-
-    The whole difficulty of restarting yourself is that the command doing it
-    dies with the session it ends. So it does not do it - it hands the job to a
-    process that is not inside the session at all, and that process runs the
-    ordinary named-restart path, the same one used from another tab.
-
-    DETACHED_PROCESS with CREATE_BREAKAWAY_FROM_JOB, because Claude Code runs
-    its tool calls inside a job object: a plain child is killed when the tool
-    call ends, long before it could do anything. Verified by spawning one that
-    wrote a file eight seconds after its parent exited. Breakaway is refused on
-    some systems, so a plain detached spawn is the fallback - it may not
-    survive, and the marker the delegate writes still gets the restart done if
-    it does not.
-
-    Bootstrapped through sys.path rather than the `reloaded` shim: the package
-    is not importable from an arbitrary directory here, and the shim depends on
-    a PATH this process may not share with the one it spawns.
-    """
-    import pathlib
-    import subprocess
-
-    package_dir = str(pathlib.Path(__file__).resolve().parents[1])
-    bootstrap = (
-        f"import sys; sys.path.insert(0, {package_dir!r}); "
-        f"from reloaded.__main__ import main; "
-        f"raise SystemExit(main({['--layout', layout, '--repos-root', repos_root, 'restart', repo, '--after', str(after), '--dispatched']!r}))"
-    )
-
-    DETACHED_PROCESS = 0x00000008
-    CREATE_NEW_PROCESS_GROUP = 0x00000200
-    CREATE_BREAKAWAY_FROM_JOB = 0x01000000
-    base = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-    # -u because the account below is the only record this helper leaves and
-    # the helper is a process that gets killed rather than closed. Block
-    # buffering would hold its last and most interesting lines - the ones about
-    # what went wrong - in a buffer that never flushes.
-    argv = [sys.executable, "-u", "-c", bootstrap]
-
-    # The helper's account used to go to DEVNULL, which made every way this
-    # can fail silent: the session that would have read it is the one being
-    # ended, and the caller has already printed its own success. Everything
-    # worth knowing is in what the helper prints - `never exited — still
-    # running as pid N, not restarted`, and whether the marker is still armed -
-    # so the fix is a file handle, not a reporting mechanism.
-    #
-    # Opened here rather than in the helper because a helper that dies before
-    # its first print, or on the import, would leave nothing at all.
-    account = _open_account()
-    kw = dict(stdin=subprocess.DEVNULL, stdout=account, stderr=account,
-              close_fds=True)
-    try:
-        pid = subprocess.Popen(
-            argv, creationflags=base | CREATE_BREAKAWAY_FROM_JOB, **kw).pid
-    except OSError:
-        pid = subprocess.Popen(argv, creationflags=base, **kw).pid
-    has_account = account is not subprocess.DEVNULL
-    if has_account:
-        # Which session asked, since the helper's own output never says - and
-        # by the time it writes, that session has gone. Written after the spawn
-        # so it can name the pid whose lines follow it.
-        #
-        # Swallowed, because the helper is already running. A full disk here
-        # would otherwise raise out of a function that has successfully
-        # dispatched, and the caller treats an exception as "nothing was
-        # spawned": it would tell the user to start another restart, on top of
-        # the one now typing at their session.
-        try:
-            account.write(_stamped(
-                f"[reloaded] restart --self dispatched for {repo} "
-                f"(helper pid {pid})") + "\n")
-        except OSError:
-            # Swallowed, but not forgotten: the open succeeded and the first
-            # write did not, so the promise the caller builds from this flag
-            # is already false. A disk that filled between the two is the
-            # whole reason the flag exists. Codex review of this branch.
-            has_account = False
-        # Closed here, not left to interpreter exit: Popen has already given
-        # the child its own duplicate of the handle, so the helper keeps
-        # writing, and this process should not be holding the log open while
-        # it waits to be ended.
-        try:
-            account.close()
-        except OSError:
-            pass
-    # Whether there is an account at all, not just where the helper went. The
-    # caller's line about where a failure will be reported is a promise, and
-    # `_open_account` can fall back to DEVNULL - which would make that promise
-    # point at a log containing no explanation, leaving the new reporting
-    # exactly as silent as the old. Codex review of this branch.
-    return Dispatched(pid=pid, account=has_account)
-
-
-class Dispatched(NamedTuple):
-    """A helper that was started, and whether it can say anything.
-
-    `__int__` and `__eq__` are not provided on purpose: every caller wants one
-    field or the other by name, and a tuple that quietly compares equal to a
-    pid is how the account half gets forgotten again.
-    """
-
-    pid: int
-    account: bool
-
-
-def _open_account():
-    """Where a detached helper's output goes, or DEVNULL if nowhere can.
-
-    Losing the account is bad; refusing to restart because the log could not be
-    opened is worse - that is the whole command failing over its own
-    bookkeeping. Line buffered, because the writer is a process that may be
-    killed rather than closed.
-    """
-    import subprocess
-
-    try:
-        return open(log_path(), "a", buffering=1, encoding="utf-8",
-                    errors="replace")
-    except OSError:
-        return subprocess.DEVNULL
-
-
 def cmd_restart_self(args) -> int:
-    """Arm a restart for the session this command is running inside.
-
-    Every other restart path drives a session from outside it: select its tab,
-    type the quit keys, wait for it to come back. None of that works on
-    yourself. The command would be typing into its own tab and would then die
-    with the session it just ended, before it could watch for the return or
-    report anything - and whether a quit keystroke even lands while the session
-    is busy running that very command is not something this package knows.
-
-    So it does not try. The tab's shell already runs its agent inside a loop
-    that checks for a marker each time the agent exits, and the honest shape of
-    "restart me" is to leave that marker and get out of the way. The session
-    ends when you end it, cleanly, through its own UI.
-    """
+    """Restart the session this command is running inside. See `relaunch`."""
     repos = list(getattr(args, "repos", None) or [])
     if repos:
-        # `--self` is checked before `repos`, so naming both would arm the
-        # calling session and silently ignore what was named - the caller
-        # asking for one restart and getting a different one, reported as
-        # success. Refuse rather than pick.
+        # `--self` is checked before `repos`, so naming both would restart the
+        # calling session and silently ignore what was named. Refuse rather
+        # than pick.
         print(f"`--self` restarts the session you are calling from, so it "
               f"cannot also take a repo name ({', '.join(repos)}).")
         print("    Drop `--self` to restart those, or drop them to restart this one.")
@@ -1380,216 +1138,18 @@ def cmd_restart_self(args) -> int:
     found = discover_mod.owning_session()
     if found is None:
         print("Not running inside an agent session.")
-        print("    `restart --self` arms the session it is called from, so it "
-              "has to be called from inside one —")
-        print("    a Bash tool call in Claude Code, or a shell command in "
-              "Codex. From an ordinary terminal,")
-        print("    name the repo instead: `reloaded restart <repo>`.")
+        print("    `restart --self` restarts the session it is called from, so "
+              "it has to be called from")
+        print("    inside one. From an ordinary terminal, name the repo "
+              "instead: `reloaded restart <repo>`.")
         return 1
 
     pid, cwd, kind = found
     if not cwd:
-        print(f"Found the session (pid {pid}) but cannot read its directory, "
-              "so its marker cannot be addressed.")
-        print(f"    Restart it from another session: `reloaded restart <repo>`.")
+        print(f"Found the session (pid {pid}) but cannot read its directory.")
+        print("    Quit it and start it again yourself.")
         return 1
-
-    marker = restart_marker(cwd)
-    label = agents_mod.for_kind(kind).quit_label
-
-    if getattr(args, "cancel", False):
-        # Safe here and almost nowhere else: the session asking is still
-        # running, so nothing is about to read this marker. Every other place
-        # that deletes one is guessing about a shell it cannot see.
-        existed = marker.exists()
-        try:
-            marker.unlink(missing_ok=True)
-        except OSError as exc:
-            print(f"[warn] could not remove {marker}: {exc}")
-            return 1
-        print(f"Disarmed {cwd}." if existed
-              else f"Nothing was armed for {cwd}.")
-        # This used to say a dispatched restart could not be called off at all.
-        # That was true when nothing consulted the marker again after arming;
-        # the helper now asks before every key and on every poll, so removing
-        # it does stop one - but only once there is one to remove, and only
-        # until it has typed. Three outcomes, and this command cannot see which
-        # one it is in, so it says all three rather than the flattering one.
-        # The third is the dangerous one and was missing for a round: a quit
-        # key already sent cannot be recalled, and the marker this just removed
-        # is what would have turned the resulting exit into a relaunch.
-        # Codex review of this branch.
-        print("    (A restart dispatched by `--self` runs outside this "
-              "session. What removing this")
-        print("     marker does depends on where it has got to:")
-        print("       still in its opening delay — nothing. It will arm and "
-              "proceed.")
-        print(f"       armed, nothing typed yet — it stops, and leaves the "
-              f"session running.")
-        print(f"       already typed {label} — too late. That key cannot be "
-              "recalled, and without")
-        print("         this marker the exit it causes closes the tab "
-              "instead of relaunching.")
-        print(f"         Look at {cwd}:")
-        print(f"         {agents_mod.for_kind(kind).unsent_quit}.)")
-        return 0
-
-    ttl = deploy_mod.RESTART_MARKER_TTL_SECONDS
-    after = float(getattr(args, "after", 0) or 0) or SELF_RESTART_DELAY_SECONDS
-    arm_only = getattr(args, "arm_only", False)
-    hand_started = discover_mod.launcher_kind(pid) == discover_mod.HAND
-
-    # Both paths refuse a hand-started session, for different reasons, so each
-    # says its own. One message served both and described a marker that the
-    # dispatch path never writes - refusing correctly while explaining
-    # something the command would not have done.
-    if hand_started:
-        if arm_only:
-            print(f"{cwd} was started by hand, so nothing will read a marker.")
-            print("    Its shell is a plain prompt with no restart loop in it "
-                  "— arming would leave a file on disk")
-            print("    that no one collects.")
-        else:
-            # Not a marker problem: this path spawns a helper and writes
-            # nothing. The reason to refuse is what succeeding would change.
-            print(f"{cwd} was started by hand, so restarting it would "
-                  "change the tab:")
-            _print_hand_upgrade("would be")
-            print("    `--self` will not make that change to the session it is "
-                  "called from")
-            print("    on one keystroke.")
-        # The way out this names has to be one that will work. In a directory
-        # holding two sessions, `restart <repo>` refuses for its own reasons
-        # (see _shared_directory), and sending someone there would be sending
-        # them to a second refusal that does not mention this one.
-        sharing = _shared_with(cwd)
-        if sharing:
-            print(f"    {len(sharing)} agent sessions share this directory "
-                  f"({', '.join(sharing)}), so `reloaded restart")
-            print("    <repo>` cannot be aimed at it either — which tab holds "
-                  "which session is not")
-            print("    something anything can establish. Move one to its own "
-                  "directory first.")
-            return 1
-        print("    Restart it once from another session with `reloaded restart "
-              "<repo>`, which makes")
-        print("    that change deliberately; after that this works.")
-        return 1
-
-    # The root the helper resolves tab titles against, derived from the session
-    # itself rather than from this process's flag. See _dispatch_restart.
-    helper_root = os.path.dirname(cwd.rstrip("\\/")) or args.repos_root
-
-    # Both paths, and synchronously.
-    #
-    # The dispatch would otherwise reach `_shared_directory`'s refusal inside a
-    # detached process, after this command had said the session was coming
-    # back - the shape the sibling branch exists to remove.
-    #
-    # And `--arm-only` is not the safe alternative this used to offer it as.
-    # Arming needs no tab, which is true and was the whole of my reasoning, but
-    # the marker does not name a session either: `deploy.restart_loop` gives
-    # every reloaded tab in this directory a shell watching the same file, and
-    # whichever exits first consumes it. That can relaunch the other session
-    # and then close this one's tab when its own quit finds nothing left to
-    # read - the wrong-session outcome the rest of this refuses to risk,
-    # reached by the path I had called exempt. Codex review of this branch.
-    sharing = _shared_with(cwd)
-    if sharing:
-        print(f"{len(sharing)} agent sessions share {cwd} "
-              f"({', '.join(sharing)}).")
-        if arm_only:
-            print("\n    Arming needs no tab, but the marker does not name a "
-                  "session. Every reloaded")
-            print("    shell in this directory watches the same file, and "
-                  "whichever exits first")
-            print(f"    consumes it — which can relaunch the other session and "
-                  f"then close this tab")
-            print(f"    when your own {label} finds nothing left to read.")
-        else:
-            print("\n    The helper this would hand the job to has to find "
-                  "your tab, and nothing")
-            print("    connects a tab to the process inside it — so it would "
-                  "refuse, in a detached")
-            print("    process, after this command had already said the "
-                  "session was coming back.")
-        print("\n    Move one of them to its own directory.")
-        return 1
-
-    if not arm_only:
-        if args.dry_run:
-            # The command as it will really run, not a readable summary of it:
-            # this preview is the last chance to notice the helper has been
-            # aimed at a different `app`, and the root is half of that aim.
-            print(f"Would hand {cwd} to a detached "
-                  f"`reloaded --repos-root \"{helper_root}\" restart \"{cwd}\"` "
-                  f"starting in {after:.0f}s.")
-            print("\nDry run — nothing spawned.")
-            return 0
-        try:
-            helper = _dispatch_restart(cwd, args.layout, after, helper_root)
-        except Exception as exc:
-            print(f"[warn] could not start the restart: {exc}")
-            print(f"    Fall back to `reloaded restart --self --arm-only` and "
-                  f"quit with {label}.")
-            return 1
-        print(f"Restarting {cwd} (pid {pid}, {kind}).")
-        print(f"\n    Handed to pid {helper.pid}, which starts in "
-              f"{after:.0f}s — it lives outside this session,")
-        print(f"    so it survives the exit. It will steal focus, send "
-              f"{label}, and bring the session")
-        print(f"    back in this same tab, retrying for up to "
-              f"{SELF_EXIT_PATIENCE_SECONDS // 60:.0f} minutes while this "
-              "session is busy.")
-        # It used to end "Nothing further to do." - printed the instant the
-        # helper was spawned, before anything had been attempted, by a process
-        # that was about to die and could never take it back.
-        if helper.account:
-            print(f"\n    If it does not come back, that is the only place it "
-                  f"will be said: {log_path()}")
-        else:
-            # The restart still goes ahead; only the reporting is gone. Saying
-            # so is the difference between a user who knows to watch the tab
-            # and one sent to read a log with nothing in it.
-            print(f"\n    [warn] {log_path()} could not be opened, so the "
-                  "helper has nowhere to report.")
-            print("    If the session does not come back, nothing will say "
-                  "why — watch the tab.")
-        return 0
-
-    if args.dry_run:
-        print(f"Would arm {cwd} (pid {pid}, {kind}) by writing {marker}.")
-        print("\nDry run — nothing written.")
-        return 0
-
-    # The crowding refusal above is a snapshot, and this file outlives it by
-    # two minutes. A second reloaded tab opened in this directory before the
-    # user quits gets a shell watching this very marker, and whichever exits
-    # first consumes it - the same wrong-session relaunch, through a window the
-    # scan cannot see. Not closable here: a marker names a directory, because
-    # `deploy.restart_loop` bakes that path into PowerShell that is already
-    # running in every open tab and cannot be updated for them. See #37, and
-    # the "no generation or nonce" note in docs/architecture.md that this is
-    # one consequence of. Codex review of this branch.
-    try:
-        marker.write_text("restart", encoding="utf-8")
-    except OSError as exc:
-        print(f"[warn] could not arm {cwd}: {exc}")
-        return 1
-
-    print(f"Armed {cwd} (pid {pid}, {kind}).")
-    print(f"\n    Quit with {label} in the next {ttl // 60} minutes and its "
-          "tab relaunches it in the same slot.")
-    # Naming the consequence rather than saying the marker is "ignored". It is
-    # ignored, and the tab still closes - the loop breaks and the shell exits
-    # like any ordinary quit. A user who read "ignored" as "nothing happens"
-    # would be surprised by an empty slot.
-    print(f"    Later than that the marker is stale, and quitting just closes "
-          "the tab as usual —")
-    print(f"    you would reopen it with `reloaded open \"{cwd}\"`, at the end "
-          "of the strip.")
-    print("\n    `reloaded restart --self --cancel` calls it off.")
-    return 0
+    return relaunch_mod.relaunch(pid, cwd, kind, dry_run=args.dry_run)
 
 
 def cmd_restart(args) -> int:
@@ -1940,34 +1500,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     restart.add_argument(
         "--self", dest="self_", action="store_true",
-        help="restart the session this is run from, in place; hands the job to "
-             "a detached process that outlives the exit (call from inside a "
-             "session)",
-    )
-    restart.add_argument(
-        "--arm-only", dest="arm_only", action="store_true",
-        help="with --self, only leave the marker — you quit the session "
-             "yourself, nothing is spawned",
-    )
-    restart.add_argument(
-        "--cancel", action="store_true",
-        help="with --self, remove the restart marker: disarms a waiting "
-             "--arm-only, and calls off a dispatched helper once it has armed "
-             "and before it has typed",
-    )
-    restart.add_argument(
-        "--after", type=float, default=0.0, metavar="SECONDS",
-        help="wait this long before starting; --self uses it to let the "
-             "calling session finish its turn",
-    )
-    # Not `--after > 0`, which is what the dispatched path used to be inferred
-    # from. `--after` is a public option and a named restart takes any number
-    # of repos, so `restart a b c --after 5` would have claimed the marker-long
-    # patience on every one of them - minutes of typing at sessions whose owner
-    # is sitting there watching. The comment saying "only --self sets this" was
-    # true of intent and of nothing the parser enforced.
-    restart.add_argument(
-        "--dispatched", action="store_true", help=argparse.SUPPRESS,
+        help="restart the session this is run from, in place (call from "
+             "inside a session - it is what /relaunch runs)",
     )
     restart.add_argument(
         "--dry-run", action="store_true", help="print what would be captured/exited/relaunched, do nothing"

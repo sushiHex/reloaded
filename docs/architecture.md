@@ -36,20 +36,17 @@ discovery keeps the last process enumerated at a cwd, `plan_down` keeps the
 first tab that resolves to it — so the result can carry one session's pid
 beside another session's tab: the quit keys reach one, the wait watches the
 other, and the outcome is reported against the wrong one. `restart --self`
-refuses for the same reason before dispatching, since its helper would
-otherwise reach that refusal inside a detached process after the calling
-session had been told it was coming back. `--arm-only` refuses too, for a
-different reason: arming needs no tab, but the marker does not name a session
-either. Every reloaded shell in that directory watches the same file, so
-whichever exits first consumes it — relaunching the other session and then
-closing the caller's tab when its own quit finds nothing left to read.
+does not refuse: it takes its session's pid from its own process ancestry and
+ends exactly that process.
 
-That refusal is a snapshot, and an armed marker outlives it by two minutes. A
-second session opened in the same directory before the caller quits reaches the
-same hazard through a window the scan cannot see. Closing it needs a marker
-that names a session rather than a directory, which the launcher's generated
-PowerShell cannot be given retroactively — it is already running in every open
-tab.
+It still arms the directory's marker, because that is how a loop is told to
+relaunch, and the marker does not name a session. A second looping session in
+the same directory that exits while the marker is armed — from just before the
+caller is ended until its own loop, or for a hand tab the helper, takes it —
+would take it instead, and the caller would not come back. Closing
+that needs a marker that names a session rather than a directory, which the
+launcher's generated PowerShell cannot be given retroactively — it is already
+running in every open tab.
 
 ## Capture and placement
 
@@ -121,28 +118,35 @@ stops instead of repeatedly launching against an unconsumed marker.
 
 The restart coordinator leaves timed-out markers in place because a slow
 session may still exit within the valid interval. The launcher handles expiry;
-subsequent named restarts sweep stale markers. Explicit self-cancellation
-removes a waiting marker while its session is still alive, and a dispatched
-helper reads that removal too — before every keystroke and on every poll — so
-cancelling after it has armed stops it typing and leaves the session running.
-Cancelling during its opening delay changes nothing, because there is nothing
-armed yet. Cancelling after a quit key has gone out is too late: the key cannot
-be recalled, and without the marker the exit it causes closes the tab rather
-than relaunching, so the helper reports that outcome as distinct from a clean
-cancel and stops adding to what is already in the prompt. It does not try to
-retract the partial command, on the same grounds as the timeout branch — it
-cannot read that screen, and typing more at a session it was told to stop
-typing at is how it would do damage.
+subsequent named restarts sweep stale markers.
 
 For hand-started sessions, Reloaded types a short command invoking a generated
 PowerShell script into the waiting shell. Keeping the full launcher in a file
 avoids SendKeys metacharacters and dropped long input. The script ends the host
 shell after a successful run so the adopted tab follows normal launcher behavior.
 
-Self restart delegates to a detached process using breakaway-from-job flags when
-Windows permits them, with a plain detached fallback. The helper drives the
-ordinary named-restart path. Its survival depends on host process supervision;
-its initial dispatch cannot certify the final result.
+Self restart (`relaunch.py`) does not use the teardown path at all. Aimed at
+itself, that path fails twice over, and both were seen live: typing needs
+keyboard focus, which Windows refuses a background process once the user looks
+elsewhere, and the session is busy running the very command doing the typing,
+so an auto-compaction swallowed `/exit` whole. Instead the session is ended by
+pid, its children with it except the calling process's own line, and a
+detached helper sees it back. That helper waits for the pid to die and then
+gives a loop two seconds to take the marker. Its own attempt to delete the
+marker settles it: if the file is already gone, something took it — the
+caller's loop, or in a shared directory another one — and the helper writes
+nothing; if the delete succeeds, it writes the resume command into the
+shell's console input buffer with `WriteConsoleInputW`. The buffer belongs to
+the shell's console, so it needs no focus and cannot land in another window.
+It does queue behind anything already typed there, and it assumes the shell
+is an interactive prompt; a `pwsh -Command "claude; exit"` tab closes instead,
+and the helper can only log that.
+
+The helper is spared by ancestry rather than by pid, because from a venv
+`python.exe` is a redirector whose child does the work. It is spawned with
+breakaway-from-job and nothing is ended if Windows refuses that. Any failure
+to end the session removes the marker, and the helper removes it too if the
+session outlives its wait. Its only report is the log.
 
 There is no generation or nonce on a restart marker. Overlapping restarts of
 one repository collapse into one request; full and named restarts do not
