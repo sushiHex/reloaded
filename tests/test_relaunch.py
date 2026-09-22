@@ -362,6 +362,18 @@ def test_nothing_is_written_while_the_session_is_alive(helper, monkeypatch):
     assert not helper["marker"].exists(), "left to fire on a later quit"
 
 
+def test_the_wait_outlasts_the_marker(helper, monkeypatch):
+    """A session that exits late must still find the marker armed. Given up
+    on any sooner, it would be ended with nothing to bring it back."""
+    exits_at = relaunch_mod.RESTART_MARKER_TTL_SECONDS - 1
+    monkeypatch.setattr(relaunch_mod, "_alive", lambda pid, created:
+                        pid != 20 or helper["now"] < exits_at)
+
+    _bring_back(helper)
+
+    assert helper["typed"] == [(10, "claude --resume id")]
+
+
 def test_a_marker_taken_at_the_last_moment_is_the_loops(helper, monkeypatch):
     """The unlink decides, not the check before it. A loop that takes the
     marker in between has relaunched the agent, and a command written now

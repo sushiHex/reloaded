@@ -41,16 +41,18 @@ import time
 from . import agents as agents_mod
 from . import discover as discover_mod
 from . import win32 as win32_mod
+from .deploy import RESTART_MARKER_TTL_SECONDS
 from .paths import log_path, restart_marker
 
 # The shells a resume command can be written into. The command is quoted for
 # PowerShell (discover._format_command), so nothing else would parse it.
 SHELLS = ("pwsh.exe", "powershell.exe")
 
-# How long the helper waits for the session to be gone before giving up. It is
-# ended with TerminateProcess, so this is a bound on an OS call, not on the
-# session's goodwill.
-EXIT_WAIT_SECONDS = 30.0
+# How long the helper waits for the session to be gone before giving up: as
+# long as the marker can still deliver, so that a late exit is never met by a
+# disarmed tab. Past it a loop ignores the marker anyway, and removing it
+# costs nothing.
+EXIT_WAIT_SECONDS = float(RESTART_MARKER_TTL_SECONDS)
 
 # How long a looping tab gets to take the marker before the helper concludes
 # there is no loop. The loop takes it on the line straight after the agent
