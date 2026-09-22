@@ -234,6 +234,10 @@ def bring_back(session_pid: int, session_created: float, shell_pid: int,
     except FileNotFoundError:
         note(f"pid {session_pid} ended; its tab's loop is bringing it back")
         return
+    except OSError as exc:
+        # Still there, so nothing took it: bring the session back anyway. The
+        # marker expires on its own; the tab would not.
+        note(f"could not remove the restart marker ({exc}); it expires in 2 min")
 
     # Nobody took it, so this is a plain shell sitting at its prompt.
     if not _alive(shell_pid, shell_created):

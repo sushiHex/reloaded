@@ -266,6 +266,19 @@ def test_another_sessions_id_is_not_used(desk, monkeypatch):
     # After `--` is the opening prompt; resuming would send it again.
     (["claude", "--verbose", "--", "fix it"], ["claude", "--verbose", "--resume", "id"]),
     (["claude", "--", "-r", "x"], ["claude", "--resume", "id"]),
+    # A bare word no option claims is the opening prompt: resuming would send
+    # it again, into a session that may already have done it.
+    (["claude", "fix the tests"], ["claude", "--resume", "id"]),
+    (["claude", "--continue", "fix the tests"], ["claude", "--resume", "id"]),
+    (["claude", "--dangerously-skip-permissions", "fix"],
+     ["claude", "--dangerously-skip-permissions", "--resume", "id"]),
+    (["claude", "--model", "opus", "fix"], ["claude", "--model", "opus", "--resume", "id"]),
+    (["claude", "--model=opus", "fix"], ["claude", "--model=opus", "--resume", "id"]),
+    # ...but an option's values stay, all of them for a variadic one.
+    (["claude", "--add-dir", "a", "b", "--verbose"],
+     ["claude", "--add-dir", "a", "b", "--verbose", "--resume", "id"]),
+    # An option newer than the table keeps its value rather than lose it.
+    (["claude", "--brand-new", "x"], ["claude", "--brand-new", "x", "--resume", "id"]),
     # Unreadable argv: the default launch, still aimed at this conversation.
     ([], ["claude", "--dangerously-skip-permissions", "--resume", "id"]),
 ])
@@ -370,6 +383,27 @@ def test_a_marker_taken_at_the_last_moment_is_the_loops(helper, monkeypatch):
     _bring_back(helper)
 
     assert helper["typed"] == []
+
+
+def test_a_marker_that_will_not_delete_still_brings_it_back(helper, monkeypatch):
+    """Still there means nothing took it, and the session is already gone.
+    A locked marker expires on its own; an empty tab would not."""
+    class _Locked:
+        def __init__(self, _path):
+            pass
+
+        def exists(self):
+            return True
+
+        def unlink(self, missing_ok=False):
+            raise PermissionError("in use")
+
+    monkeypatch.setattr(relaunch_mod, "pathlib",
+                        types.SimpleNamespace(Path=_Locked))
+
+    _bring_back(helper)
+
+    assert helper["typed"] == [(10, "claude --resume id")]
 
 
 class _Gone(Exception):

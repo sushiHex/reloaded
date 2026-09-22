@@ -57,6 +57,11 @@ class Agent:
     # kind whose sessions can be named. Empty for one that cannot, which is
     # left resuming however it already does. See `resume_exactly`.
     resume_by_id: tuple = ()
+    # Options that take no value, and options that take every value after
+    # them. `resume_exactly` needs them to tell an opening prompt from an
+    # option's value; any option in neither is read as taking one.
+    bare_flags: tuple = ()
+    variadic_flags: tuple = ()
 
 
 def _codex_home() -> str:
@@ -83,6 +88,23 @@ CLAUDE = Agent(
     resume_tokens=("--continue", "-c", "--resume", "-r", "--fork-session"),
     sessions_dir=os.path.join(os.path.expanduser("~"), ".claude", "projects"),
     resume_by_id=("--resume", "-r"),
+    # From `claude --help`, 2.1.280: every option with no <value> or [value],
+    # and every one whose value is <values...>. A flag added later reads as
+    # taking one value, which at worst keeps a prompt - never drops a value.
+    bare_flags=(
+        "--allow-dangerously-skip-permissions", "--ax-screen-reader",
+        "--background", "--bare", "--bg", "--brief", "--chrome", "--continue",
+        "--dangerously-skip-permissions", "--disable-slash-commands",
+        "--exclude-dynamic-system-prompt-sections", "--fork-session",
+        "--forward-subagent-text", "--help", "--ide", "--include-hook-events",
+        "--include-partial-messages", "--no-chrome", "--no-session-persistence",
+        "--print", "--replay-user-messages", "--restricted", "--safe-mode",
+        "--strict-mcp-config", "--tmux", "--verbose", "--version",
+        "-c", "-h", "-p", "-v"),
+    variadic_flags=(
+        "--add-dir", "--allowed-tools", "--allowedTools", "--betas",
+        "--disallowed-tools", "--disallowedTools", "--file", "--mcp-config",
+        "--tools"),
 )
 
 CODEX = Agent(
@@ -144,8 +166,8 @@ def resume_exactly(kind, argv: list, session_id: str | None) -> list:
     `--resume` opens a picker and plain `claude` starts empty, and neither is a
     restart.
 
-    Everything from a `--` on goes too: it is the opening prompt, and resuming
-    would send it into the conversation again.
+    The opening prompt goes too - after a `--`, or as a bare word no option
+    claims - because resuming would send it into the conversation again.
 
     With no `argv` - it could not be read - the kind's default launch is
     rewritten instead, so a known id is not lost to it.
@@ -158,15 +180,24 @@ def resume_exactly(kind, argv: list, session_id: str | None) -> list:
     argv = list(argv) or agent.launch.split()
     if "--" in argv[1:]:
         argv = argv[:argv.index("--", 1)]
-    kept, i = [argv[0]], 1
-    while i < len(argv):
-        flag, has_value = argv[i].split("=", 1)[0], "=" in argv[i]
-        i += 1
-        if flag not in agent.resume_tokens:
-            kept.append(argv[i - 1])
-        elif (flag in agent.resume_by_id and not has_value
-              and i < len(argv) and not argv[i].startswith("-")):
-            i += 1  # the conversation it named
+    # What the last option still accepts: nothing, one value, every value, or
+    # the conversation a dropped resume flag named.
+    kept, takes = [argv[0]], "none"
+    for arg in argv[1:]:
+        if arg.startswith("-"):
+            flag, has_value = arg.split("=", 1)[0], "=" in arg
+            if flag in agent.resume_tokens:
+                takes = ("named" if flag in agent.resume_by_id and not has_value
+                         else "none")
+                continue
+            kept.append(arg)
+            takes = ("none" if has_value or flag in agent.bare_flags
+                     else "every" if flag in agent.variadic_flags else "one")
+        elif takes in ("one", "every"):
+            kept.append(arg)
+            takes = "every" if takes == "every" else "none"
+        else:
+            takes = "none"  # a named conversation, or the opening prompt
     return kept + [agent.resume_by_id[0], session_id]
 
 
