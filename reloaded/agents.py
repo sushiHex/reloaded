@@ -147,11 +147,15 @@ def resume_exactly(kind, argv: list, session_id: str | None) -> list:
     Everything from a `--` on goes too: it is the opening prompt, and resuming
     would send it into the conversation again.
 
+    With no `argv` - it could not be read - the kind's default launch is
+    rewritten instead, so a known id is not lost to it.
+
     Unchanged for a kind whose sessions cannot be named, or with no id.
     """
     agent = for_kind(kind)
-    if not session_id or not agent.resume_by_id or not argv:
+    if not session_id or not agent.resume_by_id:
         return list(argv)
+    argv = list(argv) or agent.launch.split()
     if "--" in argv[1:]:
         argv = argv[:argv.index("--", 1)]
     kept, i = [argv[0]], 1

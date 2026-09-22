@@ -266,6 +266,8 @@ def test_another_sessions_id_is_not_used(desk, monkeypatch):
     # After `--` is the opening prompt; resuming would send it again.
     (["claude", "--verbose", "--", "fix it"], ["claude", "--verbose", "--resume", "id"]),
     (["claude", "--", "-r", "x"], ["claude", "--resume", "id"]),
+    # Unreadable argv: the default launch, still aimed at this conversation.
+    ([], ["claude", "--dangerously-skip-permissions", "--resume", "id"]),
 ])
 def test_whatever_resumed_before_is_replaced_by_the_id(argv, expected):
     assert agents_mod.resume_exactly("claude", argv, "id") == expected
