@@ -127,7 +127,7 @@ reloaded restart --self --dry-run
 reloaded restart --self
 ```
 
-It ends the session immediately, so save anything worth keeping first. It works
+It quits the session straight away, so save anything worth keeping first. It works
 in a Reloaded tab and in a PowerShell tab started by hand, and cannot take a
 repository name. See [self restart](docs/usage.md#self-restart), which also has
 a `/relaunch` command for Claude Code.

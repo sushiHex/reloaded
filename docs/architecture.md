@@ -126,13 +126,25 @@ avoids SendKeys metacharacters and dropped long input. The script ends the host
 shell after a successful run so the adopted tab follows normal launcher behavior.
 
 Self restart (`relaunch.py`) does not use the teardown path at all. Aimed at
-itself, that path fails twice over, and both were seen live: typing needs
-keyboard focus, which Windows refuses a background process once the user looks
-elsewhere, and the session is busy running the very command doing the typing,
-so an auto-compaction swallowed `/exit` whole. Instead the session is ended by
-pid, its children with it except the calling process's own line, and a
-detached helper sees it back. That helper waits for the pid to die and then
-gives a loop two seconds to take the marker. Its own attempt to delete the
+itself, that path's UI Automation keystrokes need keyboard focus, which Windows
+refuses a background process once the user looks elsewhere. Instead a detached
+helper writes the agent's quit keys into the session's console input buffer
+with `WriteConsoleInputW`, which needs no focus. Claude Code takes `/exit` even
+while it is running the `!` line that started the helper, and that command
+waits for it, so the session quits before any model request is made.
+
+It is asked to quit rather than ended by pid, which is what this first did,
+because a session killed mid-frame left its Windows Terminal tab drawing the
+next session wrongly: lines stacked and overlaid in the terminal's own text
+buffer, while the console's buffer was clean, until the window was resized.
+It happened only in long-lived tabs, never in a fresh one, and the exact
+Windows Terminal mechanism was not found; a graceful exit avoids the question.
+Ending by pid - its children with it, except the helper's own line - is the
+fallback for a session that has not quit within a minute, on a marker written
+fresh first.
+
+The helper then waits for the pid to die and gives a loop two seconds to take
+the marker. Its own attempt to delete the
 marker settles it: if the file is already gone, something took it — the
 caller's loop, or in a shared directory another one — and the helper writes
 nothing; if the delete succeeds, it writes the resume command into the
@@ -142,11 +154,13 @@ It does queue behind anything already typed there, and it assumes the shell
 is an interactive prompt; a `pwsh -Command "claude; exit"` tab closes instead,
 and the helper can only log that.
 
-The helper is spared by ancestry rather than by pid, because from a venv
-`python.exe` is a redirector whose child does the work. It is spawned with
-breakaway-from-job and nothing is ended if Windows refuses that. Any failure
-to end the session removes the marker, and the helper removes it too if the
-session outlives its wait. Its only report is the log.
+The helper is started through an intermediate process that exits at once.
+Claude Code ends the process tree of the command it is running when it quits,
+and the command is still running then - waiting for that quit - so a helper
+started from it directly died with the session. It is spawned windowless and
+with breakaway-from-job, and nothing changes if Windows refuses that. The
+helper removes the marker if the session outlives its wait. Its only report is
+the log.
 
 There is no generation or nonce on a restart marker. Overlapping restarts of
 one repository collapse into one request; full and named restarts do not

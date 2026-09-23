@@ -94,13 +94,16 @@ def desk(monkeypatch, tmp_path):
     spawned = []
     monkeypatch.setattr(
         relaunch_mod, "_spawn_helper",
-        lambda s, sh, command, m: spawned.append(command) or helper.pid)
+        lambda s, sh, kind, command, m: spawned.append(command))
+    waited = []
+    monkeypatch.setattr(relaunch_mod, "_wait_until_gone",
+                        lambda pid, created, seconds: waited.append(pid) or True)
     monkeypatch.delenv("CLAUDE_PID", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     return types.SimpleNamespace(shell=shell, session=session, bash=bash, me=me,
                                  mcp=mcp, mcp_child=mcp_child, helper=helper,
                                  helper_child=helper_child, marker=marker,
-                                 spawned=spawned)
+                                 spawned=spawned, waited=waited)
 
 
 def _run(desk, **kw):
@@ -108,43 +111,26 @@ def _run(desk, **kw):
                                  say=lambda *_: None, **kw)
 
 
-# ── what gets ended ──────────────────────────────────────────────────────
+# ── the hand-off ─────────────────────────────────────────────────────────
 
 
-def test_it_arms_the_marker_hands_off_and_ends_the_session(desk):
+def test_it_arms_the_marker_and_hands_off_without_ending_anything(desk):
+    """The session quits on the helper's `/exit`, and cleans up after itself.
+    Ended by pid instead, it left its Windows Terminal tab drawing the next
+    session wrongly until the window was resized."""
     assert _run(desk) == 0
     assert desk.marker.read_text(encoding="utf-8") == "restart"
     assert desk.spawned, "no helper was started"
-    assert desk.session.ended
+    assert not desk.session.ended
 
 
-def test_its_children_are_ended_too(desk):
-    """Ended by pid, a session does not get to shut its MCP servers down the
-    way `/exit` would. Left alone they would outlive it."""
+def test_it_waits_for_its_session_to_quit(desk):
+    """Returned at once, the session would ask the model about the command's
+    output - over a large conversation, the expensive part - and be cut off
+    by `/exit` partway. Waiting, it quits before asking anything."""
     _run(desk)
 
-    assert desk.mcp.ended
-    assert desk.mcp_child.ended
-
-
-def test_this_process_and_the_helper_are_spared(desk):
-    """Both are the session's descendants. Ending this process's own line
-    would stop it before the session; ending the helper would leave a plain
-    tab at its prompt."""
-    _run(desk)
-
-    assert not desk.me.ended
-    assert not desk.bash.ended
-    assert not desk.helper.ended
-
-
-def test_the_helpers_own_children_are_spared(desk):
-    """The live failure: from a pipx venv the helper's pid is a redirector,
-    and the interpreter doing the work is its child. Spared by pid alone,
-    that child was ended with the session on every run, silently."""
-    _run(desk)
-
-    assert not desk.helper_child.ended
+    assert desk.waited == [desk.session.pid]
 
 
 def test_a_plain_powershell_tab_is_not_refused(desk, monkeypatch):
@@ -155,7 +141,6 @@ def test_a_plain_powershell_tab_is_not_refused(desk, monkeypatch):
                         lambda pid: discover_mod.HAND)
 
     assert _run(desk) == 0
-    assert desk.session.ended
 
 
 def test_a_plain_tab_under_something_else_is_refused_first(desk, monkeypatch):
@@ -211,14 +196,65 @@ def test_a_marker_that_will_not_go_is_reported_not_raised(desk, monkeypatch):
 
     assert relaunch_mod.relaunch(desk.session.pid, CWD, "claude",
                                  say=said.append) == 1
-    assert any("Nothing was ended" in s for s in said)
+    assert any("Nothing was changed" in s for s in said)
     assert any("would relaunch the session" in s for s in said)
+
+
+# ── starting the helper ──────────────────────────────────────────────────
+
+
+class _Started:
+    def __init__(self, argv, returncode=0):
+        self.argv = argv
+        self.returncode = returncode
+
+    def wait(self, timeout=None):
+        return self.returncode
+
+
+@pytest.fixture
+def popen(monkeypatch, tmp_path):
+    calls = []
+
+    def _popen(argv, creationflags=0, **kw):
+        calls.append((argv, creationflags))
+        return _Started(argv)
+
+    monkeypatch.setattr(relaunch_mod.subprocess, "Popen", _popen)
+    monkeypatch.setattr(relaunch_mod, "log_path", lambda: tmp_path / "log")
+    return calls
+
+
+def _spawn(tmp_path):
+    relaunch_mod._spawn_helper(_Proc(20), _Proc(10), "claude", "claude",
+                               tmp_path / "m")
+
+
+def test_the_helper_is_started_through_an_intermediate(popen, tmp_path):
+    """Claude Code ends its running command's process tree when it quits, and
+    this command is still running then. A helper started from it directly
+    died with the session; one whose parent has already exited is nobody's
+    descendant."""
+    _spawn(tmp_path)
+
+    assert len(popen) == 1
+    assert "_start_helper(" in popen[0][0][-1]
+    relaunch_mod._start_helper(20, 1.0, 10, 1.0, "claude", "claude", "m")
+    assert "bring_back(" in popen[1][0][-1]
+
+
+def test_an_intermediate_that_fails_starts_nothing(popen, monkeypatch, tmp_path):
+    monkeypatch.setattr(relaunch_mod.subprocess, "Popen",
+                        lambda argv, **kw: _Started(argv, returncode=1))
+
+    with pytest.raises(OSError):
+        _spawn(tmp_path)
 
 
 def test_a_helper_is_never_started_without_breakaway(monkeypatch, tmp_path):
     """Windows refuses breakaway only to a process in a job that forbids it -
     exactly where a helper started without it could die with the session and
-    strand the tab. So there is no fallback: the refusal ends nothing."""
+    strand the tab. So there is no fallback: the refusal changes nothing."""
     calls = []
 
     def _popen(argv, creationflags=0, **kw):
@@ -227,37 +263,56 @@ def test_a_helper_is_never_started_without_breakaway(monkeypatch, tmp_path):
 
     monkeypatch.setattr(relaunch_mod.subprocess, "Popen", _popen)
     monkeypatch.setattr(relaunch_mod, "log_path", lambda: tmp_path / "log")
-    proc = _Proc(20)
 
     with pytest.raises(OSError):
-        relaunch_mod._spawn_helper(proc, _Proc(10), "claude", tmp_path / "m")
+        _spawn(tmp_path)
     assert len(calls) == 1 and calls[0] & 0x01000000
 
 
-def test_the_helper_opens_no_window(monkeypatch, tmp_path):
+def test_the_helper_opens_no_window(popen, tmp_path):
     """Detached, a venv redirector's child was given a console of its own,
     which Windows Terminal showed as a blank window on every `/relaunch`. A
     windowless console is inherited instead; the two flags are exclusive."""
-    calls = []
-    monkeypatch.setattr(relaunch_mod.subprocess, "Popen",
-                        lambda argv, creationflags=0, **kw: calls.append(creationflags))
-    monkeypatch.setattr(relaunch_mod, "log_path", lambda: tmp_path / "log")
+    _spawn(tmp_path)
 
-    relaunch_mod._spawn_helper(_Proc(20), _Proc(10), "claude", tmp_path / "m")
-
-    assert calls[0] & 0x08000000, "CREATE_NO_WINDOW"
-    assert not calls[0] & 0x00000008, "DETACHED_PROCESS"
+    flags = popen[0][1]
+    assert flags & 0x08000000, "CREATE_NO_WINDOW"
+    assert not flags & 0x00000008, "DETACHED_PROCESS"
 
 
-def test_nothing_is_ended_if_this_process_is_not_inside_the_session(desk):
-    """Without the whole line from here to the session there is no telling
-    which descendants are safe to end - this process and the helper among
-    them - so nothing is, and the marker goes."""
+# ── the fallback: ending it by pid ───────────────────────────────────────
+
+
+def test_its_children_are_ended_too(desk):
+    """Ended by pid, a session does not get to shut its MCP servers down the
+    way `/exit` would. Left alone they would outlive it."""
+    relaunch_mod._end(desk.session)
+
+    assert desk.session.ended
+    assert desk.mcp.ended
+    assert desk.mcp_child.ended
+
+
+def test_this_process_and_what_hangs_off_it_are_spared(desk):
+    """From a pipx venv a spawned pid is a redirector, and the interpreter
+    doing the work is its child. Spared by pid alone, that child was once
+    ended with the session on every run, silently."""
+    relaunch_mod._end(desk.session)
+
+    assert not desk.me.ended
+    assert not desk.bash.ended
+    assert not desk.helper.ended
+    assert not desk.helper_child.ended
+
+
+def test_the_fallback_works_from_outside_the_session(desk):
+    """The helper that runs it is nobody's descendant by then."""
     desk.me._parent = None
 
-    assert _run(desk) == 1
-    assert not desk.session.ended
-    assert not desk.mcp.ended
+    relaunch_mod._end(desk.session)
+
+    assert desk.session.ended
+    assert desk.mcp.ended
     assert not desk.marker.exists()
 
 
@@ -337,9 +392,11 @@ def test_no_id_means_no_rewrite():
 
 @pytest.fixture
 def helper(monkeypatch, tmp_path):
-    """bring_back against a controllable world and clock."""
+    """bring_back against a controllable world and clock. By default the
+    session quits on its quit keys, the way a real one does."""
     state = {"session_alive": True, "shell_alive": True, "typed": [],
-             "now": 0.0, "loop_takes_marker": False}
+             "keys": [], "ended": [], "now": 0.0, "loop_takes_marker": False,
+             "quits_on_keys": True, "dies_when_ended": True}
     marker = tmp_path / "m.marker"
     marker.write_text("restart", encoding="utf-8")
 
@@ -348,23 +405,36 @@ def helper(monkeypatch, tmp_path):
 
     def _sleep(seconds):
         state["now"] += seconds
-        # The session ends as soon as anything waits on it; a loop, when
-        # there is one, takes the marker a moment later.
-        state["session_alive"] = False
-        if state["loop_takes_marker"] and state["now"] > 0.3:
+        # A loop, when there is one, takes the marker once its agent is gone.
+        if state["loop_takes_marker"] and not state["session_alive"]:
             marker.unlink(missing_ok=True)
+
+    def _send_keys(pid, keys):
+        state["keys"].append((pid, tuple(keys)))
+        if state["quits_on_keys"]:
+            state["session_alive"] = False
+
+    def _end(proc):
+        state["ended"].append(proc.pid)
+        state["marker_when_ended"] = marker.read_text(encoding="utf-8")
+        if state["dies_when_ended"]:
+            state["session_alive"] = False
 
     monkeypatch.setattr(relaunch_mod, "_alive", _alive)
     monkeypatch.setattr(relaunch_mod, "time", types.SimpleNamespace(
         time=lambda: state["now"], sleep=_sleep))
     monkeypatch.setattr(relaunch_mod, "type_into_console",
                         lambda pid, text: state["typed"].append((pid, text)))
+    monkeypatch.setattr(relaunch_mod, "send_keys", _send_keys)
+    monkeypatch.setattr(relaunch_mod, "_end", _end)
+    monkeypatch.setattr(discover_mod, "_ps", lambda: types.SimpleNamespace(
+        Process=lambda pid: _Proc(pid)))
     state["marker"] = marker
     return state
 
 
 def _bring_back(helper):
-    relaunch_mod.bring_back(20, 1.0, 10, 1.0, "claude --resume id",
+    relaunch_mod.bring_back(20, 1.0, 10, 1.0, "claude", "claude --resume id",
                             str(helper["marker"]))
 
 
@@ -373,6 +443,40 @@ def test_a_plain_shell_gets_the_command_written_into_it(helper, capsys):
 
     assert helper["typed"] == [(10, "claude --resume id")]
     assert not helper["marker"].exists(), "left to fire on a later quit"
+
+
+def test_the_session_is_asked_to_quit_with_its_own_keys(helper):
+    """Claude's `/exit`, from agents.py - the one place agent kinds differ.
+    It quits and cleans up after itself, so nothing is ended by pid."""
+    _bring_back(helper)
+
+    assert helper["keys"] == [(20, ("/exit", "{Enter}"))]
+    assert helper["ended"] == []
+
+
+def test_a_session_that_does_not_quit_is_ended(helper):
+    """A prompt or a confirmation can hold `/exit`. The fallback ends it by
+    pid, on a marker written fresh so that however long the wait was, the
+    loop still takes it."""
+    helper["quits_on_keys"] = False
+    helper["marker"].write_text("stale", encoding="utf-8")
+
+    _bring_back(helper)
+
+    assert helper["ended"] == [20]
+    assert helper["marker_when_ended"] == "restart"
+    assert helper["typed"] == [(10, "claude --resume id")]
+
+
+def test_keys_that_cannot_be_written_fall_back_to_ending_it(helper, monkeypatch):
+    def _refused(pid, keys):
+        raise OSError("AttachConsole failed (6)")
+
+    monkeypatch.setattr(relaunch_mod, "send_keys", _refused)
+
+    _bring_back(helper)
+
+    assert helper["ended"] == [20]
 
 
 def test_a_looping_tab_is_left_to_its_loop(helper):
@@ -397,9 +501,12 @@ def test_nothing_is_written_while_the_session_is_alive(helper, monkeypatch):
 
 
 def test_the_wait_outlasts_the_marker(helper, monkeypatch):
-    """A session that exits late must still find the marker armed. Given up
-    on any sooner, it would be ended with nothing to bring it back."""
-    exits_at = relaunch_mod.RESTART_MARKER_TTL_SECONDS - 1
+    """A session that exits late after being ended must still find the
+    marker armed. Given up on any sooner, it would be gone with nothing to
+    bring it back."""
+    exits_at = (relaunch_mod.QUIT_WAIT_SECONDS
+                + relaunch_mod.RESTART_MARKER_TTL_SECONDS - 1)
+    helper["quits_on_keys"] = helper["dies_when_ended"] = False
     monkeypatch.setattr(relaunch_mod, "_alive", lambda pid, created:
                         pid != 20 or helper["now"] < exits_at)
 
@@ -512,3 +619,34 @@ def test_each_character_is_a_key_press_and_release_ending_in_enter(monkeypatch):
     # letter: key 255 with Shift held.
     assert (keys[0][2], keys[0][3]) == (ord("A"), 0)
     assert (keys[2][2], keys[2][3]) == (ord("B"), 0x0010)
+
+
+def _pressed(key):
+    return [(r.Event.KeyEvent.uChar, r.Event.KeyEvent.wVirtualKeyCode,
+             r.Event.KeyEvent.dwControlKeyState)
+            for r in relaunch_mod._key_records(key) if r.Event.KeyEvent.bKeyDown]
+
+
+def test_quit_keys_are_read_in_the_notation_agents_py_writes():
+    assert _pressed("{Enter}") == [("\r", 0x0D, 0)]
+    # Codex's quit chord: the control character, with Ctrl held, as a
+    # keyboard sends it.
+    assert _pressed("{Ctrl}c") == [("\x03", ord("C"), 0x0008)]
+    assert [ch for ch, _vk, _state in _pressed("/exit")] == list("/exit")
+
+
+def test_quit_keys_go_in_one_at_a_time(monkeypatch):
+    """Written in one burst, Claude Code reads `/exit` and its Enter as a
+    paste, and the Enter becomes a newline in the prompt instead of sending
+    it. Measured with a longer line; `/exit` is not left to chance."""
+    events = []
+    monkeypatch.setattr(relaunch_mod, "_write_input",
+                        lambda pid, records: events.append(("write", len(records))))
+    monkeypatch.setattr(relaunch_mod, "time", types.SimpleNamespace(
+        sleep=lambda s: events.append(("pause", s))))
+
+    relaunch_mod.send_keys(20, ("/exit", "{Enter}"))
+
+    assert events == [("write", 10),
+                      ("pause", relaunch_mod.KEY_PAUSE_SECONDS),
+                      ("write", 2)]

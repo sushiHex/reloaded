@@ -169,14 +169,17 @@ def test_writing_into_a_real_console_is_refused():
 
     with pytest.raises(AssertionError, match="real console"):
         relaunch_mod.type_into_console(1, "exit")
+    with pytest.raises(AssertionError, match="real console"):
+        relaunch_mod.send_keys(1, ("/exit", "{Enter}"))
 
 
-def test_starting_relaunchs_helper_for_real_is_refused():
-    """It is detached, outlives the suite, and writes into a console once the
-    pid it watches ends."""
+@pytest.mark.parametrize("function", ["bring_back", "_start_helper"])
+def test_starting_relaunchs_helper_for_real_is_refused(function):
+    """It is detached, outlives the suite, and types /exit into the session
+    it watches - under a test, possibly the one running the suite."""
     import subprocess
     import sys
 
     with pytest.raises(AssertionError, match="relaunch's helper"):
         subprocess.Popen([sys.executable, "-c",
-                          "from reloaded.relaunch import bring_back"])
+                          f"from reloaded.relaunch import {function}"])
