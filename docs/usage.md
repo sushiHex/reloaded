@@ -161,10 +161,11 @@ reloaded restart --self
 ```
 
 The session is found through the parent process chain, so it is exact even
-when another agent shares its directory. It is ended by pid, together with its
-MCP servers, rather than asked to quit: typing a quit command needs keyboard
-focus and an idle session, and the session running this command has neither.
-How it comes back depends on the tab:
+when another agent shares its directory. A detached helper writes its quit keys
+— `/exit` for Claude Code — straight into the session's console input, which
+needs no keyboard focus, and the command waits while the session quits the
+ordinary way. A session that has not quit within a minute is ended by pid,
+with its MCP servers. How it comes back depends on the tab:
 
 - **A Reloaded tab** relaunches it from its restart marker, with its captured
   command.
@@ -180,9 +181,10 @@ A Reloaded tab replays its captured command, so what comes back is whatever
 that command resumes — `--continue`, by default, the directory's latest
 conversation.
 
-A successful return means the restart was handed off. A detached helper does
-the relaunch once the session is gone, and records what it did in
-`~/.reloaded/reloaded.log`. `--self` cannot take repository names.
+The helper records what it did in `~/.reloaded/reloaded.log`. `--self` cannot
+take repository names. The quit keys have been verified live for Claude Code
+only; Codex's are its double Ctrl+C, written the same way, and a session that
+ignores them falls back to being ended by pid.
 
 As a Claude Code user command, `~/.claude/commands/relaunch.md`:
 
@@ -194,10 +196,13 @@ effort: low
 ---
 !`reloaded restart --self`
 
-The command above has already run. If this session is still here to read it,
-the restart did not happen: repeat its output in one line and stop.
+The command above has already run. Repeat its output in one line and nothing
+else. Do not run anything: if it says the session is restarting, it will quit
+on its own as soon as this reply ends.
 ```
 
 Claude Code runs the `!` line while expanding the command, before the model is
-asked anything, and a successful run ends the session there. The prompt below
-it is only ever read when the restart was refused.
+asked anything, and takes `/exit` while that line is still running, so a
+successful `/relaunch` quits without a model request — which, over a large
+conversation, is the expensive part. The prompt below it is read only if the
+restart was refused, or the session did not quit while the command waited.

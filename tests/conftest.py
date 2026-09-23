@@ -122,11 +122,14 @@ def _no_real_desktop_effects(monkeypatch):
                 "function that spawns it - _launch_single_tab, deploy.execute, "
                 "or whatever called Popen."
             )
-        if "bring_back" in " ".join(map(str, argv if isinstance(argv, (list, tuple)) else [argv])):
+        # Any process bootstrapped from relaunch, not one function name: the
+        # helper is started through an intermediate, and a name-based guard
+        # is the kind a rename walks straight past.
+        if "reloaded.relaunch import" in " ".join(map(str, argv if isinstance(argv, (list, tuple)) else [argv])):
             raise AssertionError(
                 "a test tried to start relaunch's helper for real. It is "
-                "detached, outlives the suite, and writes into a console once "
-                "the pid it watches ends. Stub relaunch._spawn_helper."
+                "detached, outlives the suite, and types /exit into the "
+                "session it watches. Stub relaunch._spawn_helper."
             )
         return _real_popen(argv, *a, **kw)
 
@@ -154,7 +157,7 @@ def _no_real_desktop_effects(monkeypatch):
             raise AssertionError(
                 f"kernel32.{_name} was called for real during a test - it "
                 "attaches to, or types into, a real console. Stub "
-                "relaunch.type_into_console."
+                "relaunch.type_into_console and relaunch.send_keys."
             )
 
         monkeypatch.setattr(relaunch_mod._k32, name, _blocked_console)
