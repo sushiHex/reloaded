@@ -130,7 +130,11 @@ def relaunch(pid: int, cwd: str, kind: str, *, dry_run: bool = False,
 
     say(f"Restarting {cwd}: this session quits in a moment and comes back in "
         "the same tab.")
-    _wait_until_gone(session.pid, session.create_time(), SELF_WAIT_SECONDS)
+    if not _wait_until_gone(session.pid, session.create_time(), SELF_WAIT_SECONDS):
+        # Read only by a session that is still here: the model's turn.
+        say(f"    It has not quit after {SELF_WAIT_SECONDS:.0f}s. The helper "
+            f"ends it within a minute, or calls the restart off; either way "
+            f"it says which in {log_path()}.")
     return 0
 
 
@@ -195,6 +199,7 @@ def _spawn_helper(session, shell, kind: str, command: str, marker) -> None:
         code = intermediate.wait(timeout=30)
     except subprocess.TimeoutExpired:
         intermediate.kill()
+        intermediate.wait(timeout=10)  # gone before the marker is disarmed
         raise OSError("the helper's launcher did not finish starting it")
     if code != 0:
         raise OSError(f"the helper's launcher exited {code}")
@@ -273,8 +278,12 @@ def bring_back(session_pid: int, session_created: float, shell_pid: int,
     # Not before this process is out of the session's tree: the quit ends the
     # tree, and the intermediate that started this may not have exited yet.
     if not _wait_until_outside(session_pid, CALLER_WAIT_SECONDS):
-        note(f"still inside pid {session_pid}'s process tree - quitting it "
-             "anyway")
+        # Quit now and the session's cleanup could end this too, before it
+        # brings a plain tab back. Calling it off loses nothing.
+        marker_path.unlink(missing_ok=True)
+        note(f"still inside pid {session_pid}'s process tree after "
+             f"{CALLER_WAIT_SECONDS:.0f}s - restart called off, left running")
+        return
     # The marker is the go-ahead. `relaunch` removes it when it gives up on a
     # helper that was slow to start - one that may yet start, like this - and
     # a session quit with no marker would not come back.

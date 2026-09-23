@@ -133,6 +133,18 @@ def test_it_waits_for_its_session_to_quit(desk):
     assert desk.waited == [desk.session.pid]
 
 
+def test_a_session_still_here_after_the_wait_is_told_where_to_look(desk, monkeypatch):
+    """Only a session that did not quit reads the output - in its model
+    turn. Saying it is restarting and no more would be the whole story."""
+    monkeypatch.setattr(relaunch_mod, "_wait_until_gone",
+                        lambda pid, created, seconds: False)
+    said = []
+
+    assert relaunch_mod.relaunch(desk.session.pid, CWD, "claude",
+                                 say=said.append) == 0
+    assert any("has not quit" in s and "reloaded.log" in s for s in said)
+
+
 def test_a_plain_powershell_tab_is_not_refused(desk, monkeypatch):
     """What the old design refused, for the sake of not upgrading the tab.
     Nothing is upgraded now: the helper writes the resume command into the
@@ -255,9 +267,12 @@ def test_a_slow_intermediate_is_stopped(monkeypatch, tmp_path):
     """Left running, it could still start a helper after `relaunch` has
     reported that nothing changed."""
     class _Slow(_Started):
-        killed = False
+        killed = waited_after_kill = False
 
         def wait(self, timeout=None):
+            if _Slow.killed:
+                _Slow.waited_after_kill = True
+                return 1
             raise relaunch_mod.subprocess.TimeoutExpired("python", timeout)
 
         def kill(self):
@@ -270,6 +285,7 @@ def test_a_slow_intermediate_is_stopped(monkeypatch, tmp_path):
     with pytest.raises(OSError):
         _spawn(tmp_path)
     assert _Slow.killed
+    assert _Slow.waited_after_kill, "reported failed while it could still run"
 
 
 def test_a_helper_is_never_started_without_breakaway(monkeypatch, tmp_path):
@@ -497,14 +513,15 @@ def test_the_keys_wait_until_the_helper_is_outside_the_session(helper, monkeypat
     assert sent_at and sent_at[0] >= 1.0
 
 
-def test_the_keys_still_go_if_it_never_gets_outside(helper, monkeypatch):
-    """The fallback still ends the session; a restart that never starts
-    is worse than one that might."""
+def test_a_helper_that_never_gets_outside_calls_it_off(helper, monkeypatch):
+    """Quitting the session then could end the helper with it, before it
+    brings a plain tab back. Called off, the session just keeps running."""
     _inside_until(helper, monkeypatch, moment=float("inf"))
 
     _bring_back(helper)
 
-    assert helper["keys"] == [(20, ("/exit", "{Enter}"))]
+    assert helper["keys"] == []
+    assert not helper["marker"].exists(), "left to fire on a later quit"
 
 
 def test_a_restart_called_off_leaves_the_session_alone(helper):
