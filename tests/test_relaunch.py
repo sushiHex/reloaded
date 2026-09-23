@@ -251,6 +251,27 @@ def test_an_intermediate_that_fails_starts_nothing(popen, monkeypatch, tmp_path)
         _spawn(tmp_path)
 
 
+def test_a_slow_intermediate_is_stopped(monkeypatch, tmp_path):
+    """Left running, it could still start a helper after `relaunch` has
+    reported that nothing changed."""
+    class _Slow(_Started):
+        killed = False
+
+        def wait(self, timeout=None):
+            raise relaunch_mod.subprocess.TimeoutExpired("python", timeout)
+
+        def kill(self):
+            _Slow.killed = True
+
+    monkeypatch.setattr(relaunch_mod.subprocess, "Popen",
+                        lambda argv, **kw: _Slow(argv))
+    monkeypatch.setattr(relaunch_mod, "log_path", lambda: tmp_path / "log")
+
+    with pytest.raises(OSError):
+        _spawn(tmp_path)
+    assert _Slow.killed
+
+
 def test_a_helper_is_never_started_without_breakaway(monkeypatch, tmp_path):
     """Windows refuses breakaway only to a process in a job that forbids it -
     exactly where a helper started without it could die with the session and
@@ -484,6 +505,18 @@ def test_the_keys_still_go_if_it_never_gets_outside(helper, monkeypatch):
     _bring_back(helper)
 
     assert helper["keys"] == [(20, ("/exit", "{Enter}"))]
+
+
+def test_a_restart_called_off_leaves_the_session_alone(helper):
+    """`relaunch` removes the marker when it gives up on a slow helper. One
+    that starts anyway must not quit a session nothing will bring back."""
+    helper["marker"].unlink()
+
+    _bring_back(helper)
+
+    assert helper["keys"] == []
+    assert helper["ended"] == []
+    assert helper["typed"] == []
 
 
 def test_a_session_that_does_not_quit_is_ended(helper):

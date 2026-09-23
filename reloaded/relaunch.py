@@ -191,8 +191,13 @@ def _spawn_helper(session, shell, kind: str, command: str, marker) -> None:
     call = (session.pid, session.create_time(), shell.pid, shell.create_time(),
             kind, command, str(marker))
     intermediate = _detached("_start_helper", call)
-    if intermediate.wait(timeout=30) != 0:
-        raise OSError(f"the helper's launcher exited {intermediate.returncode}")
+    try:
+        code = intermediate.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        intermediate.kill()
+        raise OSError("the helper's launcher did not finish starting it")
+    if code != 0:
+        raise OSError(f"the helper's launcher exited {code}")
 
 
 def _start_helper(*call) -> None:
@@ -270,6 +275,12 @@ def bring_back(session_pid: int, session_created: float, shell_pid: int,
     if not _wait_until_outside(session_pid, CALLER_WAIT_SECONDS):
         note(f"still inside pid {session_pid}'s process tree - quitting it "
              "anyway")
+    # The marker is the go-ahead. `relaunch` removes it when it gives up on a
+    # helper that was slow to start - one that may yet start, like this - and
+    # a session quit with no marker would not come back.
+    if not marker_path.exists():
+        note(f"pid {session_pid}: the restart was called off - left running")
+        return
     try:
         send_keys(session_pid, agents_mod.for_kind(kind).quit_keys)
     except OSError as exc:
