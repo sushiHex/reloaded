@@ -62,6 +62,10 @@ SHELLS = ("pwsh.exe", "powershell.exe")
 # is the expensive part. Returning sooner only costs that request.
 SELF_WAIT_SECONDS = 30.0
 
+# How long the helper waits to be out of the session's process tree before it
+# sends the quit keys anyway. Its intermediate exits straight after starting it.
+CALLER_WAIT_SECONDS = 10.0
+
 # How long the session gets to quit on the keys before it is ended by pid.
 # Well inside the marker's life, and the marker is refreshed before the kill.
 QUIT_WAIT_SECONDS = 60.0
@@ -261,6 +265,11 @@ def bring_back(session_pid: int, session_created: float, shell_pid: int,
         stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         print(f"{stamp}  [relaunch] {line}", flush=True)
 
+    # Not before this process is out of the session's tree: the quit ends the
+    # tree, and the intermediate that started this may not have exited yet.
+    if not _wait_until_outside(session_pid, CALLER_WAIT_SECONDS):
+        note(f"still inside pid {session_pid}'s process tree - quitting it "
+             "anyway")
     try:
         send_keys(session_pid, agents_mod.for_kind(kind).quit_keys)
     except OSError as exc:
@@ -307,6 +316,22 @@ def bring_back(session_pid: int, session_created: float, shell_pid: int,
         note(f"could not write to shell pid {shell_pid}: {exc}")
         return
     note(f"pid {session_pid} ended; started `{command}` in its tab")
+
+
+def _wait_until_outside(session_pid: int, seconds: float) -> bool:
+    """Whether, within `seconds`, no ancestor of this process is the session."""
+    ps = discover_mod._ps()
+    deadline = time.time() + seconds
+    while True:
+        try:
+            line = {p.pid for p in ps.Process(os.getpid()).parents()}
+        except Exception:
+            line = set()
+        if session_pid not in line:
+            return True
+        if time.time() > deadline:
+            return False
+        time.sleep(0.1)
 
 
 def _wait_until_gone(pid: int, created: float, seconds: float) -> bool:

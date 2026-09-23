@@ -454,6 +454,38 @@ def test_the_session_is_asked_to_quit_with_its_own_keys(helper):
     assert helper["ended"] == []
 
 
+def _inside_until(helper, monkeypatch, moment):
+    """This process descends from the session (pid 20) until `moment`."""
+    session = _Proc(20)
+    monkeypatch.setattr(discover_mod, "_ps", lambda: types.SimpleNamespace(
+        Process=lambda pid: _Proc(pid, parent=session
+                                  if helper["now"] < moment else None)))
+
+
+def test_the_keys_wait_until_the_helper_is_outside_the_session(helper, monkeypatch):
+    """Quitting ends the session's process tree, and the intermediate that
+    started the helper may not have exited yet. Keys sent while it lives
+    would take the helper down with the session, and the tab with it."""
+    _inside_until(helper, monkeypatch, moment=1.0)
+    sent_at = []
+    monkeypatch.setattr(relaunch_mod, "send_keys",
+                        lambda pid, keys: sent_at.append(helper["now"]))
+
+    _bring_back(helper)
+
+    assert sent_at and sent_at[0] >= 1.0
+
+
+def test_the_keys_still_go_if_it_never_gets_outside(helper, monkeypatch):
+    """The fallback still ends the session; a restart that never starts
+    is worse than one that might."""
+    _inside_until(helper, monkeypatch, moment=float("inf"))
+
+    _bring_back(helper)
+
+    assert helper["keys"] == [(20, ("/exit", "{Enter}"))]
+
+
 def test_a_session_that_does_not_quit_is_ended(helper):
     """A prompt or a confirmation can hold `/exit`. The fallback ends it by
     pid, on a marker written fresh so that however long the wait was, the
