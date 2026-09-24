@@ -19,16 +19,22 @@ those titles stable even when an agent would normally replace them. That makes
 newly opened sessions discoverable before they write transcript titles, at the
 cost of hiding later conversation-name changes in the tab strip.
 
-Live discovery and restart markers are keyed by normalized working directory.
-Multiple simultaneous sessions in the same repository are therefore not tracked
-as independent identities: the layout saves one tab for that directory and a
-restore brings back one session, whichever kind was recorded. `status` names any
-directory hosting more than one agent, because the loss is otherwise discovered
-only at the next logon. It is reported there rather than during capture, which
-the reconcile runs every five minutes and which would then pay a second process
-sweep forever. A restored layout records an agent kind and command, not a
-separate conversation ID. See [Codex session identity](codex-session-identity.md)
-for the investigation and limits of reconstructing identities from rollout files.
+Capture saves one tab per live session, not per directory, so a repository
+running Claude Code in one tab and Codex in another keeps both. Their tabs carry
+the same title, so no title can tell them apart; each session is placed by its
+own process instead. Every Windows Terminal tab's console has a hidden
+`PseudoConsoleWindow` belonging to the tab's shell and owned by the Terminal
+window hosting it (`win32.tab_shells`), and an agent runs under its tab's shell.
+Titles now only order a window's tabs. A restore then skips a tab only when that
+directory and agent kind are both already running.
+
+The rest of the tool is still keyed by normalized working directory: live
+discovery for restarts, restart markers, and teardown's aim. `status` notes any
+directory hosting more than one agent, since `restart` refuses one and `down`
+may quit only one of its sessions. A restored layout records an agent kind and
+command, not a separate conversation ID. See
+[Codex session identity](codex-session-identity.md) for the investigation and
+limits of reconstructing identities from rollout files.
 
 `restart <repo>` refuses such a directory outright, and refuses the whole batch
 rather than the one repository. Two independent choices go into a target —

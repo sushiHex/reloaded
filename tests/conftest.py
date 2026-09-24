@@ -99,6 +99,14 @@ def _no_real_desktop_effects(monkeypatch):
     # they asked for has focus; a test about LOSING focus says so itself.
     monkeypatch.setattr(win32_mod, "is_foreground", lambda hwnd: True)
 
+    # Also a deterministic answer rather than a block: discover.sessions walks
+    # the real process table and the real desktop's tabs, so `up` under test
+    # would skip or launch by whatever agents the developer has open. A test
+    # about sessions supplies its own.
+    import reloaded.discover as discover_mod
+
+    monkeypatch.setattr(discover_mod, "sessions", lambda: [])
+
     # Spawning is a desktop effect too, and this one got out. A test whose
     # wait loop fell through to the reopen fallback called Popen on `wt` for
     # real, once per suite run, and opened terminal tabs on the user's desktop

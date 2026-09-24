@@ -428,7 +428,8 @@ def _deploy_layout(lo, args) -> int:
     # Built once and reused by both the size guard and the torn-tail repair —
     # this scan walks every transcript on the machine.
     index = discover_mod.transcript_index(need_title=False)
-    plan = deploy_mod.plan_deploy(lo, live, monitors, _transcript_sizes(index))
+    plan = deploy_mod.plan_deploy(lo, live, monitors, _transcript_sizes(index),
+                                  running=discover_mod.running())
 
     if not plan:
         total = sum(len(w.tabs) for w in lo.windows)
@@ -1313,12 +1314,12 @@ def cmd_status(args) -> int:
     # moment this is worth knowing - the loss it describes happens at the next
     # restore, not now.
     for cwd, kinds in sorted(crowded.items()):
-        print(f"\n[warn] {len(kinds)} agent sessions share {cwd} "
+        print(f"\n[note] {len(kinds)} agent sessions share {cwd} "
               f"({', '.join(kinds)}).")
-        print("       Sessions are tracked by directory, so only one is saved "
-              "and only one")
-        print("       comes back. Move one to its own directory, or expect to "
-              "reopen it by hand.")
+        print("       Both are saved and restored. `restart` refuses this "
+              "directory, and `down`")
+        print("       may leave one running: quitting is aimed by directory, "
+              "not by session.")
 
     if not path.exists():
         print(f"\nno layout saved at {path} — run `reloaded capture`")

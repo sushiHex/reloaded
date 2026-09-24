@@ -11,6 +11,7 @@ import pathlib
 import re
 import unicodedata
 from dataclasses import dataclass
+from typing import NamedTuple
 
 from .paths import norm
 
@@ -237,6 +238,60 @@ def _hosted_elsewhere(proc, agent_images: set) -> bool:
     return False
 
 
+class Session(NamedTuple):
+    """One live agent session, as a process: nothing here collapses two
+    sessions that share a directory. `hwnd` is the Windows Terminal window
+    its tab is in, or None when it is not in a tab."""
+    pid: int
+    cwd: str
+    kind: str
+    started: float
+    hwnd: int | None
+
+
+def sessions() -> list[Session]:
+    """Every live agent session, each with the window its tab is in.
+
+    The window is found through the process's own line: an agent runs under
+    its tab's shell, and `win32.tab_shells` knows which window every tab's
+    shell is in. That, not the tab's title, is what places a session - two
+    sessions in one directory share a title, and keyed on the directory the
+    second one was never saved, so it was never restored.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return []
+
+    from . import agents as agents_mod
+    from . import win32
+
+    by_process = {a.process: a.kind for a in agents_mod.AGENTS.values()}
+    shells = win32.tab_shells()
+    found: list[Session] = []
+    for proc in psutil.process_iter(["pid", "name", "create_time"]):
+        kind = by_process.get((proc.info.get("name") or "").lower())
+        if kind is None or _hosted_elsewhere(proc, set(by_process)):
+            continue
+        try:
+            cwd = proc.cwd()
+            line = [p.pid for p in proc.parents()]
+        except Exception:
+            continue
+        if cwd:
+            hwnd = next((shells[pid] for pid in line if pid in shells), None)
+            found.append(Session(int(proc.info["pid"]), cwd, kind,
+                                 float(proc.info.get("create_time") or 0), hwnd))
+    return found
+
+
+def running() -> set[tuple[str, str]]:
+    """(normalized cwd, kind) for every live agent session - which, unlike
+    `live_sessions`, says that a directory's Codex session is running even
+    when its Claude one is too."""
+    return {(norm(s.cwd), s.kind) for s in sessions()}
+
+
 def _sessions() -> tuple[dict[str, tuple], dict[str, list[str]]]:
     """(cwd -> (pid, kind), cwd -> kinds) for every live agent session.
 
@@ -245,14 +300,12 @@ def _sessions() -> tuple[dict[str, tuple], dict[str, list[str]]]:
     double the process sweeps every capture pays for.
 
     Keyed by cwd, so two sessions in the same directory collapse to whichever
-    psutil reports last. That is a real limit and not a fixable one here:
-    nothing connects a Windows Terminal tab to the process running inside it,
-    so even a complete list would not say which pid belongs to which tab. What
-    it costs is that teardown can type into one session while waiting on the
-    other's pid, and then report a timeout for a session that did quit, or
-    success for one that did not. teardown.plan_down warns when it sees the
-    matching symptom - two tabs resolving to one cwd - rather than leaving the
-    ambiguity silent.
+    psutil reports last. Capture does not use this to decide what is saved -
+    `sessions()` places every session by its tab's shell - but teardown still
+    does, and can type into one session while waiting on the other's pid, then
+    report a timeout for a session that did quit, or success for one that did
+    not. teardown.plan_down warns when it sees the matching symptom - two tabs
+    resolving to one cwd - rather than leaving the ambiguity silent.
     """
     try:
         import psutil

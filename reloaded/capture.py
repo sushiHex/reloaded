@@ -40,35 +40,50 @@ def build_layout(
     repos_root: str,
     now_iso: str,
     kinds: dict[str, str] | None = None,
+    sessions: list | None = None,
 ) -> Layout:
+    """One tab per live session, in the window its tab is in.
+
+    `sessions` (discover.sessions) places each session by its tab's shell, so
+    a directory running Claude in one tab and Codex in another saves both.
+    Keyed on the directory instead, the second was dropped - measured after a
+    logon, three such directories each came back with one tab. Titles now only
+    order a window's tabs. Without `sessions`, each live directory is one
+    session of the kind `kinds` names, placed by title alone, as before.
+    """
+    pool = sorted(sessions if sessions is not None else [
+        discover.Session(pid, cwd, (kinds or {}).get(cwd, "claude"), 0.0, None)
+        for cwd, pid in live.items()], key=lambda s: s.started)
+    # Once each, across the whole layout: two titles can resolve to one
+    # session, and a duplicate would launch it twice against one transcript.
+    taken: set[int] = set()
     windows: list[Window] = []
-    # One repo, one tab, across the whole layout. Two titles can resolve to the
-    # same cwd, and `deploy` launches a tab per entry: the duplicates become two
-    # `claude --continue` in one directory, seconds apart, against a single
-    # transcript. Nothing downstream catches it — merge_pinned only compares
-    # against the previous layout, never a capture against itself.
-    seen_cwds: set[str] = set()
     for wd in windows_data:
+        hwnd = wd.get("hwnd")
         tab_objs: list[Tab] = []
+
+        def add(session, cwd, title, low):
+            taken.add(session.pid)
+            # The command is read off the live process so the tab comes back
+            # with the flags it was actually running.
+            tab_objs.append(Tab(cwd=cwd, title=title, low_confidence=low,
+                                agent=session.kind,
+                                command=discover.session_command(session.pid)))
+
         for title in wd.get("titles", []):
             resolved = resolve_tab(title, title_map, live, repos_root)
             if resolved is None:
                 continue
             cwd, low = resolved
-            if norm(cwd) in seen_cwds:
-                continue
-            seen_cwds.add(norm(cwd))
-            # A cwd absent from `kinds` captures as Claude Code, which is what
-            # every layout written before a second kind existed meant. The
-            # command is read off the live process so the tab comes back with
-            # the flags it was actually running.
-            tab_objs.append(Tab(
-                cwd=cwd,
-                title=title,
-                low_confidence=low,
-                agent=(kinds or {}).get(norm(cwd), "claude"),
-                command=discover.session_command(live[norm(cwd)]),
-            ))
+            for s in pool:
+                # A session whose window is known belongs to that window only.
+                if (s.pid not in taken and norm(s.cwd) == norm(cwd)
+                        and s.hwnd in (None, hwnd)):
+                    add(s, cwd, title, low)
+        # In this window by its shell, under a title that names no repo.
+        for s in pool:
+            if s.pid not in taken and hwnd is not None and s.hwnd == hwnd:
+                add(s, s.cwd, os.path.basename(s.cwd.rstrip("\\/")), False)
         if not tab_objs:
             continue
         windows.append(
@@ -167,16 +182,15 @@ def capture_live(
         live = discover.live_sessions()
     if title_map is None:
         title_map = discover.title_to_cwd(discover.transcript_index())
-    # Which kind each live session is. A separate scan rather than a richer
-    # live_sessions() because nine call sites depend on that returning
-    # cwd -> pid.
-    kinds = discover.live_agents()
+    # Every session, each placed in its window - not one per directory.
+    found = discover.sessions()
 
     windows_data: list[dict] = []
     for hwnd in win32.list_wt_windows():
         rect, state, device, dpi = win32.get_geometry(hwnd)
         windows_data.append(
             {
+                "hwnd": hwnd,
                 "rect": rect,
                 "state": state,
                 "monitor": device,
@@ -191,5 +205,5 @@ def capture_live(
 
     now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     fresh = build_layout(windows_data, monitors, title_map, live, repos_root,
-                         now_iso, kinds=kinds)
+                         now_iso, sessions=found)
     return merge_pinned(fresh, previous)
