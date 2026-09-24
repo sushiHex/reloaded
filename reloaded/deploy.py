@@ -572,7 +572,9 @@ def execute(plan: list[PlanEntry]) -> list[LaunchResult]:
         # session stuck at a trust prompt is then reported as "still starting"
         # rather than failed, with nothing checking again later.
         spawned_at = time.monotonic() - started_at
-        hwnd = launch_window(entry.argv, entry.tabs)
+        # Identified by its first tab alone: the others are not in it yet, and
+        # scoring on them could pick another window that shows their names.
+        hwnd = launch_window(entry.argv, entry.tabs[:1])
         # Refreshed per spawn, not once at the top. `launch_window` polls for
         # up to twenty seconds before giving up on an HWND, so four slow
         # windows outlast a deadline computed from in-shell delays alone - and

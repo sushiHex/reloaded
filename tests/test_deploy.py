@@ -421,6 +421,20 @@ def test_the_rest_of_the_tabs_go_in_only_once_every_window_is_placed(monkeypatch
                       ("rest", "w1-rest")]
 
 
+def test_the_new_window_is_identified_by_its_first_tab_only(monkeypatch):
+    """The window holds only that tab when it is looked for. Scoring on the
+    others could pick another window that happens to show their names."""
+    seen = []
+    monkeypatch.setattr(deploy_mod, "launch_window",
+                        lambda argv, tabs: seen.append([t.title for t in tabs]))
+    entry = _entry("w1")
+    entry.tabs = [Tab(cwd=r"C:\repos\a", title="a"), Tab(cwd=r"C:\repos\b", title="b")]
+
+    execute([entry])
+
+    assert seen == [["a"]]
+
+
 def test_a_window_that_could_not_be_found_still_gets_the_rest_of_its_tabs(monkeypatch):
     """Added by the window's name, not its handle: its sessions start, just
     not necessarily at the right size."""
