@@ -12,7 +12,6 @@ confident wrong answers.
 from __future__ import annotations
 
 import os
-import re
 from dataclasses import dataclass
 
 
@@ -222,9 +221,43 @@ def without_picker(kind, command: str) -> str:
     agent = for_kind(kind)
     if not command or not agent.resume_latest or not agent.resume_by_id:
         return command
-    flags = "|".join(re.escape(f) for f in agent.resume_by_id)
-    # Bare: last on the line, or followed by another option rather than a value.
-    return re.sub(rf"(?<!\S)(?:{flags})(?=\s+-|\s*$)", agent.resume_latest, command)
+    tokens = _ps_tokens(command)
+    bare = []
+    for i, (start, end, text, quoted) in enumerate(tokens[1:], 1):
+        if text == "--" and not quoted:
+            break  # the opening prompt follows; nothing in it is an option
+        if quoted or text not in agent.resume_by_id:
+            continue
+        following = tokens[i + 1] if i + 1 < len(tokens) else None
+        # Bare: last, or followed by another option rather than a value.
+        if following is None or (not following[3] and following[2].startswith("-")):
+            bare.append((start, end))
+    for start, end in reversed(bare):
+        command = command[:start] + agent.resume_latest + command[end:]
+    return command
+
+
+def _ps_tokens(command: str) -> list:
+    """(start, end, text, quoted) for each argument of a PowerShell command
+    line: separated by whitespace outside quotes, `''` a quote inside single
+    quotes - the form discover._format_command writes. A quoted argument is
+    never an option, whatever it says."""
+    tokens, i, n = [], 0, len(command)
+    while i < n:
+        if command[i].isspace():
+            i += 1
+            continue
+        start, quoted = i, False
+        while i < n and not command[i].isspace():
+            if command[i] in "'\"":
+                quote, quoted = command[i], True
+                i += 1
+                while i < n and not (command[i] == quote and not (
+                        quote == "'" and command[i + 1:i + 2] == "'")):
+                    i += 2 if quote == "'" and command[i:i + 2] == "''" else 1
+            i += 1
+        tokens.append((start, i, command[start:i], quoted))
+    return tokens
 
 
 def for_kind(kind) -> Agent:

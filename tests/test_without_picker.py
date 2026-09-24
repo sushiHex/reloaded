@@ -24,6 +24,13 @@ SKIP = "claude --dangerously-skip-permissions"
     (f"{SKIP} --continue", f"{SKIP} --continue"),
     (SKIP, SKIP),
     ("", ""),
+    # Quoted, or after `--`, it is prompt text, not an option.
+    ("claude -- --resume --verbose", "claude -- --resume --verbose"),
+    ("claude 'fix --resume --verbose'", "claude 'fix --resume --verbose'"),
+    ("claude 'it''s --resume' --resume", "claude 'it''s --resume' --continue"),
+    ('claude "a --resume" -r', 'claude "a --resume" --continue'),
+    # A quoted value after the flag is a value: named, so left alone.
+    ("claude --resume 'my session'", "claude --resume 'my session'"),
 ])
 def test_a_bare_resume_becomes_the_latest_conversation(command, expected):
     assert agents_mod.without_picker("claude", command) == expected
