@@ -114,3 +114,36 @@ def test_a_window_that_never_launched_judges_nothing(slow_launch, monkeypatch):
 
     assert results[0].spawned_at is None
     assert main_mod._never_started(plan, results, live={}, elapsed=10_000) == []
+
+
+def _split(window_id, delays, spawned_at, rest_spawned_at=None, rest_error=""):
+    entry = _entry(window_id, delays)
+    entry.rest_argv = ["wt", "-w", f"reloaded-{window_id}-x"]
+    result = deploy_mod.LaunchResult(window_id=window_id, hwnd=1, placed=True,
+                                     spawned_at=spawned_at,
+                                     rest_spawned_at=rest_spawned_at,
+                                     rest_error=rest_error)
+    return entry, result
+
+
+def test_each_tab_is_timed_from_the_call_that_opened_it():
+    """A window's first tab is spawned with the window; its others only once
+    every window is placed (deploy.wt_argvs). Timed from the later call, a
+    first tab that never started would pass for one still starting."""
+    entry, result = _split("w1", [0, 4], spawned_at=0.0, rest_spawned_at=100.0)
+
+    assert main_mod._never_started([entry], [result], live={}, elapsed=30.0) == [
+        entry.tabs[0].cwd]
+    assert main_mod._still_starting([entry], [result], elapsed=30.0) == [
+        entry.tabs[1].cwd]
+
+
+def test_tabs_that_were_never_opened_are_neither_silent_nor_starting():
+    """Their `wt` could not be spawned; that is reported by name, as a
+    failure, not as a session that failed to start."""
+    entry, result = _split("w1", [0, 4], spawned_at=0.0, rest_error="no wt")
+
+    assert entry.tabs[1].cwd not in main_mod._never_started(
+        [entry], [result], live={}, elapsed=10_000)
+    assert entry.tabs[1].cwd not in main_mod._still_starting(
+        [entry], [result], elapsed=0.0)

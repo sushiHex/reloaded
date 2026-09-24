@@ -88,6 +88,16 @@ Each tab runs its captured command, or the agent kind's fallback, inside a
 PowerShell loop. PowerShell 7 is selected when available, otherwise Windows
 PowerShell 5.1. Startup is staggered by four seconds between sessions.
 
+A window is created, under a name unique to the launch, with its first tab
+only. Its remaining tabs are added to it by that name once every window has
+been placed. Windows Terminal passes a window's new size only to the tab in
+front; a background tab keeps the size it was created at until it is first
+shown, and its agent has drawn for that size by then. When a restore created
+every tab at once, 11 of 15 tabs were still at the default 120x30 in windows
+holding 133x71, and each was drawn jumbled - overlaid lines, a footer stuck
+mid-window - when switched to, until the window was resized by hand. A tab
+added to a window that already has its size starts at that size.
+
 That stagger is a sleep inside each launched shell, not something the deploy
 waits out, so a thirteen-session restore is still starting its last session
 nearly a minute after the deploy returns. A deploy therefore leaves a marker
@@ -133,15 +143,14 @@ with `WriteConsoleInputW`, which needs no focus. Claude Code takes `/exit` even
 while it is running the `!` line that started the helper, and that command
 waits for it, so the session quits before any model request is made.
 
-It is asked to quit rather than ended by pid, which is what this first did,
-because a session killed mid-frame left its Windows Terminal tab drawing the
-next session wrongly: lines stacked and overlaid in the terminal's own text
-buffer, while the console's buffer was clean, until the window was resized.
-It happened only in long-lived tabs, never in a fresh one, and the exact
-Windows Terminal mechanism was not found; a graceful exit avoids the question.
-Ending by pid - its children with it, except the helper's own line - is the
-fallback for a session that has not quit within a minute, on a marker written
-fresh first.
+It is asked to quit rather than ended by pid, which is what this first did.
+The change was made after relaunched sessions came back drawn wrongly, but
+every tab that happened in had been created at 120x30 in the background by a
+logon restore (see Launching and closing), which is the likelier cause. A quit
+is still the better way down: the session shuts its MCP servers and its
+transcript itself. Ending by pid - its children with it, except the helper's
+own line - is the fallback for a session that has not quit within a minute, on
+a marker written fresh first.
 
 The helper then waits for the pid to die and gives a loop two seconds to take
 the marker. Its own attempt to delete the

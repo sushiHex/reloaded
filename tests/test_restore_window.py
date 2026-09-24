@@ -112,7 +112,9 @@ def test_the_mark_is_refreshed_once_the_spawning_is_done(state, monkeypatch):
 
     deploy_mod.execute(_plan(3))
 
-    assert len(marks) == 2, "marked once before spawning and once after"
+    # Once before spawning, once after the window, and once after the rest of
+    # its tabs - the last spawn, which is added only once windows are placed.
+    assert len(marks) == 3
 
 
 def test_no_mark_means_no_restore(state):
