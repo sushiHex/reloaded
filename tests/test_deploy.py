@@ -16,8 +16,8 @@ from reloaded.deploy import (
     launcher_command,
     plan_deploy,
     shell_executable,
-    wt_argv,
     wt_argv_single_tab,
+    wt_argvs,
 )
 from conftest import MONITORS, make_layout as _layout, make_window as _window
 
@@ -117,10 +117,55 @@ def test_launcher_escapes_single_quotes_in_the_banner():
     assert "it''s" in cmd
 
 
+NAME = "reloaded-w1-test"
+
+
+def wt_argv(rect, tabs, delays, sizes):
+    """Both invocations as one list, for tests about escaping and order."""
+    window, rest = wt_argvs(NAME, rect, tabs, delays, sizes)
+    return window + ([";"] + rest[3:] if rest else [])
+
+
+def test_the_window_is_made_with_its_first_tab_and_the_rest_added_by_name():
+    """A tab gets the window's size only if it exists after the window has it:
+    Windows Terminal resizes a background tab not when the window is resized
+    but when the tab is first shown, by which time its agent has drawn for
+    120x30. Measured on a logon restore: 11 of 15 tabs at 120x30, each one
+    jumbled when switched to."""
+    tabs = [Tab(cwd=r"C:\repos\a", title="a"), Tab(cwd=r"C:\repos\b", title="b"),
+            Tab(cwd=r"C:\repos\c", title="c")]
+    window, rest = wt_argvs(NAME, [221, 228, 1168, 624], tabs, [0, 4, 8], [0, 0, 0])
+
+    assert window[:4] == ["wt", "-w", NAME, "--pos=221,228"]
+    assert window.count("new-tab") == 1 and r"C:\repos\a" in window
+    assert rest[:3] == ["wt", "-w", NAME], "added to the same window, by name"
+    assert "--pos=221,228" not in rest
+    assert rest.count("new-tab") == 2 and rest.count(";") == 1
+    assert rest.index(r"C:\repos\b") < rest.index(r"C:\repos\c")
+
+
+def test_a_one_tab_window_has_nothing_to_add():
+    _, rest = wt_argvs(NAME, [0, 0, 800, 600], [Tab(cwd=r"C:\repos\a", title="a")],
+                       [0], [0])
+    assert rest == []
+
+
+def test_each_planned_window_gets_its_own_name():
+    """wt adds to a window it already knows by that name - a previous restore's,
+    or the window before this one."""
+    lo = _layout([
+        _window([0, 0, 800, 600], [Tab(cwd=r"C:\repos\a", title="a")]),
+        _window([900, 0, 800, 600], [Tab(cwd=r"C:\repos\b", title="b")]),
+    ])
+    names = [entry.argv[2] for entry in plan_deploy(lo, {}, MONITORS, {})]
+    assert len(set(names)) == 2
+    assert names != [entry.argv[2] for entry in plan_deploy(lo, {}, MONITORS, {})]
+
+
 def test_wt_argv_places_the_window_and_orders_tabs():
     tabs = [Tab(cwd=r"C:\repos\demo-app", title="demo-app"), Tab(cwd=r"C:\repos\lb", title="lb")]
     argv = wt_argv([221, 228, 1168, 624], tabs, [0, 4], [10, 10])
-    assert argv[:4] == ["wt", "-w", "-1", "--pos=221,228"]
+    assert argv[:4] == ["wt", "-w", NAME, "--pos=221,228"]
     assert argv.count("new-tab") == 2
     assert argv.count(";") == 1
     first = argv.index("new-tab")
@@ -137,7 +182,7 @@ def test_wt_argv_golden_string_for_a_single_tab():
     tabs = [Tab(cwd=r"C:\repos\demo-app", title="demo-app")]
     argv = wt_argv([10, 20, 800, 600], tabs, [0], [1024])
     assert argv[:11] == [
-        "wt", "-w", "-1", "--pos=10,20",
+        "wt", "-w", NAME, "--pos=10,20",
         "new-tab",
         # Named at launch. A tab reloaded did not name shows the running
         # program - `claude` - which matches no repo and no recorded title, so
@@ -349,6 +394,46 @@ def _entry(id_="w1", rect=None, state="normal"):
         id=id_, state=state, rect=rect or [0, 0, 100, 100],
         tabs=[], skipped=[], missing=[], delays=[], argv=["wt"],
     )
+
+
+def test_the_rest_of_the_tabs_go_in_only_once_every_window_is_placed(monkeypatch):
+    """Added any earlier, a tab starts at whatever size the window had - and
+    a background tab is not resized until it is first shown."""
+    events = []
+    monkeypatch.setattr(deploy_mod, "launch_window",
+                        lambda argv, tabs: events.append(("window", argv[0])) or 100)
+    monkeypatch.setattr(deploy_mod.win32, "set_geometry", lambda hwnd, rect, state:
+                        events.append(("place",)) or deploy_mod.win32.Placed(True, ""))
+    monkeypatch.setattr(deploy_mod.win32, "verify_and_fix_geometry", lambda hwnd, rect, state:
+                        events.append(("verify",)) or deploy_mod.win32.Placed(True, ""))
+    monkeypatch.setattr(deploy_mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(deploy_mod.subprocess, "Popen",
+                        lambda argv, **kw: events.append(("rest", argv[0])))
+    first, second = _entry("w1"), _entry("w2")
+    first.argv, first.rest_argv = ["w1-window"], ["w1-rest"]
+    second.argv, second.rest_argv = ["w2-window"], []
+
+    execute([first, second])
+
+    assert events == [("window", "w1-window"), ("place",),
+                      ("window", "w2-window"), ("place",),
+                      ("verify",), ("verify",),
+                      ("rest", "w1-rest")]
+
+
+def test_a_window_that_could_not_be_found_still_gets_the_rest_of_its_tabs(monkeypatch):
+    """Added by the window's name, not its handle: its sessions start, just
+    not necessarily at the right size."""
+    rest = []
+    monkeypatch.setattr(deploy_mod, "launch_window", lambda argv, tabs: None)
+    monkeypatch.setattr(deploy_mod.subprocess, "Popen",
+                        lambda argv, **kw: rest.append(argv))
+    entry = _entry("w1")
+    entry.rest_argv = ["wt", "-w", "reloaded-w1-x"]
+
+    execute([entry])
+
+    assert rest == [["wt", "-w", "reloaded-w1-x"]]
 
 
 def test_execute_batches_the_settle_wait_once_not_per_window(monkeypatch):

@@ -446,6 +446,9 @@ def _deploy_layout(lo, args) -> int:
             say(f"      --   {tab.title}  [warn] directory not found: {tab.cwd}")
         if args.dry_run:
             say("    argv: " + " ".join(repr(a) for a in entry.argv))
+            if entry.rest_argv:
+                say("    then, once placed: "
+                    + " ".join(repr(a) for a in entry.rest_argv))
 
     if args.dry_run:
         # `--dry-run` and `--unattended` are independent flags, so they can be

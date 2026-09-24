@@ -115,9 +115,8 @@ def _run(desk, **kw):
 
 
 def test_it_arms_the_marker_and_hands_off_without_ending_anything(desk):
-    """The session quits on the helper's `/exit`, and cleans up after itself.
-    Ended by pid instead, it left its Windows Terminal tab drawing the next
-    session wrongly until the window was resized."""
+    """The session quits on the helper's `/exit`, and shuts its MCP servers
+    and transcript down itself; ending it by pid is only the fallback."""
     assert _run(desk) == 0
     assert desk.marker.read_text(encoding="utf-8") == "restart"
     assert desk.spawned, "no helper was started"
