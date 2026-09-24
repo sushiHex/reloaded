@@ -49,6 +49,7 @@ def _plan(launched=(), skipped=(), missing=()):
         skipped=[_tab(c) for c in skipped],
         missing=[_tab(c) for c in missing],
         argv=["wt"],
+        rest_argv=[],
     )]
 
 

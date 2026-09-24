@@ -6,7 +6,8 @@ import os
 import shutil
 import subprocess
 import time
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
 
 from . import tabs as tabs_mod
 from . import win32
@@ -265,24 +266,38 @@ def wt_argv_single_tab(cwd: str, size_bytes: int = 0,
         cwd, launcher_command(cwd, 0, size_bytes, agent, command))
 
 
-def wt_argv(rect: list[int], tabs: list[Tab], delays: list[int], sizes: list[int]) -> list[str]:
-    """Build one wt invocation creating a new window with tabs in order.
+def wt_argvs(name: str, rect: list[int], tabs: list[Tab], delays: list[int],
+             sizes: list[int]) -> tuple[list[str], list[str]]:
+    """Two wt invocations for one window: one creating it, named `name`, with
+    its first tab; and one adding the rest of its tabs to it, or [] if none.
+
+    Split because a tab only gets the window's size if it exists after the
+    window has it. Windows Terminal resizes the tab in front when the window
+    is resized, and a background tab not until it is first shown - by which
+    time its agent has drawn for 120x30. Measured on a real logon restore: 11
+    of 15 tabs still read 120x30 in windows holding 133x71, and every one of
+    them was jumbled when switched to, until the window was resized by hand.
 
     `--pos` gets the window born in the right place so it does not visibly jump.
     Size is deliberately not passed: wt's `--size` is in character cells, not
-    pixels, so an exact rect is applied afterwards via SetWindowPlacement.
+    pixels, so an exact rect is applied afterwards via SetWindowPlacement -
+    between the two invocations.
     """
+    def tab_args(i: int) -> list[str]:
+        tab = tabs[i]
+        return new_tab_args(tab.cwd, launcher_command(
+            tab.cwd, delays[i], sizes[i], tab.agent, tab.command))
+
     x, y = rect[0], rect[1]
     # `--pos=x,y` rather than `--pos x,y`: a monitor left of the primary yields
     # a negative x, and a bare "-1920,..." argument is parsed as an option, not
     # a value, for the two-token form.
-    argv = ["wt", "-w", "-1", f"--pos={x},{y}"]
-    for i, tab in enumerate(tabs):
-        if i:
-            argv.append(";")  # structural separator — must stay unescaped
-        argv += new_tab_args(tab.cwd, launcher_command(
-            tab.cwd, delays[i], sizes[i], tab.agent, tab.command))
-    return argv
+    window = ["wt", "-w", name, f"--pos={x},{y}"] + tab_args(0)
+    rest: list[str] = []
+    for i in range(1, len(tabs)):
+        rest += [";"] if rest else ["wt", "-w", name]  # `;` must stay unescaped
+        rest += tab_args(i)
+    return window, rest
 
 
 @dataclass
@@ -304,6 +319,9 @@ class PlanEntry:
     missing: list[Tab]
     delays: list[int]
     argv: list[str]
+    # The rest of the window's tabs, added once `argv`'s window is sized. See
+    # wt_argvs.
+    rest_argv: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -319,6 +337,10 @@ class LaunchResult:
     # Why the placement failed, "" when it did not. Carried so the warning can
     # say which of three different failures this was; see win32.Placed.
     why: str = ""
+    # The same pair for the call that added the window's other tabs (see
+    # wt_argvs): when it was spawned, and why it could not be, "" if it was.
+    rest_spawned_at: float | None = None
+    rest_error: str = ""
 
 
 def plan_deploy(
@@ -363,6 +385,9 @@ def plan_deploy(
         rect = clamp_rect(
             window.rect, window.dpi, window.monitor, monitors, window.inset
         )
+        # Unique per launch: a name wt already knows adds tabs to that window.
+        name = f"reloaded-{window_id(position)}-{uuid.uuid4().hex[:8]}"
+        argv, rest_argv = wt_argvs(name, rect, to_launch, delays, tab_sizes)
         plan.append(
             PlanEntry(
                 id=window_id(position),
@@ -372,7 +397,8 @@ def plan_deploy(
                 skipped=skipped,
                 missing=missing,
                 delays=delays,
-                argv=wt_argv(rect, to_launch, delays, tab_sizes),
+                argv=argv,
+                rest_argv=rest_argv,
             )
         )
     return plan
@@ -546,7 +572,9 @@ def execute(plan: list[PlanEntry]) -> list[LaunchResult]:
         # session stuck at a trust prompt is then reported as "still starting"
         # rather than failed, with nothing checking again later.
         spawned_at = time.monotonic() - started_at
-        hwnd = launch_window(entry.argv, entry.tabs)
+        # Identified by its first tab alone: the others are not in it yet, and
+        # scoring on them could pick another window that shows their names.
+        hwnd = launch_window(entry.argv, entry.tabs[:1])
         # Refreshed per spawn, not once at the top. `launch_window` polls for
         # up to twenty seconds before giving up on an HWND, so four slow
         # windows outlast a deadline computed from in-shell delays alone - and
@@ -573,5 +601,19 @@ def execute(plan: list[PlanEntry]) -> list[LaunchResult]:
         for result, rect, state in to_verify:
             verified = win32.verify_and_fix_geometry(result.hwnd, rect, state)
             result.placed, result.why = verified.ok, verified.why
+
+    # Only now, with every window at its final size, do the rest of the tabs
+    # go in - see wt_argvs. By name, so a window that could not be found or
+    # placed still gets its sessions; they just start at whatever size it has.
+    for entry, result in zip(plan, results):
+        if not entry.rest_argv:
+            continue
+        result.rest_spawned_at = time.monotonic() - started_at
+        try:
+            subprocess.Popen(entry.rest_argv, close_fds=True)
+        except OSError as exc:
+            result.rest_spawned_at = None
+            result.rest_error = str(exc) or type(exc).__name__
+    mark_restoring(plan)
 
     return results

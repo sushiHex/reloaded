@@ -11,12 +11,13 @@ Claude Code takes `/exit` even while it is running this command, and this
 command waits for it: the session quits before asking the model anything,
 the way a user's `/exit` would, and cleans up after itself.
 
-That cleanup is why it is not simply ended by pid, which is what this module
-first did. A session killed mid-frame left its Windows Terminal tab drawing
-the next session wrongly - lines stacked and overlaid, in the terminal's own
-text buffer though the console's was clean - until the window was resized.
-It happened only in the tab the killed session had run in. Ending by pid
-remains the fallback, for a session that does not quit in time.
+This module first ended the session by pid instead. That was changed after
+relaunched sessions came back drawn wrongly - lines stacked and overlaid,
+until the window was resized - but the tabs it happened in turned out to be
+ones a logon restore had created at 120x30 in the background (see
+deploy.wt_argvs), so the kill was probably not the cause. A quit is still the
+better way down: the session shuts its MCP servers and its transcript itself.
+Ending by pid remains the fallback, for a session that does not quit in time.
 
 The pid is exact either way - `discover.owning_session` walks up from this
 process rather than guessing from a directory or a tab title.
