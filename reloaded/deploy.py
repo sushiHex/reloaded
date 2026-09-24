@@ -337,6 +337,10 @@ class LaunchResult:
     # Why the placement failed, "" when it did not. Carried so the warning can
     # say which of three different failures this was; see win32.Placed.
     why: str = ""
+    # The same pair for the call that added the window's other tabs (see
+    # wt_argvs): when it was spawned, and why it could not be, "" if it was.
+    rest_spawned_at: float | None = None
+    rest_error: str = ""
 
 
 def plan_deploy(
@@ -602,16 +606,12 @@ def execute(plan: list[PlanEntry]) -> list[LaunchResult]:
     for entry, result in zip(plan, results):
         if not entry.rest_argv:
             continue
-        spawned_at = time.monotonic() - started_at
+        result.rest_spawned_at = time.monotonic() - started_at
         try:
             subprocess.Popen(entry.rest_argv, close_fds=True)
-        except OSError:
-            continue
-        # The later spawn is the origin for the whole window's stagger: a
-        # later deadline only delays a failure report, an earlier one invents
-        # one.
-        if result.spawned_at is not None:
-            result.spawned_at = spawned_at
+        except OSError as exc:
+            result.rest_spawned_at = None
+            result.rest_error = str(exc) or type(exc).__name__
     mark_restoring(plan)
 
     return results

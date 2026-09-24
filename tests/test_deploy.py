@@ -436,6 +436,43 @@ def test_a_window_that_could_not_be_found_still_gets_the_rest_of_its_tabs(monkey
     assert rest == [["wt", "-w", "reloaded-w1-x"]]
 
 
+def test_the_first_tab_keeps_its_own_spawn_time(monkeypatch):
+    """Timed from the later call that added the others, a first tab that never
+    started would read as newly spawned - and the one check after `execute`
+    would say nothing about it."""
+    monkeypatch.setattr(deploy_mod, "launch_window", lambda argv, tabs: 100)
+    monkeypatch.setattr(deploy_mod.win32, "set_geometry", lambda hwnd, rect, state:
+                        deploy_mod.win32.Placed(True, ""))
+    monkeypatch.setattr(deploy_mod.win32, "verify_and_fix_geometry", lambda hwnd, rect, state:
+                        deploy_mod.win32.Placed(True, ""))
+    monkeypatch.setattr(deploy_mod.time, "sleep", lambda s: None)
+    clock = iter([0.0, 1.0, 30.0, 31.0, 32.0])
+    monkeypatch.setattr(deploy_mod.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(deploy_mod.subprocess, "Popen", lambda argv, **kw: None)
+    entry = _entry("w1")
+    entry.rest_argv = ["wt", "-w", "reloaded-w1-x"]
+
+    result = execute([entry])[0]
+
+    assert result.spawned_at == 1.0
+    assert result.rest_spawned_at == 30.0
+
+
+def test_the_rest_failing_to_spawn_is_recorded(monkeypatch):
+    def _refused(argv, **kw):
+        raise OSError("wt.exe not found")
+
+    monkeypatch.setattr(deploy_mod, "launch_window", lambda argv, tabs: None)
+    monkeypatch.setattr(deploy_mod.subprocess, "Popen", _refused)
+    entry = _entry("w1")
+    entry.rest_argv = ["wt", "-w", "reloaded-w1-x"]
+
+    result = execute([entry])[0]
+
+    assert result.rest_error == "wt.exe not found"
+    assert result.rest_spawned_at is None
+
+
 def test_execute_batches_the_settle_wait_once_not_per_window(monkeypatch):
     """N windows must pay GEOMETRY_SETTLE_SECONDS once total, not once each -
     the whole point of moving the wait out of win32.set_geometry."""

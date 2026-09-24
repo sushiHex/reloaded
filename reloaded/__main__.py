@@ -481,7 +481,15 @@ def _deploy_layout(lo, args) -> int:
                 f"[warn] window {r.window_id}: launched but geometry could "
                 "not be applied")
             failures += 1
-    launched = sum(len(e.tabs) for e in plan)
+    unopened = 0
+    for entry, r in zip(plan, results):
+        if r.rest_error:
+            unopened += len(entry.tabs) - 1
+            say(f"[warn] window {r.window_id}: its other "
+                f"{len(entry.tabs) - 1} tab(s) could not be opened — "
+                f"{r.rest_error}")
+            failures += 1
+    launched = sum(len(e.tabs) for e in plan) - unopened
     say(f"Launched {launched} session(s) in {len(plan)} window(s).", blank=True)
 
     elapsed = time.monotonic() - started_at
@@ -531,8 +539,7 @@ def _never_started(plan, results, live, elapsed: float) -> list[str]:
     """
     return [
         t.cwd
-        for entry, spawned_at in _spawn_offsets(plan, results)
-        for t, delay in zip(entry.tabs, entry.delays)
+        for t, delay, spawned_at in _spawn_offsets(plan, results)
         if spawned_at is not None
         and spawned_at + delay + deploy_mod.SESSION_START_ALLOWANCE <= elapsed
         and norm(t.cwd) not in live
@@ -540,13 +547,24 @@ def _never_started(plan, results, live, elapsed: float) -> list[str]:
 
 
 def _spawn_offsets(plan, results):
-    """Each plan entry paired with when its window was actually spawned.
+    """Each opened tab, with its delay and when its `wt` was actually spawned.
 
-    A window whose HWND was never identified has no spawn time, and a tab in it
-    has had no turn to miss - blaming it would be blaming it for the window's
-    failure, which is reported separately and by name.
+    A window's first tab comes from the call that made the window, its others
+    from the one that added them once it was placed (deploy.wt_argvs) - each
+    tab is timed from its own. A window whose HWND was never identified has
+    no spawn time for its first tab, and that tab has had no turn to miss -
+    blaming it would be blaming it for the window's failure, which is
+    reported separately and by name. Tabs whose `wt` could not be spawned at
+    all were never opened, and are left out; that too is reported by name.
     """
-    return [(entry, result.spawned_at) for entry, result in zip(plan, results)]
+    out = []
+    for entry, result in zip(plan, results):
+        for i, (tab, delay) in enumerate(zip(entry.tabs, entry.delays)):
+            if i == 0 or not entry.rest_argv:
+                out.append((tab, delay, result.spawned_at))
+            elif not result.rest_error:
+                out.append((tab, delay, result.rest_spawned_at))
+    return out
 
 
 def _still_starting(plan, results, elapsed: float) -> list[str]:
@@ -558,8 +576,7 @@ def _still_starting(plan, results, elapsed: float) -> list[str]:
     """
     return [
         t.cwd
-        for entry, spawned_at in _spawn_offsets(plan, results)
-        for t, delay in zip(entry.tabs, entry.delays)
+        for t, delay, spawned_at in _spawn_offsets(plan, results)
         if spawned_at is None
         or spawned_at + delay + deploy_mod.SESSION_START_ALLOWANCE > elapsed
     ]
