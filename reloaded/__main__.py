@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from collections import Counter
 import os
 import sys
 import time
@@ -294,15 +295,27 @@ def _capture_shrinkage(fresh, path, live) -> str:
     if previous is None or not previous.windows:
         return ""
 
-    new_cwds = {norm(t.cwd) for w in fresh.windows for t in w.tabs}
-    lost = sorted(
-        {
-            t.cwd
-            for w in previous.windows
-            for t in w.tabs
-            if norm(t.cwd) not in new_cwds and norm(t.cwd) in live
-        }
-    )
+    # Per session, not per directory: a capture that kept a directory's Claude
+    # tab and lost its Codex one has still lost a session. The fresh layout's
+    # tabs claim the live sessions first; a saved tab is lost if it still
+    # finds one of its own unclaimed.
+    # Counted, not a set: two saved Claude tabs in one directory need two
+    # captured to be matched.
+    unclaimed = discover_mod.running()
+    captured = Counter()
+    for w in fresh.windows:
+        for t in w.tabs:
+            discover_mod.claim_running(unclaimed, live, t.cwd, t.agent)
+            captured[(norm(t.cwd), t.agent or "claude")] += 1
+    lost_cwds = set()
+    for w in previous.windows:
+        for t in w.tabs:
+            key = (norm(t.cwd), t.agent or "claude")
+            if captured[key] > 0:
+                captured[key] -= 1
+            elif discover_mod.claim_running(unclaimed, live, t.cwd, t.agent):
+                lost_cwds.add(t.cwd)
+    lost = sorted(lost_cwds)
     if not lost:
         return ""
 
@@ -428,7 +441,8 @@ def _deploy_layout(lo, args) -> int:
     # Built once and reused by both the size guard and the torn-tail repair —
     # this scan walks every transcript on the machine.
     index = discover_mod.transcript_index(need_title=False)
-    plan = deploy_mod.plan_deploy(lo, live, monitors, _transcript_sizes(index))
+    plan = deploy_mod.plan_deploy(lo, live, monitors, _transcript_sizes(index),
+                                  running=discover_mod.running())
 
     if not plan:
         total = sum(len(w.tabs) for w in lo.windows)
@@ -1333,12 +1347,13 @@ def cmd_status(args) -> int:
     # moment this is worth knowing - the loss it describes happens at the next
     # restore, not now.
     for cwd, kinds in sorted(crowded.items()):
-        print(f"\n[warn] {len(kinds)} agent sessions share {cwd} "
+        print(f"\n[note] {len(kinds)} agent sessions share {cwd} "
               f"({', '.join(kinds)}).")
-        print("       Sessions are tracked by directory, so only one is saved "
-              "and only one")
-        print("       comes back. Move one to its own directory, or expect to "
-              "reopen it by hand.")
+        print("       Capture saves each as its own tab (drift below says if the "
+              "saved layout")
+        print("       lacks one). `restart` refuses this directory, and `down` "
+              "may leave one")
+        print("       running: quitting is aimed by directory, not by session.")
 
     if not path.exists():
         print(f"\nno layout saved at {path} — run `reloaded capture`")
@@ -1365,16 +1380,25 @@ def cmd_status(args) -> int:
     print(f"terminal      : {wt_detail}" if wt_ok else f"[warn] terminal: {wt_detail}")
 
     would_launch = 0
+    # The same per-session answer `up` acts on, so the count below is what it
+    # would really do: a directory's Codex tab is not "running" because its
+    # Claude one is.
+    unclaimed = discover_mod.running()
     for i, w in enumerate(lo.windows):
         print(f"\n  {layout_mod.window_id(i)}  {layout_mod.window_header(w)}")
         for t in w.tabs:
-            running = norm(t.cwd) in live
+            running = discover_mod.claim_running(unclaimed, live, t.cwd, t.agent)
             if not running:
                 would_launch += 1
             mark = "running" if running else "would launch"
             print(f"      {mark:12}  {t.title}{layout_mod.tab_flags(t)}")
 
-    orphans = set(live) - {norm(t.cwd) for w in lo.windows for t in w.tabs}
+    # Per session: what is left of `unclaimed` after the layout's tabs took
+    # theirs is live and unsaved - a directory's Codex session beside a saved
+    # Claude one included. By directory when sessions are not known.
+    orphans = {f"{cwd} ({kind})" for (cwd, kind), n in unclaimed.items() if n > 0}
+    if not unclaimed:
+        orphans = set(live) - {norm(t.cwd) for w in lo.windows for t in w.tabs}
     if orphans:
         print(f"\n[drift] {len(orphans)} live session(s) are not in the layout:")
         for cwd in sorted(orphans):

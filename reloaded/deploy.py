@@ -349,21 +349,33 @@ def plan_deploy(
     live: dict[str, int],
     monitors: list[Monitor],
     sizes: dict[str, int],
+    running=None,
 ) -> list[PlanEntry]:
     """Compute exactly what would be launched, without launching it.
 
     Tabs whose session is already running are skipped, which makes deploy
     idempotent and therefore safe to re-run after a partial failure.
+    `running` (discover.running) makes that per session: a directory's Codex
+    tab is not skipped because its Claude one is up, and two saved Claude tabs
+    there are not both answered by one live one. Without it, a live directory
+    counts as running every kind.
     """
+    from . import discover
+
     plan: list[PlanEntry] = []
     index = 0
+    remaining = None if running is None else running.copy()
 
     for position, window in enumerate(lo.windows):
         to_launch: list[Tab] = []
         skipped: list[Tab] = []
         missing: list[Tab] = []
         for tab in window.tabs:
-            if norm(tab.cwd) in live:
+            if remaining is not None:
+                up = discover.claim_running(remaining, live, tab.cwd, tab.agent)
+            else:
+                up = norm(tab.cwd) in live
+            if up:
                 skipped.append(tab)
             elif not os.path.isdir(tab.cwd):
                 # readiness.wait_for_ready deliberately never blocks on this —

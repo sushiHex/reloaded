@@ -134,6 +134,39 @@ def list_wt_windows() -> list[int]:
     return found
 
 
+_u32.GetWindow.restype = wintypes.HWND
+_u32.GetWindow.argtypes = [wintypes.HWND, wintypes.UINT]
+
+
+def tab_shells() -> dict[int, int]:
+    """The first process of every Windows Terminal tab -> the window it is in.
+
+    Each tab's console has a hidden `PseudoConsoleWindow`, belonging to the
+    process the tab started - its shell - and owned by the Terminal window
+    hosting the tab. Measured on 18 sessions across four windows, three
+    directories each holding a Claude and a Codex tab: every one mapped to
+    its own window, and a Codex process outside any tab mapped to nothing.
+    Read-only; nothing is attached to.
+
+    It is the only link from a tab to its process: the tab strip has titles,
+    and two sessions in one directory have the same one.
+    """
+    found: dict[int, int] = {}
+
+    @_ENUMPROC
+    def _cb(hwnd, _lparam):
+        if _class_name(hwnd) == "PseudoConsoleWindow":
+            owner = _u32.GetWindow(hwnd, 4)  # GW_OWNER
+            pid = wintypes.DWORD()
+            _u32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if owner and pid.value:
+                found[int(pid.value)] = int(owner)
+        return True
+
+    _u32.EnumWindows(_cb, 0)
+    return found
+
+
 def _dpi_for_monitor(hmon) -> int:
     if _shcore is None:
         return 96

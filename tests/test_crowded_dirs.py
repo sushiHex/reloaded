@@ -1,15 +1,11 @@
-"""Two agents in one directory: one is saved, the other never comes back.
+"""Two agents in one directory, as the directory-keyed parts of the tool see it.
 
-Sessions are keyed by normalized cwd, so a `codex.exe` and a `claude.exe` in
-the same repository collapse to one entry. The layout stores one tab with one
-kind, and a restore brings back one session. Measured on a real machine after a
-logon: `hermes-realtime` hosted both, only the Codex one returned.
-
-`_sessions()` explains why the collapse is not fixable here — nothing connects
-a Windows Terminal tab to the process inside it, so even a complete list would
-not say which pid belongs to which tab. What is fixable is the silence, and
-`teardown.plan_down` already answers the tab-side version of this the same way:
-name the ambiguity rather than resolve it invisibly.
+`live_sessions()` and friends are keyed by normalized cwd, so a `codex.exe` and
+a `claude.exe` in the same repository collapse to one entry there. Capture no
+longer uses them to decide what is saved - it places each session by its tab's
+shell (test_two_agents_one_directory) - but restarts and teardown still aim by
+directory, so `status` names such a directory, the way `teardown.plan_down`
+names the tab-side ambiguity.
 """
 from __future__ import annotations
 
@@ -91,7 +87,10 @@ def test_status_warns_about_a_shared_directory(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     assert "share" in out
     assert "claude, codex" in out
-    assert "only one" in out
+    # Saved and restored now (see test_two_agents_one_directory); what is left
+    # is that quitting is still aimed by directory.
+    assert "Capture saves each as its own tab" in out
+    assert "may leave one" in out
 
 
 def test_status_says_nothing_when_no_directory_is_shared(monkeypatch, tmp_path, capsys):
