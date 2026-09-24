@@ -166,6 +166,41 @@ def test_a_capture_that_lost_one_of_a_directorys_sessions_is_refused(tmp_path, m
     assert "retro" in _capture_shrinkage(fresh, path, {norm(RETRO): 1})
 
 
+def test_losing_one_of_two_same_kind_sessions_is_refused(tmp_path, monkeypatch):
+    """Matched as a set, the surviving Claude tab stood in for both."""
+    from reloaded.__main__ import _capture_shrinkage
+    monkeypatch.setattr(discover_mod, "running", lambda: Counter(
+        {(norm(RETRO), "claude"): 2}))
+    path = _saved(tmp_path, Tab(cwd=RETRO, title="retro", agent="claude"),
+                  Tab(cwd=RETRO, title="retro", agent="claude"))
+    fresh = make_layout([make_window([0, 0, 800, 600], [
+        Tab(cwd=RETRO, title="retro", agent="claude")])])
+
+    assert "retro" in _capture_shrinkage(fresh, path, {norm(RETRO): 1})
+
+
+def test_status_names_a_live_session_the_saved_layout_lacks(tmp_path, monkeypatch, capsys):
+    """A layout written before this change holds one tab for a directory
+    running two; status must not read that as all saved."""
+    import reloaded.__main__ as main_mod
+    path = _saved(tmp_path, Tab(cwd=RETRO, title="retro", agent="claude"))
+    monkeypatch.setattr(main_mod, "layout_path", lambda name: path)
+    monkeypatch.setattr(main_mod.discover_mod, "sweep",
+                        lambda: ({norm(RETRO): 1}, {norm(RETRO): ["claude", "codex"]}))
+    monkeypatch.setattr(discover_mod, "running", lambda: Counter(
+        {(norm(RETRO), "claude"): 1, (norm(RETRO), "codex"): 1}))
+    monkeypatch.setattr(main_mod.readiness_mod, "wait_for_ready",
+                        lambda lo, timeout: (True, "ready"))
+    monkeypatch.setattr(main_mod.readiness_mod, "check_wt_version",
+                        lambda: (True, "ok"))
+
+    main_mod.cmd_status(types.SimpleNamespace(layout="default", repos_root=REPOS))
+
+    out = capsys.readouterr().out
+    assert "[drift] 1 live session(s) are not in the layout" in out
+    assert "(codex)" in out
+
+
 def test_a_directorys_session_the_user_closed_is_let_go(tmp_path, monkeypatch):
     from reloaded.__main__ import _capture_shrinkage
     monkeypatch.setattr(discover_mod, "running", lambda: Counter(

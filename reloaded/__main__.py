@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import math
+from collections import Counter
 import os
 import sys
 import time
@@ -298,21 +299,23 @@ def _capture_shrinkage(fresh, path, live) -> str:
     # tab and lost its Codex one has still lost a session. The fresh layout's
     # tabs claim the live sessions first; a saved tab is lost if it still
     # finds one of its own unclaimed.
+    # Counted, not a set: two saved Claude tabs in one directory need two
+    # captured to be matched.
     unclaimed = discover_mod.running()
+    captured = Counter()
     for w in fresh.windows:
         for t in w.tabs:
             discover_mod.claim_running(unclaimed, live, t.cwd, t.agent)
-    captured = {(norm(t.cwd), t.agent or "claude")
-                for w in fresh.windows for t in w.tabs}
-    lost = sorted(
-        {
-            t.cwd
-            for w in previous.windows
-            for t in w.tabs
-            if (norm(t.cwd), t.agent or "claude") not in captured
-            and discover_mod.claim_running(unclaimed, live, t.cwd, t.agent)
-        }
-    )
+            captured[(norm(t.cwd), t.agent or "claude")] += 1
+    lost_cwds = set()
+    for w in previous.windows:
+        for t in w.tabs:
+            key = (norm(t.cwd), t.agent or "claude")
+            if captured[key] > 0:
+                captured[key] -= 1
+            elif discover_mod.claim_running(unclaimed, live, t.cwd, t.agent):
+                lost_cwds.add(t.cwd)
+    lost = sorted(lost_cwds)
     if not lost:
         return ""
 
@@ -1326,10 +1329,11 @@ def cmd_status(args) -> int:
     for cwd, kinds in sorted(crowded.items()):
         print(f"\n[note] {len(kinds)} agent sessions share {cwd} "
               f"({', '.join(kinds)}).")
-        print("       Both are saved and restored. `restart` refuses this "
-              "directory, and `down`")
-        print("       may leave one running: quitting is aimed by directory, "
-              "not by session.")
+        print("       Capture saves each as its own tab (drift below says if the "
+              "saved layout")
+        print("       lacks one). `restart` refuses this directory, and `down` "
+              "may leave one")
+        print("       running: quitting is aimed by directory, not by session.")
 
     if not path.exists():
         print(f"\nno layout saved at {path} — run `reloaded capture`")
@@ -1369,7 +1373,12 @@ def cmd_status(args) -> int:
             mark = "running" if running else "would launch"
             print(f"      {mark:12}  {t.title}{layout_mod.tab_flags(t)}")
 
-    orphans = set(live) - {norm(t.cwd) for w in lo.windows for t in w.tabs}
+    # Per session: what is left of `unclaimed` after the layout's tabs took
+    # theirs is live and unsaved - a directory's Codex session beside a saved
+    # Claude one included. By directory when sessions are not known.
+    orphans = {f"{cwd} ({kind})" for (cwd, kind), n in unclaimed.items() if n > 0}
+    if not unclaimed:
+        orphans = set(live) - {norm(t.cwd) for w in lo.windows for t in w.tabs}
     if orphans:
         print(f"\n[drift] {len(orphans)} live session(s) are not in the layout:")
         for cwd in sorted(orphans):

@@ -89,8 +89,8 @@ def test_status_warns_about_a_shared_directory(monkeypatch, tmp_path, capsys):
     assert "claude, codex" in out
     # Saved and restored now (see test_two_agents_one_directory); what is left
     # is that quitting is still aimed by directory.
-    assert "Both are saved and restored" in out
-    assert "may leave one running" in out
+    assert "Capture saves each as its own tab" in out
+    assert "may leave one" in out
 
 
 def test_status_says_nothing_when_no_directory_is_shared(monkeypatch, tmp_path, capsys):
