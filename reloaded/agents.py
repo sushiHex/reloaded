@@ -12,6 +12,7 @@ confident wrong answers.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
 
@@ -62,6 +63,10 @@ class Agent:
     # option's value; any option in neither is read as taking one.
     bare_flags: tuple = ()
     variadic_flags: tuple = ()
+    # What resumes the directory's latest conversation, standing in for a
+    # `resume_by_id` flag given no id - which opens a picker. See
+    # `without_picker`.
+    resume_latest: str = ""
 
 
 def _codex_home() -> str:
@@ -105,6 +110,7 @@ CLAUDE = Agent(
         "--add-dir", "--allowed-tools", "--allowedTools", "--betas",
         "--disallowed-tools", "--disallowedTools", "--file", "--mcp-config",
         "--tools"),
+    resume_latest="--continue",
 )
 
 CODEX = Agent(
@@ -199,6 +205,26 @@ def resume_exactly(kind, argv: list, session_id: str | None) -> list:
         else:
             takes = "none"  # a named conversation, or the opening prompt
     return kept + [agent.resume_by_id[0], session_id]
+
+
+def without_picker(kind, command: str) -> str:
+    """`command` with a bare resume flag replaced by resuming the latest one.
+
+    `--resume` with no id opens Claude Code's conversation picker, and in a
+    tab nobody is watching that is a session that never comes up: a logon
+    restore left one sitting at it, because the user had started that session
+    by hand with a bare `--resume` and capture replays what it read. `resumes`
+    rightly leaves the user's flags alone when they only decide which
+    conversation comes back; a picker decides whether any does, so this one is
+    replaced - with the directory's latest conversation, which is what the
+    picker had at the top.
+    """
+    agent = for_kind(kind)
+    if not command or not agent.resume_latest or not agent.resume_by_id:
+        return command
+    flags = "|".join(re.escape(f) for f in agent.resume_by_id)
+    # Bare: last on the line, or followed by another option rather than a value.
+    return re.sub(rf"(?<!\S)(?:{flags})(?=\s+-|\s*$)", agent.resume_latest, command)
 
 
 def for_kind(kind) -> Agent:

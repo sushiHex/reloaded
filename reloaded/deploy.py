@@ -166,7 +166,8 @@ def launcher_command(cwd: str, delay: int, size_bytes: int,
     """
     from . import agents as agents_mod
 
-    invocation = command or agents_mod.for_kind(agent).launch
+    invocation = (agents_mod.without_picker(agent, command)
+                  or agents_mod.for_kind(agent).launch)
     name = tab_title(cwd)
     parts = [CHILD_SESSION_CLEAR, RESUME_SUPPRESSOR]
 
