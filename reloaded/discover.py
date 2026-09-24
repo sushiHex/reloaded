@@ -10,6 +10,7 @@ import os
 import pathlib
 import re
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from typing import NamedTuple
 
@@ -285,11 +286,32 @@ def sessions() -> list[Session]:
     return found
 
 
-def running() -> set[tuple[str, str]]:
-    """(normalized cwd, kind) for every live agent session - which, unlike
-    `live_sessions`, says that a directory's Codex session is running even
-    when its Claude one is too."""
-    return {(norm(s.cwd), s.kind) for s in sessions()}
+def running() -> Counter:
+    """How many sessions of each (normalized cwd, kind) are live - which,
+    unlike `live_sessions`, says that a directory's Codex session is running
+    even when its Claude one is too, and that two Claude sessions there are
+    two. From the plain process sweep, not `sessions()`: liveness must not
+    depend on finding a session's window."""
+    return Counter((cwd, kind) for cwd, kinds in _census()[1].items()
+                   for kind in kinds)
+
+
+def claim_running(running: Counter, live: dict[str, int], cwd: str,
+                  kind: str) -> bool:
+    """Whether a saved tab's session is live, claiming one of `running` so a
+    second saved tab of the same directory and kind is not answered by the
+    same process. Pass a copy; it is spent.
+
+    A directory `running` knows nothing about falls back to `live` - the
+    directory-keyed answer every caller used before kinds were counted.
+    """
+    key = (norm(cwd), kind or "claude")
+    if running[key] > 0:
+        running[key] -= 1
+        return True
+    if any(c == key[0] for c, _k in running):
+        return False  # its sessions are known, and this is not one of them
+    return key[0] in live
 
 
 def _sessions() -> tuple[dict[str, tuple], dict[str, list[str]]]:
@@ -307,6 +329,14 @@ def _sessions() -> tuple[dict[str, tuple], dict[str, list[str]]]:
     not. teardown.plan_down warns when it sees the matching symptom - two tabs
     resolving to one cwd - rather than leaving the ambiguity silent.
     """
+    out, seen = _census()
+    crowded = {cwd: sorted(k) for cwd, k in seen.items() if len(k) > 1}
+    return out, crowded
+
+
+def _census() -> tuple[dict[str, tuple], dict[str, list[str]]]:
+    """The walk under `_sessions` and `running`: (cwd -> (pid, kind), cwd ->
+    every kind there, one entry per session)."""
     try:
         import psutil
     except ImportError:
@@ -330,8 +360,7 @@ def _sessions() -> tuple[dict[str, tuple], dict[str, list[str]]]:
         if cwd:
             out[norm(cwd)] = (int(proc.info["pid"]), kind)
             seen.setdefault(norm(cwd), []).append(kind)
-    crowded = {cwd: sorted(k) for cwd, k in seen.items() if len(k) > 1}
-    return out, crowded
+    return out, seen
 
 
 def sweep() -> tuple[dict[str, int], dict[str, list[str]]]:

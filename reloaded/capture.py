@@ -75,11 +75,14 @@ def build_layout(
             if resolved is None:
                 continue
             cwd, low = resolved
-            for s in pool:
-                # A session whose window is known belongs to that window only.
-                if (s.pid not in taken and norm(s.cwd) == norm(cwd)
-                        and s.hwnd in (None, hwnd)):
-                    add(s, cwd, title, low)
+            # One session per title, so a window titled `retro, meta, retro`
+            # keeps that order. A session whose window is known belongs to
+            # that window only.
+            match = next((s for s in pool if s.pid not in taken
+                          and norm(s.cwd) == norm(cwd)
+                          and s.hwnd in (None, hwnd)), None)
+            if match is not None:
+                add(match, cwd, title, low)
         # In this window by its shell, under a title that names no repo.
         for s in pool:
             if s.pid not in taken and hwnd is not None and s.hwnd == hwnd:
@@ -114,24 +117,30 @@ def merge_pinned(fresh: Layout, previous: Layout | None) -> Layout:
     if previous is None:
         return fresh
 
-    present = {norm(t.cwd) for w in fresh.windows for t in w.tabs}
+    # By session - directory and kind - not by directory: a directory can hold
+    # a Claude and a Codex tab, and a pinned Codex tab is not present because
+    # its Claude neighbour is.
+    def identity(t):
+        return norm(t.cwd), t.agent or "claude"
+
+    present = {identity(t) for w in fresh.windows for t in w.tabs}
 
     # A pin survives the session it was launched into. A capture taken while a
     # pinned repo is running sees an ordinary running tab, and skipping it here
     # dropped `pinned` on the floor: the pin lasted exactly until its first
     # successful launch, and the repo vanished for good the next time the
     # session was closed. Re-mark instead of skip.
-    fresh_by_cwd = {norm(t.cwd): t for w in fresh.windows for t in w.tabs}
+    fresh_by_identity = {identity(t): t for w in fresh.windows for t in w.tabs}
     for old_window in previous.windows:
         for tab in old_window.tabs:
             if tab.pinned:
-                running = fresh_by_cwd.get(norm(tab.cwd))
+                running = fresh_by_identity.get(identity(tab))
                 if running is not None:
                     running.pinned = True
 
     for position, old_window in enumerate(previous.windows):
         for tab in old_window.tabs:
-            if not tab.pinned or norm(tab.cwd) in present:
+            if not tab.pinned or identity(tab) in present:
                 continue
             # Match by position: window identity is positional, and a stored id
             # would be stale for any window that shifted when another was removed.
@@ -159,7 +168,7 @@ def merge_pinned(fresh: Layout, previous: Layout | None) -> Layout:
                     command=tab.command,
                 )
             )
-            present.add(norm(tab.cwd))
+            present.add(identity(tab))
     return fresh
 
 

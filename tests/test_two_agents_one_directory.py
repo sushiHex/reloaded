@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import sys
 import types
+from collections import Counter
 
 import pytest
 
@@ -105,10 +106,111 @@ def test_a_directorys_codex_tab_is_launched_while_its_claude_one_is_up(monkeypat
         Tab(cwd=RETRO, title="retro", agent="codex")])])
 
     plan = plan_deploy(lo, {norm(RETRO): 1}, MONITORS, {},
-                       running={(norm(RETRO), "claude")})
+                       running=Counter({(norm(RETRO), "claude"): 1}))
 
     assert [t.agent for t in plan[0].tabs] == ["codex"]
     assert [t.agent for t in plan[0].skipped] == ["claude"]
+
+
+def test_two_saved_tabs_of_one_kind_are_not_both_answered_by_one_session(monkeypatch):
+    import reloaded.deploy as deploy_mod
+    monkeypatch.setattr(deploy_mod.os.path, "isdir", lambda p: True)
+    lo = make_layout([make_window([0, 0, 800, 600], [
+        Tab(cwd=RETRO, title="retro", agent="claude"),
+        Tab(cwd=RETRO, title="retro", agent="claude")])])
+
+    plan = plan_deploy(lo, {norm(RETRO): 1}, MONITORS, {},
+                       running=Counter({(norm(RETRO), "claude"): 1}))
+
+    assert len(plan[0].skipped) == 1 and len(plan[0].tabs) == 1
+
+
+def test_a_directory_whose_sessions_are_unknown_falls_back_to_the_directory():
+    """What every caller did before kinds were counted - and what a test
+    that supplies only `live_sessions` still gets."""
+    assert discover_mod.claim_running(Counter(), {norm(RETRO): 1}, RETRO, "codex")
+    assert not discover_mod.claim_running(
+        Counter({(norm(RETRO), "claude"): 1}), {norm(RETRO): 1}, RETRO, "codex")
+
+
+def test_titles_keep_their_order_when_one_repo_appears_twice():
+    """One session per title: `retro, meta, retro` is not `retro, retro, meta`."""
+    sessions = [Session(1, RETRO, "claude", 10.0, 100),
+                Session(2, META, "claude", 15.0, 100),
+                Session(3, RETRO, "codex", 20.0, 100)]
+
+    lo = _capture([_window(100, ["retro", "meta", "retro"])], sessions)
+
+    assert [(t.title, t.agent) for t in lo.windows[0].tabs] == [
+        ("retro", "claude"), ("meta", "claude"), ("retro", "codex")]
+
+
+def _saved(tmp_path, *tabs):
+    from reloaded.layout import save
+    path = tmp_path / "layout.json"
+    save(make_layout([make_window([0, 0, 800, 600], list(tabs))]), path)
+    return path
+
+
+def test_a_capture_that_lost_one_of_a_directorys_sessions_is_refused(tmp_path, monkeypatch):
+    """Guarded by directory, keeping the Claude tab made the lost Codex one
+    look fine, and the reconcile wrote the loss over a good layout."""
+    from reloaded.__main__ import _capture_shrinkage
+    monkeypatch.setattr(discover_mod, "running", lambda: Counter(
+        {(norm(RETRO), "claude"): 1, (norm(RETRO), "codex"): 1}))
+    path = _saved(tmp_path, Tab(cwd=RETRO, title="retro", agent="claude"),
+                  Tab(cwd=RETRO, title="retro", agent="codex"))
+    fresh = make_layout([make_window([0, 0, 800, 600], [
+        Tab(cwd=RETRO, title="retro", agent="claude")])])
+
+    assert "retro" in _capture_shrinkage(fresh, path, {norm(RETRO): 1})
+
+
+def test_a_directorys_session_the_user_closed_is_let_go(tmp_path, monkeypatch):
+    from reloaded.__main__ import _capture_shrinkage
+    monkeypatch.setattr(discover_mod, "running", lambda: Counter(
+        {(norm(RETRO), "claude"): 1}))
+    path = _saved(tmp_path, Tab(cwd=RETRO, title="retro", agent="claude"),
+                  Tab(cwd=RETRO, title="retro", agent="codex"))
+    fresh = make_layout([make_window([0, 0, 800, 600], [
+        Tab(cwd=RETRO, title="retro", agent="claude")])])
+
+    assert _capture_shrinkage(fresh, path, {norm(RETRO): 1}) == ""
+
+
+def test_status_counts_a_directorys_missing_codex_tab(tmp_path, monkeypatch, capsys):
+    """`up` launches it; status said both were running and `up` would launch
+    nothing."""
+    import reloaded.__main__ as main_mod
+    path = _saved(tmp_path, Tab(cwd=RETRO, title="retro", agent="claude"),
+                  Tab(cwd=RETRO, title="retro", agent="codex"))
+    monkeypatch.setattr(main_mod, "layout_path", lambda name: path)
+    monkeypatch.setattr(main_mod.discover_mod, "sweep",
+                        lambda: ({norm(RETRO): 1}, {}))
+    monkeypatch.setattr(discover_mod, "running", lambda: Counter(
+        {(norm(RETRO), "claude"): 1}))
+    monkeypatch.setattr(main_mod.readiness_mod, "wait_for_ready",
+                        lambda lo, timeout: (True, "ready"))
+    monkeypatch.setattr(main_mod.readiness_mod, "check_wt_version",
+                        lambda: (True, "ok"))
+
+    main_mod.cmd_status(types.SimpleNamespace(layout="default", repos_root=REPOS))
+
+    assert "`up` would launch 1 session(s)." in capsys.readouterr().out
+
+
+def test_a_pinned_codex_tab_survives_beside_a_running_claude_one():
+    """Pins merged by directory handed the Codex tab's pin to the Claude tab
+    and dropped the Codex tab - erased by the next reconcile."""
+    fresh = make_layout([make_window([0, 0, 800, 600], [
+        Tab(cwd=RETRO, title="retro", agent="claude")])])
+    previous = make_layout([make_window([0, 0, 800, 600], [
+        Tab(cwd=RETRO, title="retro", agent="codex", pinned=True)])])
+
+    merged = capture_mod.merge_pinned(fresh, previous)
+
+    tabs = merged.windows[0].tabs
+    assert [(t.agent, t.pinned) for t in tabs] == [("claude", False), ("codex", True)]
 
 
 def test_each_session_is_placed_through_its_tabs_shell(monkeypatch):

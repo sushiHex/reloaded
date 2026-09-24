@@ -106,6 +106,11 @@ def _no_real_desktop_effects(monkeypatch):
     import reloaded.discover as discover_mod
 
     monkeypatch.setattr(discover_mod, "sessions", lambda: [])
+    # Empty, so every directory falls back to the `live_sessions` a test
+    # supplies - see discover.claim_running.
+    from collections import Counter
+
+    monkeypatch.setattr(discover_mod, "running", lambda: Counter())
 
     # Spawning is a desktop effect too, and this one got out. A test whose
     # wait loop fell through to the reopen fallback called Popen on `wt` for

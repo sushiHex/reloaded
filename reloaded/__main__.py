@@ -294,13 +294,23 @@ def _capture_shrinkage(fresh, path, live) -> str:
     if previous is None or not previous.windows:
         return ""
 
-    new_cwds = {norm(t.cwd) for w in fresh.windows for t in w.tabs}
+    # Per session, not per directory: a capture that kept a directory's Claude
+    # tab and lost its Codex one has still lost a session. The fresh layout's
+    # tabs claim the live sessions first; a saved tab is lost if it still
+    # finds one of its own unclaimed.
+    unclaimed = discover_mod.running()
+    for w in fresh.windows:
+        for t in w.tabs:
+            discover_mod.claim_running(unclaimed, live, t.cwd, t.agent)
+    captured = {(norm(t.cwd), t.agent or "claude")
+                for w in fresh.windows for t in w.tabs}
     lost = sorted(
         {
             t.cwd
             for w in previous.windows
             for t in w.tabs
-            if norm(t.cwd) not in new_cwds and norm(t.cwd) in live
+            if (norm(t.cwd), t.agent or "claude") not in captured
+            and discover_mod.claim_running(unclaimed, live, t.cwd, t.agent)
         }
     )
     if not lost:
@@ -1346,10 +1356,14 @@ def cmd_status(args) -> int:
     print(f"terminal      : {wt_detail}" if wt_ok else f"[warn] terminal: {wt_detail}")
 
     would_launch = 0
+    # The same per-session answer `up` acts on, so the count below is what it
+    # would really do: a directory's Codex tab is not "running" because its
+    # Claude one is.
+    unclaimed = discover_mod.running()
     for i, w in enumerate(lo.windows):
         print(f"\n  {layout_mod.window_id(i)}  {layout_mod.window_header(w)}")
         for t in w.tabs:
-            running = norm(t.cwd) in live
+            running = discover_mod.claim_running(unclaimed, live, t.cwd, t.agent)
             if not running:
                 would_launch += 1
             mark = "running" if running else "would launch"
