@@ -64,7 +64,7 @@ class Agent:
     variadic_flags: tuple = ()
     # What resumes the directory's latest conversation, standing in for a
     # `resume_by_id` flag given no id - which opens a picker. See
-    # `without_picker`.
+    # `resuming`.
     resume_latest: str = ""
 
 
@@ -149,10 +149,10 @@ def resumes(kind, command: str) -> bool:
     directory, with none of the conversation in it. `restart` then reports
     success, having thrown the thing away that it exists to preserve.
 
-    Deliberately not fixed by rewriting the command. The flags are the user's,
-    and a launcher that quietly appends `resume` to what someone typed is
-    guessing at intent. Saying so before anything is exited is the honest
-    version, and leaves the choice where it belongs.
+    Not fixed by rewriting the command for a kind without `resume_latest`
+    (Codex): there the warning before anything is exited is the answer. For
+    Claude Code, `resuming` does rewrite it, at launch - a plain `claude`
+    restored empty every time, and relaunches through its loop did too.
     """
     if not command:
         return True
@@ -206,32 +206,48 @@ def resume_exactly(kind, argv: list, session_id: str | None) -> list:
     return kept + [agent.resume_by_id[0], session_id]
 
 
-def without_picker(kind, command: str) -> str:
-    """`command` with a bare resume flag replaced by resuming the latest one.
+def resuming(kind, command: str) -> str:
+    """`command`, made to bring a conversation back when Reloaded launches it.
 
-    `--resume` with no id opens Claude Code's conversation picker, and in a
-    tab nobody is watching that is a session that never comes up: a logon
-    restore left one sitting at it, because the user had started that session
-    by hand with a bare `--resume` and capture replays what it read. `resumes`
-    rightly leaves the user's flags alone when they only decide which
-    conversation comes back; a picker decides whether any does, so this one is
-    replaced - with the directory's latest conversation, which is what the
-    picker had at the top.
+    Two ways a captured command came back as no conversation at all, both
+    measured on the user's tabs:
+
+    - `--resume` with no id opens Claude Code's picker, and a restored tab sat
+      at it: the session had been started by hand that way, and capture
+      replays what it read. The bare flag becomes `resume_latest`.
+    - A command with no resume flag starts an empty conversation. Captured
+      from a session started as plain `claude`, every restore - and every
+      relaunch through its tab's loop - came back empty, the long-running
+      conversation out of reach. `resume_latest` is added.
+
+    `resume_latest` is the directory's latest conversation, which is what the
+    picker had at the top. This reverses `resumes`' rule against rewriting the
+    user's flags, for a kind that has `resume_latest`: what Reloaded launches
+    is a restore, and a restore that brings nothing back is not one. A command
+    naming its conversation is left alone.
     """
     agent = for_kind(kind)
     if not command or not agent.resume_latest or not agent.resume_by_id:
         return command
     tokens = _ps_tokens(command)
-    bare = []
+    bare, resumes_any, options_end = [], False, len(command)
     for i, (start, end, text, quoted) in enumerate(tokens[1:], 1):
         if text == "--" and not quoted:
-            break  # the opening prompt follows; nothing in it is an option
-        if quoted or text not in agent.resume_by_id:
+            options_end = start  # the opening prompt follows; no options in it
+            break
+        if quoted:
+            continue
+        if text.split("=", 1)[0] in agent.resume_tokens:
+            resumes_any = True
+        if text not in agent.resume_by_id:
             continue
         following = tokens[i + 1] if i + 1 < len(tokens) else None
         # Bare: last, or followed by another option rather than a value.
         if following is None or (not following[3] and following[2].startswith("-")):
             bare.append((start, end))
+    if not resumes_any:
+        head, tail = command[:options_end].rstrip(), command[options_end:]
+        return f"{head} {agent.resume_latest}" + (f" {tail}" if tail else "")
     for start, end in reversed(bare):
         command = command[:start] + agent.resume_latest + command[end:]
     return command

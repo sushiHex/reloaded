@@ -99,14 +99,23 @@ def restart_loop(cwd: str, invocation: str = CLAUDE_COMMAND) -> str:
     the *relaunched* session's lifetime. Measured from the original launch it
     would always look successful, and a relaunch that died on startup would
     close its tab and take the error with it.
+
+    A marker holding a command rather than the word `restart` runs that
+    command, once, in place of `invocation`. `restart --self` writes its exact
+    resume command there: `invocation` is how the tab was first launched, and
+    replayed it brought back the directory's latest conversation, or an
+    empty one, or Claude Code's picker - not the session that asked.
     """
     m = _ps_quote(str(restart_marker(cwd)))
     body = "; ".join((
-        invocation,
+        f"if ($rlNext) {{ Invoke-Expression $rlNext }} else {{ {invocation} }}",
         f"if (-not (Test-Path '{m}')) {{ break }}",
         # Read the age before deleting, but delete either way - a stale marker
         # left on disk would be found again by the next exit.
         f"$rlAge=((Get-Date)-(Get-Item '{m}').LastWriteTime).TotalSeconds",
+        f"$rlNext=(Get-Content -Raw -LiteralPath '{m}' -ErrorAction SilentlyContinue)",
+        "if ($rlNext) { $rlNext=$rlNext.Trim() }",
+        "if ($rlNext -eq 'restart') { $rlNext=$null }",
         f"Remove-Item '{m}' -Force -ErrorAction SilentlyContinue",
         # Consuming the marker is what makes one request produce one restart,
         # so a delete that failed must stop the loop rather than be ignored.
@@ -119,7 +128,7 @@ def restart_loop(cwd: str, invocation: str = CLAUDE_COMMAND) -> str:
         f"if ($rlAge -gt {RESTART_MARKER_TTL_SECONDS}) {{ break }}",
         "$rlStart=Get-Date",
     ))
-    return f"while ($true) {{ {body} }}"
+    return f"$rlNext=$null; while ($true) {{ {body} }}"
 
 
 @functools.lru_cache(maxsize=1)
@@ -167,7 +176,7 @@ def launcher_command(cwd: str, delay: int, size_bytes: int,
     """
     from . import agents as agents_mod
 
-    invocation = (agents_mod.without_picker(agent, command)
+    invocation = (agents_mod.resuming(agent, command)
                   or agents_mod.for_kind(agent).launch)
     name = tab_title(cwd)
     parts = [CHILD_SESSION_CLEAR, RESUME_SUPPRESSOR]

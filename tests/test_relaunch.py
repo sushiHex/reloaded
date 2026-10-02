@@ -118,7 +118,9 @@ def test_it_arms_the_marker_and_hands_off_without_ending_anything(desk):
     """The session quits on the helper's `/exit`, and shuts its MCP servers
     and transcript down itself; ending it by pid is only the fallback."""
     assert _run(desk) == 0
-    assert desk.marker.read_text(encoding="utf-8") == "restart"
+    # The command itself: a loop runs it in place of the one its tab was
+    # launched with, so a looping tab comes back to this conversation too.
+    assert desk.marker.read_text(encoding="utf-8") == desk.spawned[0]
     assert desk.spawned, "no helper was started"
     assert not desk.session.ended
 
@@ -545,7 +547,7 @@ def test_a_session_that_does_not_quit_is_ended(helper):
     _bring_back(helper)
 
     assert helper["ended"] == [20]
-    assert helper["marker_when_ended"] == "restart"
+    assert helper["marker_when_ended"] == "claude --resume id"
     assert helper["typed"] == [(10, "claude --resume id")]
 
 

@@ -118,6 +118,22 @@ def test_a_fresh_marker_relaunches_the_session_in_place(run_launcher):
     assert runs == 2, proc.stderr
 
 
+def test_a_marker_holding_a_command_runs_that_command_once(run_launcher, tmp_path):
+    """`restart --self` writes its exact resume command into the marker. The
+    tab's own invocation is how it was first launched - replayed, it brought
+    back the directory's latest conversation, an empty one, or Claude Code's
+    picker - so the restart runs the command instead, and only that once."""
+    tally = tmp_path / "runs.txt"
+    (tmp_path / "resume-exact.cmd").write_text(f"@echo exact>>{tally}\r\n",
+                                               encoding="ascii")
+
+    runs, marker_left, proc = run_launcher(
+        marker_body="resume-exact --resume 0673eda5")
+
+    assert tally.read_text(encoding="ascii").split() == ["run", "exact"], proc.stderr
+    assert not marker_left
+
+
 def test_the_marker_is_consumed_so_the_next_exit_is_final(run_launcher):
     """Left behind, one restart request would relaunch the session forever."""
     _runs, marker_left, proc = run_launcher(marker_body="restart")

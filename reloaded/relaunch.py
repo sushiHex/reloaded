@@ -114,11 +114,14 @@ def relaunch(pid: int, cwd: str, kind: str, *, dry_run: bool = False,
     command = _resume_command(session, kind)
     if dry_run:
         say(f"Would quit {cwd} (pid {pid}, {kind}) and bring it back in the "
-            f"same tab{'' if looping else f' as: {command}'}.")
+            f"same tab as: {command}")
         return 0
 
     marker = restart_marker(cwd)
-    marker.write_text("restart", encoding="utf-8")
+    # The command, not just a flag: a loop runs it in place of the one its tab
+    # was launched with (deploy.restart_loop), so a looping tab comes back to
+    # this conversation too. A loop older than that reads only that it exists.
+    marker.write_text(command, encoding="utf-8")
     try:
         _spawn_helper(session, shell, kind, command, marker)
     except Exception as exc:
@@ -300,7 +303,7 @@ def bring_back(session_pid: int, session_created: float, shell_pid: int,
         note(f"pid {session_pid} did not quit in {QUIT_WAIT_SECONDS:.0f}s - "
              "ending it")
         # Fresh, so that the loop still takes it however long the wait was.
-        marker_path.write_text("restart", encoding="utf-8")
+        marker_path.write_text(command, encoding="utf-8")
         try:
             _end(discover_mod._ps().Process(session_pid))
         except Exception as exc:
