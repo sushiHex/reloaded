@@ -25,6 +25,8 @@ SKIP = "claude --dangerously-skip-permissions"
     (SKIP, f"{SKIP} --continue"),
     ("claude", "claude --continue"),
     ("claude --model opus", "claude --model opus --continue"),
+    # Only qualifies a resume; alone it brings nothing back.
+    ("claude --fork-session", "claude --fork-session --continue"),
     # Named, it resumes exactly that conversation - left alone.
     (f"{SKIP} --resume 0673eda5-2873-425b", f"{SKIP} --resume 0673eda5-2873-425b"),
     (f"{SKIP} --resume=0673eda5", f"{SKIP} --resume=0673eda5"),

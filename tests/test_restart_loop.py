@@ -12,6 +12,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -132,6 +133,25 @@ def test_a_marker_holding_a_command_runs_that_command_once(run_launcher, tmp_pat
 
     assert tally.read_text(encoding="ascii").split() == ["run", "exact"], proc.stderr
     assert not marker_left
+
+
+WINDOWS_POWERSHELL = shutil.which("powershell")  # before any fixture narrows PATH
+
+
+@pytest.mark.skipif(WINDOWS_POWERSHELL is None, reason="no Windows PowerShell 5.1")
+def test_a_marker_command_is_read_as_utf8(run_launcher, tmp_path, monkeypatch):
+    """Python writes the marker as BOM-less UTF-8, and Windows PowerShell 5.1 -
+    the fallback shell - reads such a file in the ANSI code page unless told
+    otherwise, mangling a non-ASCII path or name. Run under 5.1 because pwsh 7
+    defaults to UTF-8 and would pass either way. What the shell read is
+    written back by PowerShell itself, so no console re-encoding intervenes."""
+    monkeypatch.setattr(sys.modules[__name__], "SHELL", WINDOWS_POWERSHELL)
+    out = tmp_path / "read.txt"
+
+    run_launcher(marker_body=(f"Set-Content -LiteralPath '{out}' "
+                              "-Value 'café' -Encoding UTF8"))
+
+    assert out.read_text(encoding="utf-8-sig").strip() == "café"
 
 
 def test_the_marker_is_consumed_so_the_next_exit_is_final(run_launcher):

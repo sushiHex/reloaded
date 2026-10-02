@@ -113,7 +113,10 @@ def restart_loop(cwd: str, invocation: str = CLAUDE_COMMAND) -> str:
         # Read the age before deleting, but delete either way - a stale marker
         # left on disk would be found again by the next exit.
         f"$rlAge=((Get-Date)-(Get-Item '{m}').LastWriteTime).TotalSeconds",
-        f"$rlNext=(Get-Content -Raw -LiteralPath '{m}' -ErrorAction SilentlyContinue)",
+        # UTF-8 explicitly: Windows PowerShell 5.1 reads a BOM-less file - what
+        # Python writes - in the ANSI code page, and would mangle a non-ASCII
+        # path or name in the command before running it.
+        f"$rlNext=(Get-Content -Raw -Encoding UTF8 -LiteralPath '{m}' -ErrorAction SilentlyContinue)",
         "if ($rlNext) { $rlNext=$rlNext.Trim() }",
         "if ($rlNext -eq 'restart') { $rlNext=$null }",
         f"Remove-Item '{m}' -Force -ErrorAction SilentlyContinue",

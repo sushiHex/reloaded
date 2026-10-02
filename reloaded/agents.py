@@ -242,7 +242,9 @@ def resuming(kind, command: str) -> str:
     for i, arg in enumerate(args[1:], 1):
         if arg.startswith("-"):
             flag, has_value = arg.split("=", 1)[0], "=" in arg
-            resumes_any = resumes_any or flag in agent.resume_tokens
+            # `--fork-session` only qualifies a resume; alone it resumes nothing.
+            resumes_any = resumes_any or (flag in agent.resume_tokens
+                                          and flag != "--fork-session")
             following = args[i + 1] if i + 1 < len(args) else None
             if (flag in agent.resume_by_id and not has_value
                     and (following is None or following.startswith("-"))):
