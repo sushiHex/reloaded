@@ -135,6 +135,33 @@ def test_a_marker_holding_a_command_runs_that_command_once(run_launcher, tmp_pat
     assert not marker_left
 
 
+def test_a_shells_own_marker_is_taken_before_the_directorys(run_launcher, tmp_path,
+                                                           monkeypatch):
+    """A directory's marker is watched by every tab there, so in one holding
+    a Claude and a Codex tab, whichever exited first took the other's resume
+    command. The shell's own marker has one reader. A PowerShell stub runs in
+    the loop's own process, so its `$PID` is the loop shell's: it files a
+    request addressed to that shell, beside a directory request, and exits."""
+    monkeypatch.setattr(deploy_mod, "restart_marker_dir", lambda: tmp_path)
+    tally = tmp_path / "runs.txt"
+    (tmp_path / "claude.cmd").unlink()
+    (tmp_path / "claude.ps1").write_text(
+        f"Add-Content -LiteralPath '{tally}' 'run'\n"
+        f"if (-not (Test-Path '{tmp_path}\\filed')) {{\n"
+        f"  New-Item '{tmp_path}\\filed' | Out-Null\n"
+        f"  Set-Content -LiteralPath ('{tmp_path}\\shell-' + $PID + '.marker') 'own-request'\n"
+        f"}}\n", encoding="utf-8")
+    (tmp_path / "own-request.cmd").write_text(f"@echo own>>{tally}\r\n", encoding="ascii")
+
+    _runs, marker_left, proc = run_launcher(marker_body="restart")
+
+    lines = tally.read_text(encoding="utf-8", errors="replace").split()
+    # Own request first (its command), then the directory's (the invocation).
+    assert lines == ["run", "own", "run"], (lines, proc.stderr)
+    assert not marker_left
+    assert not list(tmp_path.glob("shell-*.marker"))
+
+
 WINDOWS_POWERSHELL = shutil.which("powershell")  # before any fixture narrows PATH
 
 

@@ -91,6 +91,8 @@ def desk(monkeypatch, tmp_path):
                         lambda pid: discover_mod.RELOADED)
     marker = tmp_path / "m.marker"
     monkeypatch.setattr(relaunch_mod, "restart_marker", lambda cwd: marker)
+    own_marker = tmp_path / "shell.marker"
+    monkeypatch.setattr(relaunch_mod, "shell_marker", lambda pid: own_marker)
     spawned = []
     monkeypatch.setattr(
         relaunch_mod, "_spawn_helper",
@@ -102,7 +104,7 @@ def desk(monkeypatch, tmp_path):
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
     return types.SimpleNamespace(shell=shell, session=session, bash=bash, me=me,
                                  mcp=mcp, mcp_child=mcp_child, helper=helper,
-                                 helper_child=helper_child, marker=marker,
+                                 helper_child=helper_child, marker=marker, own_marker=own_marker,
                                  spawned=spawned, waited=waited)
 
 
@@ -123,6 +125,46 @@ def test_it_arms_the_marker_and_hands_off_without_ending_anything(desk):
     assert desk.marker.read_text(encoding="utf-8") == desk.spawned[0]
     assert desk.spawned, "no helper was started"
     assert not desk.session.ended
+
+
+def test_a_loop_that_reads_its_own_marker_is_addressed_by_it(desk):
+    """The directory's marker is shared by every tab in it: in one holding a
+    Claude and a Codex tab, the other exiting first took this session's
+    resume command. A loop with a marker of its own gets the request there."""
+    desk.shell._cmdline = ["pwsh", "-Command", "$rlNext=$null; $rlOwn='x' + $PID"]
+
+    _run(desk)
+
+    assert desk.own_marker.read_text(encoding="utf-8") == desk.spawned[0]
+    assert not desk.marker.exists()
+
+
+def test_a_loop_older_than_that_still_gets_the_directory_marker(desk):
+    """It watches nothing else."""
+    desk.shell._cmdline = ["pwsh", "-Command", "while ($true) { claude }"]
+
+    _run(desk)
+
+    assert desk.marker.exists() and not desk.own_marker.exists()
+
+
+def test_a_plain_tab_is_addressed_by_its_shell(desk, monkeypatch):
+    """Nothing but the helper reads it, so no sibling can take it."""
+    monkeypatch.setattr(discover_mod, "launcher_kind",
+                        lambda pid: discover_mod.HAND)
+
+    _run(desk)
+
+    assert desk.own_marker.exists() and not desk.marker.exists()
+
+
+def test_without_its_session_id_the_command_still_resumes(desk):
+    """Plain `claude` came back as an empty conversation."""
+    desk.session._cmdline = ["claude", "--dangerously-skip-permissions"]
+
+    _run(desk)
+
+    assert desk.spawned == ["claude --dangerously-skip-permissions --continue"]
 
 
 def test_it_waits_for_its_session_to_quit(desk):

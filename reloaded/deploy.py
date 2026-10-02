@@ -13,7 +13,7 @@ from . import tabs as tabs_mod
 from . import win32
 from .discover import TranscriptInfo
 from .layout import Layout, Monitor, Tab, clamp_rect, window_id
-from .paths import norm, restart_marker, restore_marker
+from .paths import norm, restart_marker, restart_marker_dir, restore_marker
 from .transcript import SIZE_WARN_BYTES, human_size
 
 STAGGER_SECONDS = 4
@@ -105,21 +105,28 @@ def restart_loop(cwd: str, invocation: str = CLAUDE_COMMAND) -> str:
     resume command there: `invocation` is how the tab was first launched, and
     replayed it brought back the directory's latest conversation, or an
     empty one, or Claude Code's picker - not the session that asked.
+
+    The shell's own marker (paths.shell_marker, named by its `$PID`) is
+    checked before the directory's. Only this shell reads it, so a sibling
+    tab in the same directory cannot take a request meant for this one.
     """
     m = _ps_quote(str(restart_marker(cwd)))
+    own = _ps_quote(str(restart_marker_dir() / "shell-"))
     body = "; ".join((
         f"if ($rlNext) {{ Invoke-Expression $rlNext }} else {{ {invocation} }}",
-        f"if (-not (Test-Path '{m}')) {{ break }}",
+        f"$rlM=$null; if (Test-Path -LiteralPath $rlOwn) {{ $rlM=$rlOwn }} "
+        f"elseif (Test-Path -LiteralPath '{m}') {{ $rlM='{m}' }}",
+        "if (-not $rlM) { break }",
         # Read the age before deleting, but delete either way - a stale marker
         # left on disk would be found again by the next exit.
-        f"$rlAge=((Get-Date)-(Get-Item '{m}').LastWriteTime).TotalSeconds",
+        "$rlAge=((Get-Date)-(Get-Item -LiteralPath $rlM).LastWriteTime).TotalSeconds",
         # UTF-8 explicitly: Windows PowerShell 5.1 reads a BOM-less file - what
         # Python writes - in the ANSI code page, and would mangle a non-ASCII
         # path or name in the command before running it.
-        f"$rlNext=(Get-Content -Raw -Encoding UTF8 -LiteralPath '{m}' -ErrorAction SilentlyContinue)",
+        "$rlNext=(Get-Content -Raw -Encoding UTF8 -LiteralPath $rlM -ErrorAction SilentlyContinue)",
         "if ($rlNext) { $rlNext=$rlNext.Trim() }",
         "if ($rlNext -eq 'restart') { $rlNext=$null }",
-        f"Remove-Item '{m}' -Force -ErrorAction SilentlyContinue",
+        "Remove-Item -LiteralPath $rlM -Force -ErrorAction SilentlyContinue",
         # Consuming the marker is what makes one request produce one restart,
         # so a delete that failed must stop the loop rather than be ignored.
         # Remove-Item is silenced, and a marker that survives is still there
@@ -127,11 +134,12 @@ def restart_loop(cwd: str, invocation: str = CLAUDE_COMMAND) -> str:
         # again, forever. Verified - a directory at the marker path (which
         # -Force cannot remove without -Recurse) spun until the test's 60s
         # subprocess timeout.
-        f"if (Test-Path '{m}') {{ break }}",
+        "if (Test-Path -LiteralPath $rlM) { break }",
         f"if ($rlAge -gt {RESTART_MARKER_TTL_SECONDS}) {{ break }}",
         "$rlStart=Get-Date",
     ))
-    return f"$rlNext=$null; while ($true) {{ {body} }}"
+    return (f"$rlNext=$null; $rlOwn='{own}' + $PID + '.marker'; "
+            f"while ($true) {{ {body} }}")
 
 
 @functools.lru_cache(maxsize=1)

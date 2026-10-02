@@ -91,3 +91,14 @@ def restart_marker(cwd: str) -> pathlib.Path:
     match after normalization.
     """
     return restart_marker_dir() / f"{_digest(cwd)}.marker"
+
+
+def shell_marker(pid: int) -> pathlib.Path:
+    """A restart request addressed to one tab's shell, by its pid.
+
+    A directory's marker is watched by every tab in that directory, so in one
+    holding a Claude and a Codex tab, whichever exited first took the request
+    - and with it the other session's resume command. A shell's own marker
+    has one reader. deploy.restart_loop checks it before the directory's.
+    """
+    return restart_marker_dir() / f"shell-{pid}.marker"

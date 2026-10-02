@@ -233,19 +233,22 @@ def resuming(kind, command: str) -> str:
     agent = for_kind(kind)
     if not command or not agent.resume_latest or not agent.resume_by_id:
         return command
-    # Raw token text: quotes kept, so a quoted argument never reads as an
-    # option and the result is still valid PowerShell.
-    args = [text for _s, _e, text, _q in _ps_tokens(command)]
-    if "--" in args[1:]:
-        args = args[:args.index("--", 1)]  # the opening prompt follows
-    kept, takes, resumes_any = [args[0]], "none", False
-    for i, arg in enumerate(args[1:], 1):
-        if arg.startswith("-"):
-            flag, has_value = arg.split("=", 1)[0], "=" in arg
+    # Judged on what PowerShell passes, kept as written: `_format_command`
+    # quotes a whole `--system-prompt=has spaces` argument, and read raw that
+    # option looked like prompt text and was dropped. The raw form is what is
+    # rejoined, so the result is still the same valid PowerShell.
+    tokens = [(text, value) for _s, _e, text, _q, value in _ps_tokens(command)]
+    values = [value for _text, value in tokens]
+    if "--" in values[1:]:
+        tokens = tokens[:values.index("--", 1)]  # the opening prompt follows
+    kept, takes, resumes_any = [tokens[0][0]], "none", False
+    for i, (arg, value) in enumerate(tokens[1:], 1):
+        if value.startswith("-"):
+            flag, has_value = value.split("=", 1)[0], "=" in value
             # `--fork-session` only qualifies a resume; alone it resumes nothing.
             resumes_any = resumes_any or (flag in agent.resume_tokens
                                           and flag != "--fork-session")
-            following = args[i + 1] if i + 1 < len(args) else None
+            following = tokens[i + 1][1] if i + 1 < len(tokens) else None
             if (flag in agent.resume_by_id and not has_value
                     and (following is None or following.startswith("-"))):
                 kept.append(agent.resume_latest)  # bare: the picker
@@ -267,26 +270,39 @@ def resuming(kind, command: str) -> str:
     return " ".join(kept)
 
 
+_SINGLE = "'‘’‚‛"  # every character PowerShell reads as `'`
+
+
 def _ps_tokens(command: str) -> list:
-    """(start, end, text, quoted) for each argument of a PowerShell command
-    line: separated by whitespace outside quotes, `''` a quote inside single
-    quotes - the form discover._format_command writes. A quoted argument is
-    never an option, whatever it says."""
+    """(start, end, text, quoted, value) for each argument of a PowerShell
+    command line, in the form discover._format_command writes: separated by
+    whitespace outside quotes; inside single quotes - any of the five
+    characters PowerShell reads as one - a doubled quote is a literal one.
+    `text` is the raw token, `value` what PowerShell passes."""
     tokens, i, n = [], 0, len(command)
     while i < n:
         if command[i].isspace():
             i += 1
             continue
-        start, quoted = i, False
+        start, quoted, value = i, False, []
         while i < n and not command[i].isspace():
-            if command[i] in "'\"":
-                quote, quoted = command[i], True
+            ch = command[i]
+            if ch in _SINGLE or ch == '"':
+                quoted, closers = True, _SINGLE if ch in _SINGLE else '"'
                 i += 1
-                while i < n and not (command[i] == quote and not (
-                        quote == "'" and command[i + 1:i + 2] == "'")):
-                    i += 2 if quote == "'" and command[i:i + 2] == "''" else 1
+                while i < n:
+                    if command[i] in closers:
+                        if closers is _SINGLE and command[i + 1:i + 2] in tuple(_SINGLE):
+                            value.append(command[i])  # doubled: a literal quote
+                            i += 2
+                            continue
+                        break
+                    value.append(command[i])
+                    i += 1
+            else:
+                value.append(ch)
             i += 1
-        tokens.append((start, i, command[start:i], quoted))
+        tokens.append((start, i, command[start:i], quoted, "".join(value)))
     return tokens
 
 
