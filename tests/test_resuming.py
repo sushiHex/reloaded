@@ -24,18 +24,24 @@ SKIP = "claude --dangerously-skip-permissions"
     # Nothing resumed: the latest conversation is added.
     (SKIP, f"{SKIP} --continue"),
     ("claude", "claude --continue"),
-    ("claude -- 'fix it'", "claude --continue -- 'fix it'"),
-    ("claude 'fix --resume --verbose'", "claude 'fix --resume --verbose' --continue"),
+    ("claude --model opus", "claude --model opus --continue"),
     # Named, it resumes exactly that conversation - left alone.
     (f"{SKIP} --resume 0673eda5-2873-425b", f"{SKIP} --resume 0673eda5-2873-425b"),
     (f"{SKIP} --resume=0673eda5", f"{SKIP} --resume=0673eda5"),
     (f"{SKIP} --continue", f"{SKIP} --continue"),
-    ("", ""),
-    # Quoted, or after `--`, it is prompt text, not an option.
-    ("claude --continue -- --resume --verbose", "claude --continue -- --resume --verbose"),
-    ("claude 'it''s --resume' --resume", "claude 'it''s --resume' --continue"),
-    ('claude "a --resume" -r', 'claude "a --resume" --continue'),
     ("claude --resume 'my session'", "claude --resume 'my session'"),
+    ("", ""),
+    # The opening prompt goes: into a resumed conversation it would be sent
+    # again, and its work done twice. Quoted or after `--`, it is never an
+    # option, whatever it says.
+    ("claude 'apply the migration'", "claude --continue"),
+    ("claude -- 'apply the migration'", "claude --continue"),
+    ("claude --continue 'apply the migration'", "claude --continue"),
+    ("claude --model opus 'apply it'", "claude --model opus --continue"),
+    ("claude 'fix --resume --verbose'", "claude --continue"),
+    ("claude --continue -- --resume --verbose", "claude --continue"),
+    ("claude 'it''s --resume' --resume", "claude --continue"),
+    ('claude "a --resume" -r', "claude --continue"),
 ])
 def test_a_launched_claude_command_always_resumes_something(command, expected):
     assert agents_mod.resuming("claude", command) == expected

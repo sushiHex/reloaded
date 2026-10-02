@@ -224,33 +224,45 @@ def resuming(kind, command: str) -> str:
     picker had at the top. This reverses `resumes`' rule against rewriting the
     user's flags, for a kind that has `resume_latest`: what Reloaded launches
     is a restore, and a restore that brings nothing back is not one. A command
-    naming its conversation is left alone.
+    naming its conversation keeps that name.
+
+    The opening prompt goes, for the reason `resume_exactly` drops it: into a
+    resumed conversation it is sent again, and its work done twice. Options
+    are read the same way - a bare word no option claims is the prompt.
     """
     agent = for_kind(kind)
     if not command or not agent.resume_latest or not agent.resume_by_id:
         return command
-    tokens = _ps_tokens(command)
-    bare, resumes_any, options_end = [], False, len(command)
-    for i, (start, end, text, quoted) in enumerate(tokens[1:], 1):
-        if text == "--" and not quoted:
-            options_end = start  # the opening prompt follows; no options in it
-            break
-        if quoted:
-            continue
-        if text.split("=", 1)[0] in agent.resume_tokens:
-            resumes_any = True
-        if text not in agent.resume_by_id:
-            continue
-        following = tokens[i + 1] if i + 1 < len(tokens) else None
-        # Bare: last, or followed by another option rather than a value.
-        if following is None or (not following[3] and following[2].startswith("-")):
-            bare.append((start, end))
+    # Raw token text: quotes kept, so a quoted argument never reads as an
+    # option and the result is still valid PowerShell.
+    args = [text for _s, _e, text, _q in _ps_tokens(command)]
+    if "--" in args[1:]:
+        args = args[:args.index("--", 1)]  # the opening prompt follows
+    kept, takes, resumes_any = [args[0]], "none", False
+    for i, arg in enumerate(args[1:], 1):
+        if arg.startswith("-"):
+            flag, has_value = arg.split("=", 1)[0], "=" in arg
+            resumes_any = resumes_any or flag in agent.resume_tokens
+            following = args[i + 1] if i + 1 < len(args) else None
+            if (flag in agent.resume_by_id and not has_value
+                    and (following is None or following.startswith("-"))):
+                kept.append(agent.resume_latest)  # bare: the picker
+                takes = "none"
+                continue
+            kept.append(arg)
+            if has_value or flag in agent.bare_flags or (
+                    flag in agent.resume_tokens and flag not in agent.resume_by_id):
+                takes = "none"
+            else:
+                takes = "every" if flag in agent.variadic_flags else "one"
+        elif takes in ("one", "every"):
+            kept.append(arg)
+            takes = "every" if takes == "every" else "none"
+        else:
+            takes = "none"  # the opening prompt: resuming would send it again
     if not resumes_any:
-        head, tail = command[:options_end].rstrip(), command[options_end:]
-        return f"{head} {agent.resume_latest}" + (f" {tail}" if tail else "")
-    for start, end in reversed(bare):
-        command = command[:start] + agent.resume_latest + command[end:]
-    return command
+        kept.append(agent.resume_latest)
+    return " ".join(kept)
 
 
 def _ps_tokens(command: str) -> list:
