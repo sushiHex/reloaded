@@ -414,8 +414,16 @@ _SAFE_EXE = re.compile(r"[A-Za-z0-9._+-]+")
 
 # Everything PowerShell will not read as syntax: no space, no metacharacter.
 # An allowlist rather than a list of things to escape, because the cost of
-# forgetting one is a captured argument being executed as a command.
-_SAFE_ARG = re.compile(r"[A-Za-z0-9._+=:/\@%-]+")
+# forgetting one is a captured argument being executed as a command. `@` only
+# after the first character: leading, `@name` is splatting, and PowerShell
+# passed $null where `@session` was meant.
+_SAFE_ARG = re.compile(r"[A-Za-z0-9._+=:/\\%-][A-Za-z0-9._+=:/\\@%-]*")
+
+# Every character PowerShell reads as a single quote - the ASCII one and four
+# typographic ones. Doubled, each is a literal; left single, a U+2019 in a
+# captured argument closed the string and the rest ran as commands, in both
+# PowerShell 7 and 5.1.
+_PS_SINGLE_QUOTES = ("'", "‘", "’", "‚", "‛")
 
 
 def _ps_arg(arg: str) -> str:
@@ -425,14 +433,17 @@ def _ps_arg(arg: str) -> str:
     `--last`) readable in a saved layout. Anything else is single-quoted, and a
     single-quoted PowerShell string is literal all the way through - no
     variable expansion, no subexpressions, no escapes - so the only thing left
-    to handle inside one is the quote character itself, doubled.
+    to handle inside one is the quote character itself, doubled - every one
+    of them (_PS_SINGLE_QUOTES).
 
     Double quotes would not do: PowerShell expands `$` inside them, so a
     captured argument holding `$(...)` would have run rather than been passed.
     """
     if arg and _SAFE_ARG.fullmatch(arg):
         return arg
-    return "'" + arg.replace("'", "''") + "'"
+    for quote in _PS_SINGLE_QUOTES:
+        arg = arg.replace(quote, quote * 2)
+    return "'" + arg + "'"
 
 
 def session_launch(pid: int) -> tuple[str, str]:

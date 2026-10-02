@@ -51,7 +51,7 @@ from . import agents as agents_mod
 from . import discover as discover_mod
 from . import win32 as win32_mod
 from .deploy import RESTART_MARKER_TTL_SECONDS
-from .paths import log_path, restart_marker
+from .paths import log_path, restart_marker, shell_marker
 
 # The shells a resume command can be written into. The command is quoted for
 # PowerShell (discover._format_command), so nothing else would parse it.
@@ -114,11 +114,23 @@ def relaunch(pid: int, cwd: str, kind: str, *, dry_run: bool = False,
     command = _resume_command(session, kind)
     if dry_run:
         say(f"Would quit {cwd} (pid {pid}, {kind}) and bring it back in the "
-            f"same tab{'' if looping else f' as: {command}'}.")
+            f"same tab as: {command}")
         return 0
 
-    marker = restart_marker(cwd)
-    marker.write_text("restart", encoding="utf-8")
+    # Addressed to this tab's shell where that shell can read it: a plain one
+    # (only the helper looks), or a loop launched since shells had markers of
+    # their own. The directory's marker is shared with every tab there, so a
+    # sibling exiting first would take this session's command. Only a loop
+    # older than that still needs the directory's, the one file it watches.
+    try:
+        own = not looping or "$rlOwn=" in " ".join(shell.cmdline())
+    except Exception:
+        own = not looping
+    marker = shell_marker(shell.pid) if own else restart_marker(cwd)
+    # The command, not just a flag: a loop runs it in place of the one its tab
+    # was launched with (deploy.restart_loop), so a looping tab comes back to
+    # this conversation too. A loop older than that reads only that it exists.
+    marker.write_text(command, encoding="utf-8")
     try:
         _spawn_helper(session, shell, kind, command, marker)
     except Exception as exc:
@@ -165,8 +177,12 @@ def _resume_command(session, kind: str) -> str:
     if os.environ.get("CLAUDE_PID") == str(session.pid):
         session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
     argv = agents_mod.resume_exactly(kind, argv, session_id)
-    return (discover_mod._format_command(argv)
-            or agents_mod.for_kind(kind).launch)
+    # Without the session's id that leaves its argv as it was - possibly a
+    # bare `--resume`, no resume at all, or an opening prompt - so it goes
+    # through the same rewrite as every launch. A named `--resume <id>` is
+    # left as it is.
+    return agents_mod.resuming(kind, discover_mod._format_command(argv)
+                               or agents_mod.for_kind(kind).launch)
 
 
 def _spawn_helper(session, shell, kind: str, command: str, marker) -> None:
@@ -300,7 +316,7 @@ def bring_back(session_pid: int, session_created: float, shell_pid: int,
         note(f"pid {session_pid} did not quit in {QUIT_WAIT_SECONDS:.0f}s - "
              "ending it")
         # Fresh, so that the loop still takes it however long the wait was.
-        marker_path.write_text("restart", encoding="utf-8")
+        marker_path.write_text(command, encoding="utf-8")
         try:
             _end(discover_mod._ps().Process(session_pid))
         except Exception as exc:

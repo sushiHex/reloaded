@@ -12,6 +12,7 @@ import os
 import pathlib
 import shutil
 import subprocess
+import sys
 
 import pytest
 
@@ -116,6 +117,68 @@ def test_a_fresh_marker_relaunches_the_session_in_place(run_launcher):
     again inside the shell it already had."""
     runs, marker_left, proc = run_launcher(marker_body="restart")
     assert runs == 2, proc.stderr
+
+
+def test_a_marker_holding_a_command_runs_that_command_once(run_launcher, tmp_path):
+    """`restart --self` writes its exact resume command into the marker. The
+    tab's own invocation is how it was first launched - replayed, it brought
+    back the directory's latest conversation, an empty one, or Claude Code's
+    picker - so the restart runs the command instead, and only that once."""
+    tally = tmp_path / "runs.txt"
+    (tmp_path / "resume-exact.cmd").write_text(f"@echo exact>>{tally}\r\n",
+                                               encoding="ascii")
+
+    runs, marker_left, proc = run_launcher(
+        marker_body="resume-exact --resume 0673eda5")
+
+    assert tally.read_text(encoding="ascii").split() == ["run", "exact"], proc.stderr
+    assert not marker_left
+
+
+def test_a_shells_own_marker_is_taken_before_the_directorys(run_launcher, tmp_path,
+                                                           monkeypatch):
+    """A directory's marker is watched by every tab there, so in one holding
+    a Claude and a Codex tab, whichever exited first took the other's resume
+    command. The shell's own marker has one reader. A PowerShell stub runs in
+    the loop's own process, so its `$PID` is the loop shell's: it files a
+    request addressed to that shell, beside a directory request, and exits."""
+    monkeypatch.setattr(deploy_mod, "restart_marker_dir", lambda: tmp_path)
+    tally = tmp_path / "runs.txt"
+    (tmp_path / "claude.cmd").unlink()
+    (tmp_path / "claude.ps1").write_text(
+        f"Add-Content -LiteralPath '{tally}' 'run'\n"
+        f"if (-not (Test-Path '{tmp_path}\\filed')) {{\n"
+        f"  New-Item '{tmp_path}\\filed' | Out-Null\n"
+        f"  Set-Content -LiteralPath ('{tmp_path}\\shell-' + $PID + '.marker') 'own-request'\n"
+        f"}}\n", encoding="utf-8")
+    (tmp_path / "own-request.cmd").write_text(f"@echo own>>{tally}\r\n", encoding="ascii")
+
+    _runs, marker_left, proc = run_launcher(marker_body="restart")
+
+    lines = tally.read_text(encoding="utf-8", errors="replace").split()
+    # Own request first (its command), then the directory's (the invocation).
+    assert lines == ["run", "own", "run"], (lines, proc.stderr)
+    assert not marker_left
+    assert not list(tmp_path.glob("shell-*.marker"))
+
+
+WINDOWS_POWERSHELL = shutil.which("powershell")  # before any fixture narrows PATH
+
+
+@pytest.mark.skipif(WINDOWS_POWERSHELL is None, reason="no Windows PowerShell 5.1")
+def test_a_marker_command_is_read_as_utf8(run_launcher, tmp_path, monkeypatch):
+    """Python writes the marker as BOM-less UTF-8, and Windows PowerShell 5.1 -
+    the fallback shell - reads such a file in the ANSI code page unless told
+    otherwise, mangling a non-ASCII path or name. Run under 5.1 because pwsh 7
+    defaults to UTF-8 and would pass either way. What the shell read is
+    written back by PowerShell itself, so no console re-encoding intervenes."""
+    monkeypatch.setattr(sys.modules[__name__], "SHELL", WINDOWS_POWERSHELL)
+    out = tmp_path / "read.txt"
+
+    run_launcher(marker_body=(f"Set-Content -LiteralPath '{out}' "
+                              "-Value 'café' -Encoding UTF8"))
+
+    assert out.read_text(encoding="utf-8-sig").strip() == "café"
 
 
 def test_the_marker_is_consumed_so_the_next_exit_is_final(run_launcher):

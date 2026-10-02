@@ -64,7 +64,7 @@ class Agent:
     variadic_flags: tuple = ()
     # What resumes the directory's latest conversation, standing in for a
     # `resume_by_id` flag given no id - which opens a picker. See
-    # `without_picker`.
+    # `resuming`.
     resume_latest: str = ""
 
 
@@ -149,10 +149,10 @@ def resumes(kind, command: str) -> bool:
     directory, with none of the conversation in it. `restart` then reports
     success, having thrown the thing away that it exists to preserve.
 
-    Deliberately not fixed by rewriting the command. The flags are the user's,
-    and a launcher that quietly appends `resume` to what someone typed is
-    guessing at intent. Saying so before anything is exited is the honest
-    version, and leaves the choice where it belongs.
+    Not fixed by rewriting the command for a kind without `resume_latest`
+    (Codex): there the warning before anything is exited is the answer. For
+    Claude Code, `resuming` does rewrite it, at launch - a plain `claude`
+    restored empty every time, and relaunches through its loop did too.
     """
     if not command:
         return True
@@ -206,57 +206,103 @@ def resume_exactly(kind, argv: list, session_id: str | None) -> list:
     return kept + [agent.resume_by_id[0], session_id]
 
 
-def without_picker(kind, command: str) -> str:
-    """`command` with a bare resume flag replaced by resuming the latest one.
+def resuming(kind, command: str) -> str:
+    """`command`, made to bring a conversation back when Reloaded launches it.
 
-    `--resume` with no id opens Claude Code's conversation picker, and in a
-    tab nobody is watching that is a session that never comes up: a logon
-    restore left one sitting at it, because the user had started that session
-    by hand with a bare `--resume` and capture replays what it read. `resumes`
-    rightly leaves the user's flags alone when they only decide which
-    conversation comes back; a picker decides whether any does, so this one is
-    replaced - with the directory's latest conversation, which is what the
-    picker had at the top.
+    Two ways a captured command came back as no conversation at all, both
+    measured on the user's tabs:
+
+    - `--resume` with no id opens Claude Code's picker, and a restored tab sat
+      at it: the session had been started by hand that way, and capture
+      replays what it read. The bare flag becomes `resume_latest`.
+    - A command with no resume flag starts an empty conversation. Captured
+      from a session started as plain `claude`, every restore - and every
+      relaunch through its tab's loop - came back empty, the long-running
+      conversation out of reach. `resume_latest` is added.
+
+    `resume_latest` is the directory's latest conversation, which is what the
+    picker had at the top. This reverses `resumes`' rule against rewriting the
+    user's flags, for a kind that has `resume_latest`: what Reloaded launches
+    is a restore, and a restore that brings nothing back is not one. A command
+    naming its conversation keeps that name.
+
+    The opening prompt goes, for the reason `resume_exactly` drops it: into a
+    resumed conversation it is sent again, and its work done twice. Options
+    are read the same way - a bare word no option claims is the prompt.
     """
     agent = for_kind(kind)
     if not command or not agent.resume_latest or not agent.resume_by_id:
         return command
-    tokens = _ps_tokens(command)
-    bare = []
-    for i, (start, end, text, quoted) in enumerate(tokens[1:], 1):
-        if text == "--" and not quoted:
-            break  # the opening prompt follows; nothing in it is an option
-        if quoted or text not in agent.resume_by_id:
-            continue
-        following = tokens[i + 1] if i + 1 < len(tokens) else None
-        # Bare: last, or followed by another option rather than a value.
-        if following is None or (not following[3] and following[2].startswith("-")):
-            bare.append((start, end))
-    for start, end in reversed(bare):
-        command = command[:start] + agent.resume_latest + command[end:]
-    return command
+    # Judged on what PowerShell passes, kept as written: `_format_command`
+    # quotes a whole `--system-prompt=has spaces` argument, and read raw that
+    # option looked like prompt text and was dropped. The raw form is what is
+    # rejoined, so the result is still the same valid PowerShell.
+    tokens = [(text, value) for _s, _e, text, _q, value in _ps_tokens(command)]
+    values = [value for _text, value in tokens]
+    if "--" in values[1:]:
+        tokens = tokens[:values.index("--", 1)]  # the opening prompt follows
+    kept, takes, resumes_any = [tokens[0][0]], "none", False
+    for i, (arg, value) in enumerate(tokens[1:], 1):
+        if value.startswith("-"):
+            flag, has_value = value.split("=", 1)[0], "=" in value
+            # `--fork-session` only qualifies a resume; alone it resumes nothing.
+            resumes_any = resumes_any or (flag in agent.resume_tokens
+                                          and flag != "--fork-session")
+            following = tokens[i + 1][1] if i + 1 < len(tokens) else None
+            if (flag in agent.resume_by_id and not has_value
+                    and (following is None or following.startswith("-"))):
+                kept.append(agent.resume_latest)  # bare: the picker
+                takes = "none"
+                continue
+            kept.append(arg)
+            if has_value or flag in agent.bare_flags or (
+                    flag in agent.resume_tokens and flag not in agent.resume_by_id):
+                takes = "none"
+            else:
+                takes = "every" if flag in agent.variadic_flags else "one"
+        elif takes in ("one", "every"):
+            kept.append(arg)
+            takes = "every" if takes == "every" else "none"
+        else:
+            takes = "none"  # the opening prompt: resuming would send it again
+    if not resumes_any:
+        kept.append(agent.resume_latest)
+    return " ".join(kept)
+
+
+_SINGLE = "'‘’‚‛"  # every character PowerShell reads as `'`
 
 
 def _ps_tokens(command: str) -> list:
-    """(start, end, text, quoted) for each argument of a PowerShell command
-    line: separated by whitespace outside quotes, `''` a quote inside single
-    quotes - the form discover._format_command writes. A quoted argument is
-    never an option, whatever it says."""
+    """(start, end, text, quoted, value) for each argument of a PowerShell
+    command line, in the form discover._format_command writes: separated by
+    whitespace outside quotes; inside single quotes - any of the five
+    characters PowerShell reads as one - a doubled quote is a literal one.
+    `text` is the raw token, `value` what PowerShell passes."""
     tokens, i, n = [], 0, len(command)
     while i < n:
         if command[i].isspace():
             i += 1
             continue
-        start, quoted = i, False
+        start, quoted, value = i, False, []
         while i < n and not command[i].isspace():
-            if command[i] in "'\"":
-                quote, quoted = command[i], True
+            ch = command[i]
+            if ch in _SINGLE or ch == '"':
+                quoted, closers = True, _SINGLE if ch in _SINGLE else '"'
                 i += 1
-                while i < n and not (command[i] == quote and not (
-                        quote == "'" and command[i + 1:i + 2] == "'")):
-                    i += 2 if quote == "'" and command[i:i + 2] == "''" else 1
+                while i < n:
+                    if command[i] in closers:
+                        if closers is _SINGLE and command[i + 1:i + 2] in tuple(_SINGLE):
+                            value.append(command[i])  # doubled: a literal quote
+                            i += 2
+                            continue
+                        break
+                    value.append(command[i])
+                    i += 1
+            else:
+                value.append(ch)
             i += 1
-        tokens.append((start, i, command[start:i], quoted))
+        tokens.append((start, i, command[start:i], quoted, "".join(value)))
     return tokens
 
 

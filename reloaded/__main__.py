@@ -1014,8 +1014,12 @@ def _warn_about_empty_relaunches(sessions) -> None:
     moment the choice is still theirs, so it belongs here rather than in the
     summary afterwards.
     """
+    # Judged on what the tab will really run: a Claude command that resumes
+    # nothing gets `--continue` added at launch (agents.resuming), so only a
+    # kind without that - Codex - is still warned about.
     empty = [s for s in sessions
-             if not agents_mod.resumes(s.agent, s.command)]
+             if not agents_mod.resumes(s.agent,
+                                       agents_mod.resuming(s.agent, s.command))]
     if not empty:
         return
     print(f"[warn] {len(empty)} session(s) will come back EMPTY — the command "
