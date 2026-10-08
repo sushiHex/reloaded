@@ -35,6 +35,14 @@ Its tab then brings it back, and one detached helper covers both kinds of tab:
 Telling the two apart by what happened to the marker, rather than by reading
 the shell's command line, is also right for a hand tab that an earlier
 `restart <repo>` upgraded to the loop without its command line showing it.
+
+A loop launched before markers carried a command reads only that one exists,
+and replays the command its tab was launched with - a bare `--resume` came
+back as Claude Code's picker. No file can steer it, but it keeps its tab when
+its agent dies on startup (deploy.CLOSE_TAB_IF_STARTED). So when that replay
+brings back no conversation at all, the helper ends it as soon as it appears,
+and the shell, left at its prompt, is brought back like a plain one. A replay
+that resumes one is not killed while it loads it.
 """
 from __future__ import annotations
 
@@ -85,6 +93,11 @@ EXIT_WAIT_SECONDS = float(RESTART_MARKER_TTL_SECONDS)
 # returns, so this is generous.
 LOOP_GRACE_SECONDS = 2.0
 
+# How long an old loop's replay gets to appear, and then to be gone once
+# ended. Together well inside deploy.STARTUP_GRACE_SECONDS, which is how long
+# the loop keeps its tab for an agent that dies on startup.
+REPLAY_WAIT_SECONDS = 3.0
+
 _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 
@@ -123,16 +136,26 @@ def relaunch(pid: int, cwd: str, kind: str, *, dry_run: bool = False,
     # sibling exiting first would take this session's command. Only a loop
     # older than that still needs the directory's, the one file it watches.
     try:
-        own = not looping or "$rlOwn=" in " ".join(shell.cmdline())
+        loop = " ".join(shell.cmdline()) if looping else ""
     except Exception:
-        own = not looping
+        loop = ""
+    own = not looping or "$rlOwn=" in loop
     marker = shell_marker(shell.pid) if own else restart_marker(cwd)
     # The command, not just a flag: a loop runs it in place of the one its tab
     # was launched with (deploy.restart_loop), so a looping tab comes back to
-    # this conversation too. A loop older than that reads only that it exists.
+    # this conversation too. A loop older than that (no `$rlNext=`) reads only
+    # that the marker exists and replays its launch command - this session's
+    # own. When that brings back no conversation at all - the picker, or an
+    # empty one, what `agents.resuming` exists to fix - the helper stops it
+    # (see bring_back). One that resumes something is left to: it has a
+    # conversation loading. An unreadable loop is not judged stale: stopping
+    # a replay that was the right command would cost the session a restart.
+    replay = _launch_command(session)
+    stale = (bool(loop) and "$rlNext=" not in loop
+             and agents_mod.resuming(kind, replay) != replay)
     marker.write_text(command, encoding="utf-8")
     try:
-        _spawn_helper(session, shell, kind, command, marker)
+        _spawn_helper(session, shell, kind, command, marker, stale)
     except Exception as exc:
         # Nothing has been touched, so nothing is lost. A marker left behind
         # would fire on the user's next deliberate quit instead.
@@ -185,7 +208,18 @@ def _resume_command(session, kind: str) -> str:
                                or agents_mod.for_kind(kind).launch)
 
 
-def _spawn_helper(session, shell, kind: str, command: str, marker) -> None:
+def _launch_command(session) -> str:
+    """The command `session` was started with, formatted as `_resume_command`
+    formats - what an old loop replays. "" when unreadable, which leaves the
+    loop to it, as before."""
+    try:
+        return discover_mod._format_command(session.cmdline())
+    except Exception:
+        return ""
+
+
+def _spawn_helper(session, shell, kind: str, command: str, marker,
+                  stale: bool = False) -> None:
     """Start `bring_back` in a process that outlives the session.
 
     CREATE_BREAKAWAY_FROM_JOB, so that a job this process may be in cannot
@@ -210,7 +244,7 @@ def _spawn_helper(session, shell, kind: str, command: str, marker) -> None:
     not be on the PATH this process hands down.
     """
     call = (session.pid, session.create_time(), shell.pid, shell.create_time(),
-            kind, command, str(marker))
+            kind, command, str(marker), stale)
     intermediate = _detached("_start_helper", call)
     try:
         code = intermediate.wait(timeout=30)
@@ -281,8 +315,11 @@ def _end(session) -> None:
 
 def bring_back(session_pid: int, session_created: float, shell_pid: int,
                shell_created: float, kind: str, command: str,
-               marker: str) -> None:
+               marker: str, stale: bool = False) -> None:
     """The helper: have the session quit, then see it back into its tab.
+
+    `stale`: the tab's loop is older than marker commands and will replay a
+    command that brings back no conversation.
 
     Runs detached, so it prints to the log rather than to anyone.
     """
@@ -335,8 +372,17 @@ def bring_back(session_pid: int, session_created: float, shell_pid: int,
     try:
         marker_path.unlink()
     except FileNotFoundError:
-        note(f"pid {session_pid} ended; its tab's loop is bringing it back")
-        return
+        if not stale:
+            note(f"pid {session_pid} ended; its tab's loop is bringing it back")
+            return
+        # Ended on startup, the replay leaves the loop at its prompt: no
+        # marker, so it breaks, and too young for it to close the tab.
+        if not _stop_replay(shell_pid, shell_created, kind):
+            note(f"pid {session_pid} ended; its tab's loop predates exact "
+                 "relaunch, and its replay could not be stopped in time")
+            return
+        note(f"pid {session_pid} ended; stopped its tab's old loop replaying "
+             "how the tab was launched")
     except OSError as exc:
         # Still there, so nothing took it: bring the session back anyway. The
         # marker expires on its own; the tab would not.
@@ -353,6 +399,32 @@ def bring_back(session_pid: int, session_created: float, shell_pid: int,
         note(f"could not write to shell pid {shell_pid}: {exc}")
         return
     note(f"pid {session_pid} ended; started `{command}` in its tab")
+
+
+def _stop_replay(shell_pid: int, shell_created: float, kind: str) -> bool:
+    """End the agent an old loop has just relaunched in `shell_pid`, and
+    whatever it started. Whether it is gone.
+
+    The shell's only agent child is the replay: the loop runs nothing else,
+    and the session it replaced is already gone.
+    """
+    ps = discover_mod._ps()
+    image = agents_mod.for_kind(kind).process
+    deadline = time.time() + REPLAY_WAIT_SECONDS
+    while _alive(shell_pid, shell_created):
+        try:
+            replay = next((c for c in ps.Process(shell_pid).children()
+                           if c.name().lower() == image), None)
+        except Exception:
+            replay = None
+        if replay is not None:
+            created = replay.create_time()
+            _end(replay)
+            return _wait_until_gone(replay.pid, created, REPLAY_WAIT_SECONDS)
+        if time.time() > deadline:
+            return False
+        time.sleep(0.1)
+    return False
 
 
 def _wait_until_outside(session_pid: int, seconds: float) -> bool:

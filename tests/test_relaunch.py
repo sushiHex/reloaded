@@ -93,10 +93,11 @@ def desk(monkeypatch, tmp_path):
     monkeypatch.setattr(relaunch_mod, "restart_marker", lambda cwd: marker)
     own_marker = tmp_path / "shell.marker"
     monkeypatch.setattr(relaunch_mod, "shell_marker", lambda pid: own_marker)
-    spawned = []
+    spawned, stale = [], []
     monkeypatch.setattr(
         relaunch_mod, "_spawn_helper",
-        lambda s, sh, kind, command, m: spawned.append(command))
+        lambda s, sh, kind, command, m, st=False: (spawned.append(command),
+                                                   stale.append(st)))
     waited = []
     monkeypatch.setattr(relaunch_mod, "_wait_until_gone",
                         lambda pid, created, seconds: waited.append(pid) or True)
@@ -105,7 +106,7 @@ def desk(monkeypatch, tmp_path):
     return types.SimpleNamespace(shell=shell, session=session, bash=bash, me=me,
                                  mcp=mcp, mcp_child=mcp_child, helper=helper,
                                  helper_child=helper_child, marker=marker, own_marker=own_marker,
-                                 spawned=spawned, waited=waited)
+                                 spawned=spawned, stale=stale, waited=waited)
 
 
 def _run(desk, **kw):
@@ -146,6 +147,117 @@ def test_a_loop_older_than_that_still_gets_the_directory_marker(desk):
     _run(desk)
 
     assert desk.marker.exists() and not desk.own_marker.exists()
+
+
+OLD_LOOP = ["pwsh", "-NoExit", "-Command", "$rlStart=Get-Date; while ($true) { claude }"]
+
+
+def test_an_old_loop_that_would_replay_the_picker_is_stopped(desk, monkeypatch):
+    """Measured: constructicon's tab, launched before markers carried a
+    command, replayed its bare `--resume` and came back at the picker."""
+    desk.shell._cmdline = OLD_LOOP
+    desk.session._cmdline = ["claude", "--dangerously-skip-permissions", "--resume"]
+    monkeypatch.setenv("CLAUDE_PID", str(desk.session.pid))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "abc-123")
+
+    _run(desk)
+
+    assert desk.stale == [True]
+
+
+def test_an_old_loop_already_naming_this_conversation_is_left_to_replay(
+        desk, monkeypatch):
+    """Its replay is the exact command, so the tab keeps its loop."""
+    desk.shell._cmdline = OLD_LOOP
+    desk.session._cmdline = ["claude", "--dangerously-skip-permissions",
+                             "--resume", "abc-123"]
+    monkeypatch.setenv("CLAUDE_PID", str(desk.session.pid))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "abc-123")
+
+    _run(desk)
+
+    assert desk.stale == [False]
+
+
+@pytest.mark.parametrize("launched", [
+    ["claude", "--dangerously-skip-permissions"],
+    ["claude", "--dangerously-skip-permissions", "-r"],
+])
+def test_an_old_loop_that_would_replay_no_conversation_is_stopped(desk, launched):
+    """An empty conversation is no restart either - and without the
+    session's id, nothing better than a picker is known to be coming."""
+    desk.shell._cmdline = OLD_LOOP
+    desk.session._cmdline = launched
+
+    _run(desk)
+
+    assert desk.stale == [True]
+
+
+def test_an_old_loop_replaying_a_conversation_is_not_killed_loading_it(desk, monkeypatch):
+    """`--continue` brings back the directory's latest, which is this one
+    unless a sibling wrote since. Ended on startup, it would be killed while
+    reading its transcript - and that was never shown to be safe."""
+    desk.shell._cmdline = OLD_LOOP
+    monkeypatch.setenv("CLAUDE_PID", str(desk.session.pid))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "abc-123")
+
+    _run(desk)
+
+    assert desk.session.cmdline()[-1] == "--continue"
+    assert desk.stale == [False]
+
+
+def test_a_loop_that_reads_commands_is_never_stopped(desk, monkeypatch):
+    """It runs the marker's command itself, however it was launched."""
+    desk.shell._cmdline = ["pwsh", "-Command",
+                           "$rlStart=Get-Date; $rlNext=$null; $rlOwn='x' + $PID"]
+    desk.session._cmdline = ["claude", "--dangerously-skip-permissions", "--resume"]
+    monkeypatch.setenv("CLAUDE_PID", str(desk.session.pid))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "abc-123")
+
+    _run(desk)
+
+    assert desk.stale == [False]
+
+
+def test_a_loop_that_reads_commands_but_not_its_own_marker_is_never_stopped(
+        desk, monkeypatch):
+    """Found by review: loops from 6f94eb7 until shells had markers of their
+    own read the command from the directory's marker. Judged by `$rlOwn=`
+    alone, one launched with a bare `--resume` was stopped after it had
+    already started the exact conversation, which then started twice."""
+    desk.shell._cmdline = ["pwsh", "-Command", "$rlStart=Get-Date; $rlNext=$null; "
+                           "while ($true) { claude --resume }"]
+    desk.session._cmdline = ["claude", "--dangerously-skip-permissions", "--resume"]
+    monkeypatch.setenv("CLAUDE_PID", str(desk.session.pid))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "abc-123")
+
+    _run(desk)
+
+    assert desk.stale == [False]
+    assert desk.marker.exists() and not desk.own_marker.exists()
+
+
+def test_a_loop_that_cannot_be_read_is_not_judged_stale(desk):
+    """Stopping a replay that was the right command costs the session."""
+    def unreadable():
+        raise PermissionError
+    desk.shell.cmdline = unreadable
+    desk.session._cmdline = ["claude", "--dangerously-skip-permissions"]
+
+    _run(desk)
+
+    assert desk.stale == [False]
+
+
+def test_a_plain_tab_has_no_loop_to_stop(desk, monkeypatch):
+    monkeypatch.setattr(discover_mod, "launcher_kind",
+                        lambda pid: discover_mod.HAND)
+
+    _run(desk)
+
+    assert desk.stale == [False]
 
 
 def test_a_plain_tab_is_addressed_by_its_shell(desk, monkeypatch):
@@ -496,7 +608,8 @@ def helper(monkeypatch, tmp_path):
 
     def _end(proc):
         state["ended"].append(proc.pid)
-        state["marker_when_ended"] = marker.read_text(encoding="utf-8")
+        if marker.exists():
+            state["marker_when_ended"] = marker.read_text(encoding="utf-8")
         if state["dies_when_ended"]:
             state["session_alive"] = False
 
@@ -611,6 +724,52 @@ def test_a_looping_tab_is_left_to_its_loop(helper):
 
     _bring_back(helper)
 
+    assert helper["typed"] == []
+
+
+def _old_loop_replays(helper, monkeypatch, appears=True):
+    """The tab's loop takes the marker and relaunches an agent (pid 21) in
+    shell 10, which lives until it is ended."""
+    helper["loop_takes_marker"] = True
+    replay = _Proc(21, "claude.exe")
+    shell = _Proc(10, "pwsh.exe", children=[replay] if appears else [])
+    monkeypatch.setattr(discover_mod, "_ps", lambda: types.SimpleNamespace(
+        Process=lambda pid: shell if pid == 10 else _Proc(pid)))
+    monkeypatch.setattr(relaunch_mod, "_alive", lambda pid, created: (
+        helper["session_alive"] if pid == 20
+        else pid not in helper["ended"] if pid == 21
+        else helper["shell_alive"]))
+
+
+def test_an_old_loops_replay_is_ended_and_the_command_written(helper, monkeypatch):
+    """Ended on startup, the replay leaves the old loop at its prompt, which
+    then gets this conversation like a plain shell."""
+    _old_loop_replays(helper, monkeypatch)
+
+    relaunch_mod.bring_back(20, 1.0, 10, 1.0, "claude", "claude --resume id",
+                            str(helper["marker"]), True)
+
+    assert helper["ended"] == [21]
+    assert helper["typed"] == [(10, "claude --resume id")]
+
+
+def test_a_replay_that_never_appears_gets_nothing_written(helper, monkeypatch):
+    """Written blind, the command could land in an agent's prompt."""
+    _old_loop_replays(helper, monkeypatch, appears=False)
+
+    relaunch_mod.bring_back(20, 1.0, 10, 1.0, "claude", "claude --resume id",
+                            str(helper["marker"]), True)
+
+    assert helper["ended"] == []
+    assert helper["typed"] == []
+
+
+def test_a_loop_that_is_not_stale_keeps_its_replay(helper, monkeypatch):
+    _old_loop_replays(helper, monkeypatch)
+
+    _bring_back(helper)
+
+    assert helper["ended"] == []
     assert helper["typed"] == []
 
 
