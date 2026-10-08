@@ -243,37 +243,6 @@ def tab_is_selected(tab_item) -> bool:
         return False
 
 
-def send_exit_keystrokes(*, dismiss_overlay: bool = True) -> None:
-    """Type '/exit' + Enter into whatever terminal currently has focus.
-
-    ``dismiss_overlay=True`` (the default, meant for a tab's first exit
-    attempt) sends Escape first to dismiss a transient overlay Claude Code
-    may be showing on refocus - specifically its "away summary" recap,
-    shown after returning to a session that's been idle long enough to
-    trigger one. Without this, the very next keystroke (which is exactly
-    what foregrounding the window here triggers) can get consumed
-    dismissing that overlay instead of reaching the actual prompt, leaving
-    /exit never typed at all - confirmed by a transcript ending in an
-    away_summary system event with no trace of /exit ever being received.
-    Escape is a safe no-op when there is nothing to dismiss.
-
-    ``dismiss_overlay=False`` (used for teardown's mid-timeout retry) skips
-    the Escape. Claude Code's OTHER documented /exit blocker - its
-    confirmation when background agents are still running - is a dialog
-    Escape would cancel rather than answer; sending it on a retry could
-    dismiss exactly the confirmation the retry exists to get past instead
-    of confirming it, undoing its own purpose. By retry time an
-    away-summary overlay from regaining focus would already have been
-    handled by the first attempt, so there is nothing left that Escape
-    should still need to dismiss.
-    """
-    import time
-
-    import uiautomation as auto
-
-    send_quit_keystrokes(("/exit", "{Enter}"), dismiss_overlay=dismiss_overlay)
-
-
 def send_quit_keystrokes(keys, dismiss_overlay: bool = True,
                          still_needed=None) -> int:
     """Type one agent kind's quit sequence into whatever terminal has focus.
@@ -294,8 +263,12 @@ def send_quit_keystrokes(keys, dismiss_overlay: bool = True,
     session running.
 
     ``dismiss_overlay`` sends Escape first, clearing a transient overlay that
-    would otherwise eat the first keystroke. Skipped on a retry, where Escape
-    would cancel the very confirmation the retry exists to answer.
+    would otherwise eat the first keystroke: Claude Code's "away summary"
+    recap, shown on returning to a long-idle session - confirmed by a
+    transcript ending in an away_summary event with no /exit ever received.
+    Escape is a no-op when there is nothing to dismiss. Skipped on a retry,
+    where Escape would cancel the very confirmation the retry exists to answer
+    (Claude Code's warning that background agents are still running).
 
     ``still_needed`` is asked before EVERY key, including the first, and a
     False answer stops the sequence there. Three different windows close on it,

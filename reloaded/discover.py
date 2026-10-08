@@ -12,8 +12,10 @@ import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
-from typing import NamedTuple
+from typing import Container, NamedTuple
 
+from . import pwsh
+from .agents import DEFAULT_KIND
 from .paths import norm
 
 # Bounded reads: a transcript can be hundreds of megabytes, and this runs on a
@@ -134,7 +136,7 @@ def owning_session(pid: int | None = None, depth: int = 12) -> tuple | None:
     """
     from . import agents as agents_mod
 
-    by_process = {a.process: a.kind for a in agents_mod.AGENTS.values()}
+    by_process = agents_mod.BY_PROCESS
     try:
         proc = _ps().Process(os.getpid() if pid is None else pid)
     except Exception:
@@ -200,7 +202,7 @@ DESKTOP_HOSTS = ("chatgpt.exe",)
 _HOST_SEARCH_DEPTH = 8
 
 
-def _hosted_elsewhere(proc, agent_images: set) -> bool:
+def _hosted_elsewhere(proc, agent_images: Container[str]) -> bool:
     """Whether this agent process is running inside something that is not a tab.
 
     Two shapes, one rule: an agent nested inside another program is that
@@ -267,12 +269,12 @@ def sessions() -> list[Session]:
     from . import agents as agents_mod
     from . import win32
 
-    by_process = {a.process: a.kind for a in agents_mod.AGENTS.values()}
+    by_process = agents_mod.BY_PROCESS
     shells = win32.tab_shells()
     found: list[Session] = []
     for proc in psutil.process_iter(["pid", "name", "create_time"]):
         kind = by_process.get((proc.info.get("name") or "").lower())
-        if kind is None or _hosted_elsewhere(proc, set(by_process)):
+        if kind is None or _hosted_elsewhere(proc, by_process):
             continue
         try:
             cwd = proc.cwd()
@@ -305,7 +307,7 @@ def claim_running(running: Counter, live: dict[str, int], cwd: str,
     A directory `running` knows nothing about falls back to `live` - the
     directory-keyed answer every caller used before kinds were counted.
     """
-    key = (norm(cwd), kind or "claude")
+    key = (norm(cwd), kind or DEFAULT_KIND)
     if running[key] > 0:
         running[key] -= 1
         return True
@@ -344,14 +346,16 @@ def _census() -> tuple[dict[str, tuple], dict[str, list[str]]]:
 
     from . import agents as agents_mod
 
-    by_process = {a.process: a.kind for a in agents_mod.AGENTS.values()}
+    by_process = agents_mod.BY_PROCESS
     out: dict[str, tuple] = {}
     seen: dict[str, list[str]] = {}
-    for proc in psutil.process_iter(["pid", "name", "ppid"]):
+    # Never "ppid": on Windows psutil answers each one with a snapshot of every
+    # process, so asking for it here took 16.7s of a 17s sweep (805 processes).
+    for proc in psutil.process_iter(["pid", "name"]):
         kind = by_process.get((proc.info.get("name") or "").lower())
         if kind is None:
             continue
-        if _hosted_elsewhere(proc, set(by_process)):
+        if _hosted_elsewhere(proc, by_process):
             continue
         try:
             cwd = proc.cwd()
@@ -371,25 +375,6 @@ def sweep() -> tuple[dict[str, int], dict[str, list[str]]]:
     """
     sessions, crowded = _sessions()
     return {cwd: pid for cwd, (pid, _k) in sessions.items()}, crowded
-
-
-def crowded_dirs() -> dict[str, list[str]]:
-    """Directories hosting more than one agent session: cwd -> sorted kinds.
-
-    What `_sessions()` collapses, named. Keying on cwd means two agents in one
-    directory become one entry, so the layout saves one tab with one kind and
-    the other session is never restored - measured on a real machine, a
-    `codex.exe` and a `claude.exe` sharing one repository where only the Codex
-    one came back after a logon.
-
-    The collapse is not fixable here; `_sessions()` says why. What is fixable
-    is the silence, which is the same answer `teardown.plan_down` already gives
-    for the tab-side symptom: report the ambiguity rather than resolve it
-    invisibly. Its own sweep, because the information is gone by the time a
-    caller sees a collapsed map - one more `process_iter` on a path that
-    already walks the transcript corpus.
-    """
-    return _sessions()[1]
 
 
 def live_sessions() -> dict[str, int]:
@@ -419,31 +404,20 @@ _SAFE_EXE = re.compile(r"[A-Za-z0-9._+-]+")
 # passed $null where `@session` was meant.
 _SAFE_ARG = re.compile(r"[A-Za-z0-9._+=:/\\%-][A-Za-z0-9._+=:/\\@%-]*")
 
-# Every character PowerShell reads as a single quote - the ASCII one and four
-# typographic ones. Doubled, each is a literal; left single, a U+2019 in a
-# captured argument closed the string and the rest ran as commands, in both
-# PowerShell 7 and 5.1.
-_PS_SINGLE_QUOTES = ("'", "‘", "’", "‚", "‛")
-
 
 def _ps_arg(arg: str) -> str:
     """One captured argument, safe to paste into a PowerShell command line.
 
     A plain token is left alone, which keeps the common case (`resume`,
-    `--last`) readable in a saved layout. Anything else is single-quoted, and a
-    single-quoted PowerShell string is literal all the way through - no
-    variable expansion, no subexpressions, no escapes - so the only thing left
-    to handle inside one is the quote character itself, doubled - every one
-    of them (_PS_SINGLE_QUOTES).
+    `--last`) readable in a saved layout. Anything else is single-quoted
+    (pwsh.literal), which nothing inside can escape.
 
     Double quotes would not do: PowerShell expands `$` inside them, so a
     captured argument holding `$(...)` would have run rather than been passed.
     """
     if arg and _SAFE_ARG.fullmatch(arg):
         return arg
-    for quote in _PS_SINGLE_QUOTES:
-        arg = arg.replace(quote, quote * 2)
-    return "'" + arg + "'"
+    return pwsh.literal(arg)
 
 
 def session_launch(pid: int) -> tuple[str, str]:
@@ -493,8 +467,8 @@ def session_launch(pid: int) -> tuple[str, str]:
     # the same program as `codex.exe`. A case-sensitive miss here does not
     # produce a wrong answer - it produces no answer, and the caller then
     # relaunches from a default instead of from what was actually running.
-    kind = ({a.process: a.kind for a in agents_mod.AGENTS.values()}.get(name)
-            or {a.binary: a.kind for a in agents_mod.AGENTS.values()}.get(
+    kind = (agents_mod.BY_PROCESS.get(name)
+            or agents_mod.BY_BINARY.get(
                 command.split(" ", 1)[0].lower())
             or "")
     if not kind:

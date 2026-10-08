@@ -18,6 +18,9 @@ import types
 import pytest
 
 import reloaded.tabs as tabs_mod
+from reloaded.agents import CLAUDE
+
+CLAUDE_QUIT = CLAUDE.quit_keys
 
 
 @pytest.fixture
@@ -47,13 +50,13 @@ def _sent(log):
 def test_enter_is_not_attached_to_the_typed_command(keys):
     """`"/exit{Enter}"` in one call is the bug: Enter lands ~10ms after the
     final character, while the slash-command menu is still filtering."""
-    tabs_mod.send_exit_keystrokes()
+    tabs_mod.send_quit_keystrokes(CLAUDE_QUIT)
 
     assert not any("/exit{Enter}" in s for s in _sent(keys)), _sent(keys)
 
 
 def test_exit_is_typed_then_submitted_separately(keys):
-    tabs_mod.send_exit_keystrokes()
+    tabs_mod.send_quit_keystrokes(CLAUDE_QUIT)
 
     sent = _sent(keys)
     assert "/exit" in sent, sent
@@ -63,7 +66,7 @@ def test_exit_is_typed_then_submitted_separately(keys):
 
 def test_something_waits_between_typing_and_submitting(keys):
     """The menu needs time to settle on /exit before Enter chooses it."""
-    tabs_mod.send_exit_keystrokes()
+    tabs_mod.send_quit_keystrokes(CLAUDE_QUIT)
 
     typed = next(i for i, (k, t) in enumerate(keys) if t == "/exit")
     entered = next(i for i, (k, t) in enumerate(keys) if t == "{Enter}")
@@ -75,7 +78,7 @@ def test_something_waits_between_typing_and_submitting(keys):
 def test_the_overlay_escape_still_comes_first(keys):
     """Unchanged behaviour: Escape dismisses an away-summary overlay that
     would otherwise eat the first keystroke."""
-    tabs_mod.send_exit_keystrokes()
+    tabs_mod.send_quit_keystrokes(CLAUDE_QUIT)
 
     assert _sent(keys)[0] == "{Esc}"
 
@@ -87,7 +90,7 @@ def test_the_retry_still_skips_the_escape(monkeypatch):
     monkeypatch.setitem(sys.modules, "uiautomation", fake)
     monkeypatch.setattr("time.sleep", lambda s: None)
 
-    tabs_mod.send_exit_keystrokes(dismiss_overlay=False)
+    tabs_mod.send_quit_keystrokes(CLAUDE_QUIT, dismiss_overlay=False)
 
     assert "{Esc}" not in log
     assert "/exit" in log and "{Enter}" in log

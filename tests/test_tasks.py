@@ -4,6 +4,7 @@ import subprocess
 
 import pytest
 
+import reloaded.pwsh as pwsh
 import reloaded.readiness as readiness_mod
 import reloaded.tasks as tasks_mod
 from reloaded.tasks import (
@@ -15,7 +16,6 @@ from reloaded.tasks import (
     _bootstrap_command,
     _build_vbs,
     _launcher_argv,
-    _ps_quote,
     _vbs_quote,
     install,
     logon_launcher_installed,
@@ -37,11 +37,12 @@ def test_vbs_quote_escapes_embedded_double_quotes():
 
 
 def test_ps_quote_wraps_in_single_quotes():
-    assert _ps_quote("hello") == "'hello'"
+    assert pwsh.literal("hello") == "'hello'"
 
 
 def test_ps_quote_escapes_embedded_single_quotes():
-    assert _ps_quote("O'Brien") == "'O''Brien'"
+    assert pwsh.literal("O'Brien") == "'O''Brien'"
+    assert pwsh.literal("O’Brien") == "'O’’Brien'"
 
 
 # ── the configured repository root reaches both launchers ────────────────

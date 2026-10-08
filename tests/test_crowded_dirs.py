@@ -44,14 +44,14 @@ def test_one_agent_per_directory_is_not_crowded(processes):
     processes += [_Proc("claude.exe", 1, r"C:\repos\app"),
                   _Proc("codex.exe", 2, r"C:\repos\beta")]
 
-    assert discover_mod.crowded_dirs() == {}
+    assert discover_mod.sweep()[1] == {}
 
 
 def test_two_kinds_in_one_directory_are_named(processes):
     processes += [_Proc("codex.exe", 1, r"C:\repos\app"),
                   _Proc("claude.exe", 2, r"C:\repos\app")]
 
-    assert discover_mod.crowded_dirs() == {norm(r"C:\repos\app"): ["claude", "codex"]}
+    assert discover_mod.sweep()[1] == {norm(r"C:\repos\app"): ["claude", "codex"]}
 
 
 def test_two_of_the_same_kind_are_named_too(processes):
@@ -60,7 +60,7 @@ def test_two_of_the_same_kind_are_named_too(processes):
     processes += [_Proc("claude.exe", 1, r"C:\repos\app"),
                   _Proc("claude.exe", 2, r"C:\repos\app")]
 
-    assert discover_mod.crowded_dirs() == {norm(r"C:\repos\app"): ["claude", "claude"]}
+    assert discover_mod.sweep()[1] == {norm(r"C:\repos\app"): ["claude", "claude"]}
 
 
 def test_the_collapsed_session_map_is_unchanged(processes):

@@ -33,7 +33,7 @@ import os
 import pathlib
 import subprocess
 
-from . import readiness
+from . import pwsh, readiness
 
 TASK_RECONCILE = "Reloaded-Reconcile"
 STARTUP_VBS_NAME = "reloaded-up.vbs"
@@ -63,11 +63,6 @@ def startup_vbs_path() -> pathlib.Path:
 def _vbs_quote(s: str) -> str:
     """Escape a value for embedding in a VBScript double-quoted string literal."""
     return '"' + s.replace('"', '""') + '"'
-
-
-def _ps_quote(s: str) -> str:
-    """Escape a value for embedding in a PowerShell single-quoted string literal."""
-    return "'" + s.replace("'", "''") + "'"
 
 
 def _bootstrap_command(package_dir: str, layout: str, repos_root: str,
@@ -162,14 +157,14 @@ def _register_reconcile_task(package_dir: str, layout: str,
     argv = _launcher_argv(bootstrap)
     script = f"""
 $ErrorActionPreference = 'Stop'
-$action = New-ScheduledTaskAction -Execute 'pyw.exe' -Argument {_ps_quote(argv)}
+$action = New-ScheduledTaskAction -Execute 'pyw.exe' -Argument {pwsh.literal(argv)}
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
     -RepetitionInterval (New-TimeSpan -Minutes {RECONCILE_INTERVAL_MINUTES}) `
     -RepetitionDuration (New-TimeSpan -Days {_REPETITION_DURATION_DAYS})
 $settings = New-ScheduledTaskSettingsSet `
     -ExecutionTimeLimit (New-TimeSpan -Minutes {RECONCILE_EXECUTION_TIME_LIMIT_MINUTES}) `
     -MultipleInstances IgnoreNew -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-Register-ScheduledTask -TaskName {_ps_quote(TASK_RECONCILE)} -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
+Register-ScheduledTask -TaskName {pwsh.literal(TASK_RECONCILE)} -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null
 """
     proc = _run_powershell(script)
     return proc.returncode, (proc.stderr or proc.stdout or "").strip()
@@ -192,9 +187,9 @@ def _remove_reconcile_task() -> tuple[bool, str]:
     """
     script = f"""
 $ErrorActionPreference = 'Stop'
-$t = Get-ScheduledTask -TaskName {_ps_quote(TASK_RECONCILE)} -ErrorAction SilentlyContinue
+$t = Get-ScheduledTask -TaskName {pwsh.literal(TASK_RECONCILE)} -ErrorAction SilentlyContinue
 if ($null -eq $t) {{ Write-Output 'ABSENT'; exit 0 }}
-Unregister-ScheduledTask -TaskName {_ps_quote(TASK_RECONCILE)} -Confirm:$false
+Unregister-ScheduledTask -TaskName {pwsh.literal(TASK_RECONCILE)} -Confirm:$false
 Write-Output 'REMOVED'
 """
     proc = _run_powershell(script)
