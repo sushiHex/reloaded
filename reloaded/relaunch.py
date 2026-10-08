@@ -136,19 +136,23 @@ def relaunch(pid: int, cwd: str, kind: str, *, dry_run: bool = False,
     # sibling exiting first would take this session's command. Only a loop
     # older than that still needs the directory's, the one file it watches.
     try:
-        own = not looping or "$rlOwn=" in " ".join(shell.cmdline())
+        loop = " ".join(shell.cmdline()) if looping else ""
     except Exception:
-        own = not looping
+        loop = ""
+    own = not looping or "$rlOwn=" in loop
     marker = shell_marker(shell.pid) if own else restart_marker(cwd)
     # The command, not just a flag: a loop runs it in place of the one its tab
     # was launched with (deploy.restart_loop), so a looping tab comes back to
-    # this conversation too. A loop older than that reads only that it exists
-    # and replays its launch command - this session's own. When that brings
-    # back no conversation at all - the picker, or an empty one, what
-    # `agents.resuming` exists to fix - the helper stops it (see bring_back).
-    # One that resumes something is left to: it has a conversation loading.
+    # this conversation too. A loop older than that (no `$rlNext=`) reads only
+    # that the marker exists and replays its launch command - this session's
+    # own. When that brings back no conversation at all - the picker, or an
+    # empty one, what `agents.resuming` exists to fix - the helper stops it
+    # (see bring_back). One that resumes something is left to: it has a
+    # conversation loading. An unreadable loop is not judged stale: stopping
+    # a replay that was the right command would cost the session a restart.
     replay = _launch_command(session)
-    stale = looping and not own and agents_mod.resuming(kind, replay) != replay
+    stale = (bool(loop) and "$rlNext=" not in loop
+             and agents_mod.resuming(kind, replay) != replay)
     marker.write_text(command, encoding="utf-8")
     try:
         _spawn_helper(session, shell, kind, command, marker, stale)

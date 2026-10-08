@@ -221,6 +221,36 @@ def test_a_loop_that_reads_commands_is_never_stopped(desk, monkeypatch):
     assert desk.stale == [False]
 
 
+def test_a_loop_that_reads_commands_but_not_its_own_marker_is_never_stopped(
+        desk, monkeypatch):
+    """Found by review: loops from 6f94eb7 until shells had markers of their
+    own read the command from the directory's marker. Judged by `$rlOwn=`
+    alone, one launched with a bare `--resume` was stopped after it had
+    already started the exact conversation, which then started twice."""
+    desk.shell._cmdline = ["pwsh", "-Command", "$rlStart=Get-Date; $rlNext=$null; "
+                           "while ($true) { claude --resume }"]
+    desk.session._cmdline = ["claude", "--dangerously-skip-permissions", "--resume"]
+    monkeypatch.setenv("CLAUDE_PID", str(desk.session.pid))
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", "abc-123")
+
+    _run(desk)
+
+    assert desk.stale == [False]
+    assert desk.marker.exists() and not desk.own_marker.exists()
+
+
+def test_a_loop_that_cannot_be_read_is_not_judged_stale(desk):
+    """Stopping a replay that was the right command costs the session."""
+    def unreadable():
+        raise PermissionError
+    desk.shell.cmdline = unreadable
+    desk.session._cmdline = ["claude", "--dangerously-skip-permissions"]
+
+    _run(desk)
+
+    assert desk.stale == [False]
+
+
 def test_a_plain_tab_has_no_loop_to_stop(desk, monkeypatch):
     monkeypatch.setattr(discover_mod, "launcher_kind",
                         lambda pid: discover_mod.HAND)
