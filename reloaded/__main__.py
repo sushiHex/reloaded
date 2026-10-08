@@ -1317,7 +1317,13 @@ def cmd_uninstall_tasks(args) -> int:
 
 
 def cmd_status(args) -> int:
+    import concurrent.futures
+
     path = layout_path(args.layout)
+    # A PowerShell package query, ~1.7s: started now, it runs during the sweep.
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+    wt_check = pool.submit(readiness_mod.check_wt_version)
+    pool.shutdown(wait=False)
     live, crowded = discover_mod.sweep()
 
     print(f"live sessions : {len(live)}")
@@ -1359,7 +1365,7 @@ def cmd_status(args) -> int:
     ready, reason = readiness_mod.wait_for_ready(lo, timeout=0)
     print(f"readiness     : {reason}" if ready else f"[warn] readiness: {reason}")
 
-    wt_ok, wt_detail = readiness_mod.check_wt_version()
+    wt_ok, wt_detail = wt_check.result()
     print(f"terminal      : {wt_detail}" if wt_ok else f"[warn] terminal: {wt_detail}")
 
     would_launch = 0
@@ -1540,7 +1546,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        return _dispatch(args, parser)
+        return _dispatch(args)
     except SystemExit:
         raise
     except BaseException:
@@ -1573,27 +1579,18 @@ def _report_crash(args) -> int:
     return 1
 
 
-def _dispatch(args, parser) -> int:
-    if args.command == "capture":
-        return cmd_capture(args)
-    if args.command == "up":
-        return cmd_up(args)
-    if args.command == "status":
-        return cmd_status(args)
-    if args.command == "open":
-        return cmd_open(args)
-    if args.command == "down":
-        return cmd_down(args)
-    if args.command == "restart":
-        return cmd_restart(args)
-    if args.command == "install-tasks":
-        return cmd_install_tasks(args)
-    if args.command == "uninstall-tasks":
-        return cmd_uninstall_tasks(args)
-    if args.command in (None, "edit"):
-        return cmd_edit(args)
-    parser.print_help()
-    return 0
+def _dispatch(args) -> int:
+    """argparse rejects anything else; no subcommand opens the editor."""
+    return {
+        "capture": cmd_capture,
+        "up": cmd_up,
+        "status": cmd_status,
+        "open": cmd_open,
+        "down": cmd_down,
+        "restart": cmd_restart,
+        "install-tasks": cmd_install_tasks,
+        "uninstall-tasks": cmd_uninstall_tasks,
+    }.get(args.command, cmd_edit)(args)
 
 
 if __name__ == "__main__":
