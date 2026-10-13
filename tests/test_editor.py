@@ -21,7 +21,8 @@ def test_recapture_reports_a_missing_uiautomation_and_keeps_the_current_layout(m
     commands = iter(["c", "q"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(commands))
 
-    rc = editor_mod.run(lo, tmp_path / "default.json", r"C:\repos")
+    rc = editor_mod.run(lo, tmp_path / "default.json", r"C:\repos",
+                        editor_mod.layout_mod.save)
 
     assert rc == 1  # quit without saving, since nothing changed
     out = capsys.readouterr().out

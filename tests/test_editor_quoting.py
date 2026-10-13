@@ -38,7 +38,8 @@ def editor(monkeypatch, tmp_path):
         typed = iter(list(commands) + ["q", "y"])
         monkeypatch.setattr("builtins.input",
                             lambda prompt="": prompts.append(prompt) or next(typed))
-        editor_mod.run(lo, tmp_path / "default.json", r"C:\repos")
+        editor_mod.run(lo, tmp_path / "default.json", r"C:\repos",
+                       editor_mod.layout_mod.save)
         return lo
 
     run.prompts = prompts

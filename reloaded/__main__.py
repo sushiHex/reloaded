@@ -134,63 +134,78 @@ def _restore_in_flight(args) -> bool:
     return True
 
 
-def _saved_repos(path) -> set[str]:
-    """Repos in the layout on disk, or none when there is no readable one.
+def _saved_layout(path):
+    """The layout on disk, or None when there is no readable one.
 
     An unreadable layout reads as empty rather than raising: this only exists
-    to describe a change afterwards, and a capture must not fail because the
-    file it is about to replace could not be parsed.
+    to describe a change afterwards, and a save must not fail because the file
+    it is about to replace could not be parsed.
     """
     try:
-        return layout_mod.repo_set(layout_mod.load(path))
+        return layout_mod.load(path)
     except (OSError, ValueError, KeyError, TypeError):
-        return set()
+        return None
 
 
-def _report_layout_change(before: set[str], after) -> None:
-    """Record what this capture did to the saved layout, and say so if it took
+def _report_layout_change(before, after, layout: str, writer: str) -> None:
+    """Record what this save did to the saved layout, and say so if it took
     something away.
 
-    Recorded whenever the repo set changes; printed only for losses. A gain is
-    already visible in the summary below it and needs no warning. A loss is the
-    surprising half, and the console said nothing about it at all - a user
-    watching three repos vanish saw "Captured 4 window(s)" and nothing else.
+    Recorded whenever a tab is gained or lost, or launches differently;
+    printed only for losses. A gain is already visible in the summary below it
+    and needs no warning. A loss is the surprising half, and the console said
+    nothing about it at all - a user watching three repos vanish saw
+    "Captured 4 window(s)" and nothing else.
 
-    Silent when the set is unchanged, which is almost every run: the reconcile
-    fires every five minutes forever, and 288 lines a day of "same as last
-    time" is a log nobody skims - the same as having none, which is the thing
-    being fixed. Geometry and window grouping change constantly and are not
-    losses.
+    Silent when nothing of that changed, which is almost every run: the
+    reconcile fires every five minutes forever, and 288 lines a day of "same
+    as last time" is a log nobody skims - the same as having none, which is
+    the thing being fixed.
 
-    Full paths rather than basenames. This line exists to be read months later
-    by someone asking which sessions went missing, and two checkouts can share
-    a name.
+    Per tab and kind (layout.tab_changes), with full paths, the layout's name
+    and what wrote it. This line exists to be read months later by someone
+    asking which sessions went missing: a directory-level line could not show
+    one of two tabs in a directory going, and two checkouts can share a name.
     """
-    now = layout_mod.repo_set(after)
-    lost = sorted(before - now)
-    gained = sorted(now - before)
-    if not lost and not gained:
+    lost, gained, changed = layout_mod.tab_changes(before, after)
+    if not (lost or gained or changed):
         return
+
+    def tabs(keys):
+        return ", ".join(f"{kind} {cwd}" for cwd, kind in keys)
+
+    def launch(command):
+        return f"`{command}`" if command else "(default)"
 
     parts = []
     if lost:
-        parts.append(f"lost {len(lost)} ({', '.join(lost)})")
+        parts.append(f"lost {len(lost)} ({tabs(lost)})")
     if gained:
-        parts.append(f"gained {len(gained)} ({', '.join(gained)})")
-    _record(f"[reloaded] layout {' and '.join(parts)}")
+        parts.append(f"gained {len(gained)} ({tabs(gained)})")
+    if changed:
+        parts.append(f"changed the command of {len(changed)} (" + "; ".join(
+            f"{kind} {cwd}: {launch(a)} -> {launch(b)}"
+            for (cwd, kind), a, b in changed) + ")")
+    _record(f"[reloaded] layout {layout} {' and '.join(parts)} [{writer}]")
 
     if lost:
-        print(f"[reloaded] dropped {len(lost)} repo(s) from the layout:")
-        for cwd in lost:
-            print(f"    - {cwd}")
+        print(f"[reloaded] dropped {len(lost)} tab(s) from the layout:")
+        for cwd, kind in lost:
+            print(f"    - {cwd} ({kind})")
 
 
-def _save_capture(lo, path, args) -> None:
-    """Write a capture over the saved layout, and record what that did: the
-    repos it gained or lost, and the end of any refusal the log is tracking."""
-    before = _saved_repos(path)
+def _save_layout(lo, path, layout: str, writer: str) -> None:
+    """Write `lo` over the saved layout and record what that changed. Every
+    writer goes through here, so none of them can change what comes back
+    without the log hearing of it."""
+    before = _saved_layout(path)
     layout_mod.save(lo, path)
-    _report_layout_change(before, lo)
+    _report_layout_change(before, lo, layout, writer)
+
+
+def _save_capture(lo, path, args, writer: str = "capture") -> None:
+    """A capture's save, which also ends any refusal the log is tracking."""
+    _save_layout(lo, path, args.layout, writer)
     refusal_mod.saved(args.layout, _record,
                       forced=bool(getattr(args, "force", False)))
 
@@ -1304,7 +1319,7 @@ def cmd_restart(args) -> int:
     if _restore_in_flight(args):
         return 1
 
-    _save_capture(lo, path, args)
+    _save_capture(lo, path, args, writer="restart")
     _print_capture_summary(lo, path)
 
     try:
@@ -1537,7 +1552,8 @@ def cmd_edit(args) -> int:
         if not lo.windows:
             print("No agent sessions found. Open some sessions first.")
             return 1
-    return editor_mod.run(lo, path, args.repos_root)
+    return editor_mod.run(lo, path, args.repos_root,
+                          save=lambda lo, p: _save_layout(lo, p, args.layout, "editor"))
 
 
 def build_parser() -> argparse.ArgumentParser:

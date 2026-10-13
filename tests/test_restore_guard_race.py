@@ -119,6 +119,6 @@ def test_the_editor_opens_an_existing_layout_during_a_restore(monkeypatch, tmp_p
     main_mod.layout_mod.save(make_layout([make_window(
         [0, 0, 800, 600], [Tab(cwd=r"C:\repos\app", title="app")])]), path)
     monkeypatch.setattr(main_mod, "layout_path", lambda name: path)
-    monkeypatch.setattr(main_mod.editor_mod, "run", lambda lo, p, root: 0)
+    monkeypatch.setattr(main_mod.editor_mod, "run", lambda lo, p, root, **kw: 0)
 
     assert main_mod.cmd_edit(_args()) == 0

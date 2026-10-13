@@ -42,7 +42,8 @@ def test_the_editors_recapture_stands_down_during_a_restore(monkeypatch, capsys)
 
     lo = make_layout([make_window([0, 0, 800, 600],
                                   [Tab(cwd=r"C:\repos\app", title="app")])])
-    editor_mod.run(lo, "layout.json", r"C:\repos")
+    editor_mod.run(lo, "layout.json", r"C:\repos",
+                   lambda *a: pytest.fail("nothing here saves"))
 
     assert "still starting" in capsys.readouterr().out
 
@@ -59,7 +60,8 @@ def test_the_editor_recaptures_normally_when_no_restore_is_running(monkeypatch):
 
     lo = make_layout([make_window([0, 0, 800, 600],
                                   [Tab(cwd=r"C:\repos\app", title="app")])])
-    editor_mod.run(lo, "layout.json", r"C:\repos")
+    editor_mod.run(lo, "layout.json", r"C:\repos",
+                   lambda *a: pytest.fail("nothing here saves"))
 
     assert captured == [1]
 

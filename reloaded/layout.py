@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import pathlib
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -160,14 +161,33 @@ def window_header(w: Window) -> str:
     return f"{w.monitor}  ({x},{y} {width}x{height}, {w.state})"
 
 
-def repo_set(lo: Layout) -> set[str]:
-    """Every repo a layout holds, normalized.
+def tab_changes(before: Layout | None, after: Layout):
+    """What saving `after` over `before` changes about what comes back:
+    (lost, gained, changed).
 
-    A layout's identity for the one question worth asking about a capture: did
-    it lose something the last one had? Geometry, order and window grouping all
-    change constantly and none of them are losses.
+    Per tab, as (normalized cwd, kind), not per directory: a directory's Codex
+    tab lost beside its surviving Claude one is a loss, and a set of
+    directories cannot show it. `lost` and `gained` hold one key per tab.
+    `changed` holds (key, command before, command after) for a tab that is
+    still there but now launches differently - a command that went empty
+    because its process could not be read included. Geometry, order and
+    window grouping change constantly and are none of these.
     """
-    return {norm(t.cwd) for w in lo.windows for t in w.tabs}
+    def tabs(lo) -> Counter:
+        return Counter((norm(t.cwd), t.agent or DEFAULT_KIND, str(t.command or ""))
+                       for w in (lo.windows if lo is not None else ()) for t in w.tabs)
+
+    was, now = tabs(before), tabs(after)
+    lost, gained = sorted((was - now).elements()), sorted((now - was).elements())
+    # A tab whose command differs is one of each under the same key: pair them.
+    changed = []
+    for key in sorted({t[:2] for t in lost} & {t[:2] for t in gained}):
+        for old, new in zip([t for t in lost if t[:2] == key],
+                            [t for t in gained if t[:2] == key]):
+            changed.append((key, old[2], new[2]))
+            lost.remove(old)
+            gained.remove(new)
+    return [t[:2] for t in lost], [t[:2] for t in gained], changed
 
 
 def save(lo: Layout, path) -> None:
