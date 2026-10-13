@@ -14,6 +14,7 @@ python -m pytest tests/test_layout.py::test_every_field_survives_a_roundtrip -q 
 python -m pip wheel . --no-deps -w dist                                    # build
 python -m reloaded status              # inspect saved vs. live sessions
 python -m reloaded up --dry-run        # preview a deployment without opening tabs
+python tools/smoke.py setup alpha:claude  # live smoke test, real desktop; see docs/smoke-testing.md
 ```
 
 No formatter or linter is configured. CI (`.github/workflows/ci.yml`) is `windows-latest` with Python 3.9 (the floor) and 3.14.
