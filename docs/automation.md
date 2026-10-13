@@ -97,7 +97,7 @@ automation, so a later sign-in can restore the saved layout again.
 | --- | --- |
 | `~/.reloaded/layouts/<name>.json` | Saved windows, tabs, geometry, and launch commands. |
 | `~/.reloaded/reloaded.log` | Unattended deployment output, readiness results, crash reports, and every change a capture made to the layout. |
-| `~/.reloaded/refusals/<name>.json` | Which capture refusal the log last reported for a layout, so a repeating one is not written every run. |
+| `~/.reloaded/refusals/` | Which capture refusal the log last reported, one file per layout, so a repeating one is not written every run. |
 | `~/.reloaded/restart/` | Short-lived restart markers. |
 | `~/.reloaded/relaunch/` | Launcher scripts used to upgrade hand-started tabs. |
 

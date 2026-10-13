@@ -110,26 +110,48 @@ def test_a_refusal_that_recurs_after_a_save_is_said_again(log):
 
 def test_a_line_that_did_not_land_is_not_counted_as_said():
     """Otherwise one failed write hides the first warning for six hours."""
-    landed = iter([False, True])
     lines = []
 
     def record(line):
         lines.append(line)
         return next(landed)
 
-    refusal_mod.note("default", "refused: beta", record, now=T0)
-    refusal_mod.note("default", "refused: beta", record, now=T0 + 300)
+    landed = iter([False, True, True])
+    for i in range(3):
+        refusal_mod.note("default", "refused: beta", record, now=T0 + i * 300)
 
+    # Retried once it had not landed, then counted as said once it had.
     assert lines == ["refused: beta", "refused: beta"]
 
 
-def test_an_unreadable_record_repeats_rather_than_suppresses(log):
+@pytest.mark.parametrize("garbage", [
+    "{not json",
+    '{"message": "refused: beta", "since": 0, "said": NaN, "count": 1}',
+    '{"message": "refused: beta", "since": NaN, "said": 0, "count": 1}',
+    '{"message": "refused: beta", "since": 0, "said": 0, "count": Infinity}',
+])
+def test_an_unreadable_record_repeats_rather_than_suppresses(log, garbage):
+    """A NaN `said` compares false against every interval, so trusting it
+    would silence the refusal for good."""
     refusal_mod.note("default", "refused: beta", log, now=T0)
-    refusal_mod._path("default").write_text("{not json", encoding="utf-8")
+    refusal_mod._path("default").write_text(garbage, encoding="utf-8")
 
     refusal_mod.note("default", "refused: beta", log, now=T0 + 300)
+    refusal_mod.saved("default", log)
 
-    assert log.lines == ["refused: beta", "refused: beta"]
+    assert log.lines[:2] == ["refused: beta", "refused: beta"]
+
+
+@pytest.mark.parametrize("name", [r"..\layouts\default", r"C:\temp\work"])
+def test_a_path_shaped_layout_name_cannot_reach_the_layout(name, tmp_path, monkeypatch):
+    """`--layout` takes anything. Used as a filename, `..\\layouts\\default`
+    resolved to the layout file itself, and the record replaced it."""
+    monkeypatch.setattr(paths_mod, "state_dir", lambda: tmp_path)
+
+    p = refusal_mod._path(name)
+
+    assert p.parent == tmp_path / "refusals"
+    assert p != paths_mod.layout_path(name)
 
 
 def test_each_layout_keeps_its_own_record(log):
@@ -265,11 +287,15 @@ def test_a_rotation_that_fails_still_writes_the_line(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod, "log_path", lambda: log)
     monkeypatch.setattr(main_mod, "LOG_MAX_BYTES", 50)
 
+    tried = []
+
     def _held_open(self, target):
+        tried.append(target)
         raise PermissionError("in use")
 
     monkeypatch.setattr(type(log), "replace", _held_open)
 
     assert main_mod._append("fresh")
 
+    assert tried, "never tried to rotate"
     assert log.read_text(encoding="utf-8").endswith("fresh\n")

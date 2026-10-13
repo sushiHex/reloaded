@@ -17,7 +17,9 @@ said.
 from __future__ import annotations
 
 import datetime
+import hashlib
 import json
+import math
 import os
 from typing import Callable
 
@@ -30,36 +32,46 @@ HEARTBEAT_SECONDS = 6 * 3600
 
 
 def _path(layout: str):
-    # Through the module, not a name imported from it: the test suite's
-    # guard redirects `paths.state_dir`, and a copy bound at import time
-    # would go on pointing at the user's real ~/.reloaded.
+    """Named by a digest of the layout name, not the name itself: `--layout`
+    accepts anything, and `..\\work` or an absolute path as a filename here
+    would land on the layout file itself and overwrite it.
+
+    Through the module, not a name imported from it: the test suite's guard
+    redirects `paths.state_dir`, and a copy bound at import time would go on
+    pointing at the user's real ~/.reloaded.
+    """
     d = paths.state_dir() / "refusals"
     d.mkdir(parents=True, exist_ok=True)
-    return d / f"{layout}.json"
+    return d / f"{hashlib.sha256(layout.encode('utf-8')).hexdigest()[:16]}.json"
 
 
 def _load(layout: str) -> dict | None:
     try:
         raw = json.loads(_path(layout).read_text(encoding="utf-8"))
-        return {"message": str(raw["message"]), "since": float(raw["since"]),
-                "said": float(raw["said"]), "count": int(raw["count"])}
-    except (OSError, ValueError, TypeError, KeyError):
+        state = {"message": str(raw["message"]), "since": float(raw["since"]),
+                 "said": float(raw["said"]), "count": int(raw["count"])}
+    except (OSError, ValueError, TypeError, KeyError, OverflowError):
+        state = None
+    if state is None or not all(map(math.isfinite, (state["since"], state["said"]))):
         # Unreadable reads as nothing said: the cost is one repeated line,
         # where trusting garbage could suppress a real one.
         return None
+    return state
 
 
 def _store(layout: str, state: dict) -> None:
-    p = _path(layout)
-    tmp = p.with_suffix(f".{os.getpid()}.tmp")
+    tmp = None
     try:
+        p = _path(layout)
+        tmp = p.with_suffix(f".{os.getpid()}.tmp")
         tmp.write_text(json.dumps(state), encoding="utf-8")
         tmp.replace(p)
     except OSError:
         pass
     finally:
         try:
-            tmp.unlink(missing_ok=True)
+            if tmp is not None:
+                tmp.unlink(missing_ok=True)
         except OSError:
             pass
 
