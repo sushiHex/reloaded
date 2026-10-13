@@ -293,8 +293,11 @@ def test_a_tab_lost_beside_a_changed_one_says_both():
 def test_a_malformed_saved_command_cannot_fail_the_record():
     """`from_dict` keeps whatever the file held. Compared after the save has
     already happened, a non-string there must not raise."""
-    before = _tabs(("app", "claude", "claude"), ("app", "claude", "x"))
-    before.windows[0].tabs[1].command = 1
+    before = _tabs(("app", "claude", "claude"), ("app", "claude", "x"),
+                   ("app", "claude", "y"))
+    before.windows[0].tabs[0].command = 1
+    before.windows[0].tabs[1].cwd = 1
+    before.windows[0].tabs[2].agent = ["codex"]
 
     main_mod.layout_mod.tab_changes(before, _tabs(("app", "claude", "claude")))
 

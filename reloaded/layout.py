@@ -173,8 +173,11 @@ def tab_changes(before: Layout | None, after: Layout):
     because its process could not be read included. Geometry, order and
     window grouping change constantly and are none of these.
     """
+    # str() throughout: from_dict keeps whatever the file held, and this runs
+    # after the save has replaced it, where raising would abort the writer.
     def tabs(lo) -> Counter:
-        return Counter((norm(t.cwd), t.agent or DEFAULT_KIND, str(t.command or ""))
+        return Counter((norm(str(t.cwd)), str(t.agent or DEFAULT_KIND),
+                        str(t.command or ""))
                        for w in (lo.windows if lo is not None else ()) for t in w.tabs)
 
     was, now = tabs(before), tabs(after)
