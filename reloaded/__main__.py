@@ -5,6 +5,7 @@ import argparse
 import math
 from collections import Counter
 import os
+import pathlib
 import sys
 import time
 from dataclasses import dataclass, field
@@ -17,6 +18,7 @@ from . import editor as editor_mod
 from . import layout as layout_mod
 from . import pwsh
 from . import readiness as readiness_mod
+from . import refusal as refusal_mod
 from . import relaunch as relaunch_mod
 from . import tabs as tabs_mod
 from . import tasks as tasks_mod
@@ -31,6 +33,7 @@ from .paths import (
     resolve_repo,
     restart_marker,
     restart_marker_dir,
+    shell_marker,
     stamped,
     tab_title,
 )
@@ -182,6 +185,16 @@ def _report_layout_change(before: set[str], after) -> None:
             print(f"    - {cwd}")
 
 
+def _save_capture(lo, path, args) -> None:
+    """Write a capture over the saved layout, and record what that did: the
+    repos it gained or lost, and the end of any refusal the log is tracking."""
+    before = _saved_repos(path)
+    layout_mod.save(lo, path)
+    _report_layout_change(before, lo)
+    refusal_mod.saved(args.layout, _record,
+                      forced=bool(getattr(args, "force", False)))
+
+
 def _capture_layout(args):
     """Load the previous layout (if any) and capture the current live
     arrangement. Returns (Layout, path, live, title_map) - the last two are
@@ -211,6 +224,9 @@ def cmd_capture(args) -> int:
     try:
         lo, path, live, _title_map = _capture_layout(args)
     except tabs_mod.UIAUnavailable as exc:
+        # Printed only, this was silent under pyw on every reconcile.
+        refusal_mod.note(args.layout,
+                         f"[reloaded] capture could not read tabs: {exc}", _record)
         return _report_uia_unavailable(exc)
 
     # capture runs every 5 minutes forever via the reconcile task — cheap,
@@ -220,11 +236,21 @@ def cmd_capture(args) -> int:
     if pruned:
         print(f"[reloaded] pruned {len(pruned)} stale .torn backup(s)")
 
+    unresolved = _unresolved_live_repos(lo, live)
     if not lo.windows:
+        if unresolved:
+            # Every tab unreadable is the same failed read as some tabs
+            # unreadable, only total - and it returned here, before the
+            # shrinkage guard, so it was the one case the log never heard of.
+            # Nothing found and nothing running is not a refusal at all.
+            refusal_mod.note(
+                args.layout,
+                f"[reloaded] captured nothing, though {len(unresolved)} "
+                f"repo(s) have a running session — {', '.join(unresolved)}",
+                _record)
         print("No agent sessions found — nothing captured, existing layout untouched.")
         return 1
 
-    unresolved = _unresolved_live_repos(lo, live)
     if unresolved:
         print(
             f"[reloaded] {len(unresolved)} running session(s) did not match any tab: "
@@ -249,9 +275,7 @@ def cmd_capture(args) -> int:
     if _restore_in_flight(args):
         return 1
 
-    before = _saved_repos(path)
-    layout_mod.save(lo, path)
-    _report_layout_change(before, lo)
+    _save_capture(lo, path, args)
     _print_capture_summary(lo, path)
     return 0
 
@@ -328,16 +352,32 @@ def _capture_shrinkage(fresh, path, live) -> str:
     return f"{len(lost)} running session(s) missing from this capture — {names}"
 
 
-def _append(line: str) -> None:
+# Past this, the log is moved to `reloaded.log.1` (replacing the last one) and
+# started again. Nothing else ever trims it, and a month of a real machine's
+# log is about 50 KB, so this is years of history kept, not a budget.
+LOG_MAX_BYTES = 1024 * 1024
+
+
+def _append(line: str) -> bool:
+    """Write one line to the log; whether it landed."""
+    path = log_path()
     try:
-        with open(log_path(), "a", encoding="utf-8") as fh:
+        if path.stat().st_size > LOG_MAX_BYTES:
+            path.replace(path.with_name(path.name + ".1"))
+    except OSError:
+        # Missing, or held open by a relaunch helper (which writes to it
+        # directly, so it cannot rotate it). The next write tries again.
+        pass
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
+        return True
     except OSError:
         # Losing a log line must never fail the run that produced it.
-        pass
+        return False
 
 
-def _record(message: str) -> None:
+def _record(message: str) -> bool:
     """Append one timestamped line to the log, without printing it.
 
     Separate from `_log` because the two answer different questions. `_log` is
@@ -345,7 +385,7 @@ def _record(message: str) -> None:
     else to send it. This is an audit line about the user's saved state, and
     that is worth keeping whether or not a console was attached.
     """
-    _append(stamped(message))
+    return _append(stamped(message))
 
 
 def _refused_for_shrinkage(lo, path, live, args, *, cost: str, escape: str) -> bool:
@@ -376,8 +416,11 @@ def _refused_for_shrinkage(lo, path, live, args, *, cost: str, escape: str) -> b
         # The record matters most for `capture`, which the reconcile runs
         # unattended with nowhere to print; a restart is always interactive and
         # gets the line anyway, because what changed about the saved layout is
-        # worth the same entry whoever was watching.
-        _record(f"[reloaded] refused to overwrite the layout: {shrink}")
+        # worth the same entry whoever was watching. Once, though: the same
+        # refusal again is only a periodic "still" (see refusal.py).
+        refusal_mod.note(args.layout,
+                         f"[reloaded] refused to overwrite the layout: {shrink}",
+                         _record)
     print(f"[reloaded] {'would refuse' if dry else 'refusing'} to overwrite "
           f"the layout: {shrink}")
     print(
@@ -635,7 +678,7 @@ def cmd_up(args) -> int:
 # has finished reading a large transcript. This is a wait for a spawn, not for
 # a startup.
 RELAUNCH_WAIT_SECONDS = 20.0
-# A full psutil.process_iter() sweep per tick, which teardown's own polling
+# A sweep of every process per tick, which teardown's own polling
 # loop avoids precisely because it is "real, avoidable cost". It cannot be
 # avoided here - the pid being waited for does not exist yet, so there is
 # nothing cheaper to poll - so the tick is kept coarse instead. Nobody
@@ -676,11 +719,22 @@ class _Restarting:
     # accident.
     command: str
     size_bytes: int
+    # The pid of its loop when that loop reads a marker of its own
+    # (discover.marker_shell). None means the directory's, which every tab
+    # there watches.
+    marker_shell: int | None = None
 
     @property
     def key(self) -> str:
         """Its normalized cwd, which is how every map around it is keyed."""
         return norm(self.cwd)
+
+    @property
+    def marker(self) -> pathlib.Path:
+        """Where its restart request goes, and the only file it may delete."""
+        if self.marker_shell is None:
+            return restart_marker(self.cwd)
+        return shell_marker(self.marker_shell)
 
 
 def _launch_single_tab(s: _Restarting) -> None:
@@ -773,13 +827,16 @@ def _sweep_stale_markers() -> None:
     """
     cutoff = time.time() - deploy_mod.RESTART_MARKER_TTL_SECONDS
     try:
-        stale = [m for m in restart_marker_dir().glob("*.marker")
-                 if m.stat().st_mtime < cutoff]
+        markers = list(restart_marker_dir().glob("*.marker"))
     except OSError:
         return
-    for m in stale:
+    for m in markers:
+        # Judged as it is deleted, not when listed: a restart running alongside
+        # this one can re-arm a listed path in between, and deleting that fresh
+        # marker closes the tab it was meant to bring back.
         try:
-            m.unlink()
+            if m.stat().st_mtime < cutoff:
+                m.unlink()
         except OSError:
             pass
 
@@ -824,7 +881,7 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     def arm(cwd):
         s = by_key.get(norm(cwd))
         if s is not None and s.launcher == discover_mod.RELOADED:
-            restart_marker(cwd).write_text("restart", encoding="utf-8")
+            s.marker.write_text("restart", encoding="utf-8")
 
     _warn_about_empty_relaunches(sessions)
 
@@ -968,15 +1025,18 @@ def _snapshot_restarts(plans, args) -> list[_Restarting]:
                 # capture would otherwise hand claude's flags to a Codex tab,
                 # and launcher_command trusts the command over the agent.
                 command = saved_command
+            launcher = discover_mod.launcher_kind(t.pid)
             sessions.append(_Restarting(
                 hwnd=plan.hwnd,
                 item=t.item,
                 cwd=t.cwd,
                 pid=t.pid,
-                launcher=discover_mod.launcher_kind(t.pid),
+                launcher=launcher,
                 agent=agent,
                 command=command,
                 size_bytes=sizes.get(key, 0),
+                marker_shell=(discover_mod.marker_shell(t.pid)
+                              if launcher == discover_mod.RELOADED else None),
             ))
     return sessions
 
@@ -1033,7 +1093,7 @@ def _report_never_exited(s: _Restarting) -> bool:
         return False
     # Read, not assumed: the marker has been ageing through the whole wait, so
     # quoting the TTL as a constant would describe a window that is partly gone.
-    left = _marker_life_left(s.cwd)
+    left = _marker_life_left(s)
     if left > 0:
         print(f"        its restart is still armed: it will restart if it "
               f"exits in the next {left:.0f}s")
@@ -1043,15 +1103,15 @@ def _report_never_exited(s: _Restarting) -> bool:
     return False
 
 
-def _marker_life_left(cwd: str) -> float:
-    """How much of `cwd`'s restart marker is left, in seconds, or 0.
+def _marker_life_left(s: _Restarting) -> float:
+    """How much of `s`'s restart marker is left, in seconds, or 0.
 
     The tab's own shell compares the marker's age at the moment its agent exits
     against the same TTL (`deploy.restart_loop`), so this is the same question
     that shell will ask, asked early.
     """
     try:
-        age = time.time() - restart_marker(cwd).stat().st_mtime
+        age = time.time() - s.marker.stat().st_mtime
     except OSError:
         return 0.0
     return max(0.0, deploy_mod.RESTART_MARKER_TTL_SECONDS - age)
@@ -1107,21 +1167,24 @@ def _reopen_in_a_new_tab(s: _Restarting) -> bool:
     """
     print(f"    {s.cwd} did not relaunch in place — its tab closed; reopening it")
     try:
-        restart_marker(s.cwd).unlink(missing_ok=True)
+        s.marker.unlink(missing_ok=True)
     except OSError as exc:
         # Swallowing this used to be safe-looking and was not. The tab opened
         # below DOES carry the restart loop, so a marker that survives here
         # outlives the tab that ignored it and fires on the user's next /exit,
         # restarting a session they meant to close. The docstring above says
         # deleting it is necessary; a failed delete has to be treated as
-        # exactly that, not as a shrug.
-        print(f"    [warn] could not clear {s.cwd}'s restart marker: {exc}")
-        print("        Not reopening it here — the new tab would inherit that "
-              "marker and restart on your next /exit.")
-        repo = tab_title(s.cwd)
-        print(f"        Delete {restart_marker(s.cwd)} and run "
-              f"`reloaded open {repo}`.")
-        return False
+        # exactly that, not as a shrug. Only the directory's is inherited,
+        # though: a shell's own is named by a pid the new tab's shell does
+        # not have, and the next sweep clears it.
+        if s.marker_shell is None:
+            print(f"    [warn] could not clear {s.cwd}'s restart marker: {exc}")
+            print("        Not reopening it here — the new tab would inherit "
+                  "that marker and restart on your next /exit.")
+            repo = tab_title(s.cwd)
+            print(f"        Delete {s.marker} and run "
+                  f"`reloaded open {repo}`.")
+            return False
     _launch_single_tab(s)
     if _wait_for_session(s.cwd) is None:
         print(f"    [warn] {s.cwd} did not come back — start it by hand")
@@ -1241,9 +1304,7 @@ def cmd_restart(args) -> int:
     if _restore_in_flight(args):
         return 1
 
-    before = _saved_repos(path)
-    layout_mod.save(lo, path)
-    _report_layout_change(before, lo)
+    _save_capture(lo, path, args)
     _print_capture_summary(lo, path)
 
     try:

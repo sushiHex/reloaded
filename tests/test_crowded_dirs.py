@@ -15,16 +15,13 @@ import pytest
 
 import reloaded.__main__ as main_mod
 import reloaded.discover as discover_mod
+import reloaded.win32 as win32_mod
 from reloaded.paths import norm
+from reloaded.win32 import Proc
 
 
-class _Proc:
-    def __init__(self, name, pid, cwd):
-        self.info = {"name": name, "pid": pid, "ppid": 1}
-        self._cwd = cwd
-
-    def cwd(self):
-        return self._cwd
+def _Proc(name, pid, cwd):
+    return types.SimpleNamespace(name=name, pid=pid, cwd=cwd)
 
 
 @pytest.fixture
@@ -32,12 +29,13 @@ def processes(monkeypatch):
     """Replace the process table. Everything here is a fake — nothing reaches
     the machine's own processes, which is what made an earlier draft of this
     take eight seconds and depend on what the developer had open."""
-    table = []
-    fake = types.SimpleNamespace(process_iter=lambda attrs=None: list(table))
-    monkeypatch.setattr(discover_mod, "_ps", lambda: fake)
-    monkeypatch.setitem(__import__("sys").modules, "psutil", fake)
-    monkeypatch.setattr(discover_mod, "_hosted_elsewhere", lambda p, names: False)
-    return table
+    procs = []
+    monkeypatch.setattr(win32_mod, "process_table",
+                        lambda: {p.pid: Proc(0, p.name, 0.0) for p in procs})
+    monkeypatch.setitem(__import__("sys").modules, "psutil", types.SimpleNamespace(
+        Process=lambda pid: types.SimpleNamespace(
+            cwd=lambda: {p.pid: p.cwd for p in procs}[pid], create_time=lambda: 0.0)))
+    return procs
 
 
 def test_one_agent_per_directory_is_not_crowded(processes):
@@ -70,6 +68,16 @@ def test_the_collapsed_session_map_is_unchanged(processes):
                   _Proc("claude.exe", 2, r"C:\repos\app")]
 
     assert len(discover_mod.live_sessions()) == 1
+
+
+def test_the_highest_pid_holds_a_shared_directory(processes):
+    """Which one survives the collapse is pid order, as psutil.process_iter
+    gave it - not whatever order the process table happens to list."""
+    processes += [_Proc("claude.exe", 9, r"C:\repos\app"),
+                  _Proc("codex.exe", 3, r"C:\repos\app")]
+
+    assert discover_mod.live_sessions() == {norm(r"C:\repos\app"): 9}
+    assert discover_mod.live_agents() == {norm(r"C:\repos\app"): "claude"}
 
 
 def test_status_warns_about_a_shared_directory(monkeypatch, tmp_path, capsys):

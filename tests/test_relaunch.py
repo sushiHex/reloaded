@@ -328,6 +328,26 @@ def test_a_looping_tab_is_fine_under_any_parent(desk):
     assert _run(desk) == 0
 
 
+def test_an_earlier_failure_here_is_said_before_restarting(desk):
+    """Issue #36: the next `/relaunch` in the directory is where a helper's
+    failure, logged after its session was gone, reaches anyone."""
+    import datetime
+
+    import reloaded.paths as paths_mod
+
+    at = datetime.datetime(2026, 10, 13, 9, 30, 5)
+    paths_mod.relaunch_attempt(CWD, at.timestamp()).write_text(
+        "failed\ncould not write to shell pid 10\n", encoding="utf-8")
+    said = []
+
+    relaunch_mod.relaunch(desk.session.pid, CWD, "claude", say=said.append)
+
+    assert said[0] == ("[relaunch] The /relaunch here at 2026-10-13 09:30:05 "
+                       "did not bring its session back: could not write to "
+                       "shell pid 10")
+    assert desk.spawned, "history is no reason not to restart"
+
+
 def test_the_dry_run_changes_nothing(desk):
     assert _run(desk, dry_run=True) == 0
     assert not desk.marker.exists()
@@ -406,7 +426,7 @@ def test_the_helper_is_started_through_an_intermediate(popen, tmp_path):
 
     assert len(popen) == 1
     assert "_start_helper(" in popen[0][0][-1]
-    relaunch_mod._start_helper(20, 1.0, 10, 1.0, "claude", "claude", "m")
+    relaunch_mod._start_helper(None, 20, 1.0, 10, 1.0, "claude", "claude", "m")
     assert "bring_back(" in popen[1][0][-1]
 
 

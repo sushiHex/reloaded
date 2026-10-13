@@ -49,6 +49,7 @@ arrangement in memory; save to persist it.
 | `m 1.2 2` | Move window 1's second tab into window 2. |
 | `o 1.2 1` | Move that tab to the first position in its window. |
 | `a 1 my-project` | Add a repository to window 1 and pin it. |
+| `a 1 "C:\work repos\client"` | Add one by absolute path; quote a path with spaces. |
 | `d 1.2` | Delete a saved tab. |
 | `n` | Add an empty window, copying the last window's geometry. |
 | `c` | Recapture the live arrangement, retaining pinned tabs. |
@@ -58,7 +59,12 @@ arrangement in memory; save to persist it.
 Indices start at 1. Pinned entries survive later captures when their repository
 is not running. If the added repo is running, the editor reads its agent kind
 and command; otherwise it defaults to Claude Code. The editor splits input on
-whitespace, so use the JSON layout for paths containing spaces. Arrange live
+whitespace; double quotes keep whitespace inside an argument and are removed,
+joining with any text they touch (`C:\"work repos"\client` is one argument).
+Backslashes are never escapes, so `"C:\work repos\client\"` keeps its trailing
+separator; a Windows path cannot contain `"`, so there is nothing to escape. An
+unterminated quote is reported and the line is ignored, whatever command it
+holds. Arrange live
 windows and recapture when changing geometry is easier on screen.
 
 `up` skips already-running repositories and missing directories, and opens the
@@ -207,7 +213,11 @@ A Reloaded tab replays its captured command, so what comes back is whatever
 that command resumes — `--continue`, by default, the directory's latest
 conversation.
 
-The helper records what it did in `~/.reloaded/reloaded.log`. `--self` cannot
+The helper records what it did in `~/.reloaded/reloaded.log`. If a restart's
+helper could not do its part, or stopped without saying, the next `--self` in
+that directory says so before it starts. Its part ends at handing the session
+to the tab's loop or writing the command into the shell; whether that command
+then starts is not checked. `--self` cannot
 take repository names. The quit keys have been verified live for Claude Code
 only; Codex's are its double Ctrl+C, written the same way, and a session that
 ignores them falls back to being ended by pid.

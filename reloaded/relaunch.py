@@ -48,6 +48,8 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as w
+import datetime
+import msvcrt
 import os
 import pathlib
 import subprocess
@@ -56,6 +58,7 @@ import time
 
 from . import agents as agents_mod
 from . import discover as discover_mod
+from . import paths as paths_mod
 from . import win32 as win32_mod
 from .deploy import RESTART_MARKER_TTL_SECONDS
 from .paths import log_path, restart_marker, shell_marker, stamped
@@ -103,6 +106,8 @@ _k32 = ctypes.WinDLL("kernel32", use_last_error=True)
 def relaunch(pid: int, cwd: str, kind: str, *, dry_run: bool = False,
              say=print) -> int:
     """Have session `pid` quit and its tab bring it back. 0 on hand-off."""
+    if not dry_run:
+        report_earlier(cwd, say)
     ps = discover_mod._ps()
     try:
         session = ps.Process(pid)
@@ -138,7 +143,7 @@ def relaunch(pid: int, cwd: str, kind: str, *, dry_run: bool = False,
         loop = " ".join(shell.cmdline()) if looping else ""
     except Exception:
         loop = ""
-    own = not looping or "$rlOwn=" in loop
+    own = not looping or discover_mod.OWN_MARKER in loop
     marker = shell_marker(shell.pid) if own else restart_marker(cwd)
     # The command, not just a flag: a loop runs it in place of the one its tab
     # was launched with (deploy.restart_loop), so a looping tab comes back to
@@ -180,6 +185,71 @@ def _disarm(marker, say) -> None:
     except OSError as exc:
         say(f"    The restart marker could not be removed ({exc}): quitting "
             f"within {RESTART_MARKER_TTL_SECONDS}s would relaunch the session.")
+
+
+def report_earlier(cwd: str, say=print) -> None:
+    """Say what became of earlier `/relaunch`es here that nobody has read yet.
+
+    Once a session is gone, its helper can only write to the log, and nobody
+    reads that unprompted. Its record (_spawn_helper) is how the next one
+    here finds out. A record still held is an attempt still running, and is
+    left alone. One that is free is claimed by renaming it, so that two
+    readers cannot both take it, and read: a helper that finished wrote what
+    happened; one that stopped first wrote nothing, or not all of it.
+
+    A reader that dies between claiming and saying loses that report. Picking
+    such claims up again was tried, and let a second, living reader take a
+    claim the first was about to report: one failure, said twice.
+
+    Never in the way of the restart it runs ahead of: this is history.
+    """
+    try:
+        records = paths_mod.relaunch_attempts(cwd)
+    except OSError:
+        return
+    for path in records:
+        claimed = path.with_suffix(".claimed")
+        try:
+            path.rename(claimed)
+        except OSError:
+            continue  # still held, or taken by another reader
+        try:
+            text = claimed.read_bytes().decode("utf-8", errors="replace")
+        except OSError:
+            text = ""
+        # Written whole, in one write ending in a newline (_settle); anything
+        # short of that is a helper that stopped while writing.
+        lines = text.splitlines() if text.endswith("\n") else []
+        line = _earlier(path.name, *(lines + ["", ""])[:2])
+        if line:
+            say(line)
+        _try_unlink(claimed)
+
+
+def _earlier(name: str, status: str, said: str) -> str:
+    """What to say about one earlier attempt, from its record."""
+    if status in ("ok", "reported"):
+        return ""
+    try:
+        at = datetime.datetime.fromtimestamp(int(name.split(".")[1]) / 1000)
+        when = at.strftime("%Y-%m-%d %H:%M:%S")
+    except (IndexError, ValueError, OverflowError, OSError):
+        when = "an unknown time"
+    if status == "cancelled":
+        return f"[relaunch] The /relaunch here at {when} was called off: {said}"
+    if status == "failed":
+        return (f"[relaunch] The /relaunch here at {when} did not bring its "
+                f"session back: {said}")
+    return (f"[relaunch] The /relaunch here at {when} never reported back: its "
+            f"helper stopped without saying how it went. Anything it did "
+            f"write is in {log_path()}.")
+
+
+def _try_unlink(path) -> None:
+    try:
+        path.unlink()
+    except OSError:
+        pass
 
 
 def _resume_command(session, kind: str) -> str:
@@ -241,33 +311,85 @@ def _spawn_helper(session, shell, kind: str, command: str, marker,
 
     Bootstrapped through sys.path rather than the `reloaded` shim, which may
     not be on the PATH this process hands down.
+
+    The attempt is recorded here, before the spawn, for the next `/relaunch`
+    in this directory to read (report_earlier): a record only a helper that
+    lived could write would never report the ones that died. The record is
+    held open from creation on - by this process until the intermediate has
+    exited, and by the handle each child inherits from the moment it exists -
+    and Windows refuses to rename a file held that way. So for exactly as long
+    as any part of this attempt is running, the record cannot be claimed:
+    "still working" is the helper's real state, not a sum of timeouts.
+    Measured through a venv's redirector, which holds it for its child.
     """
     call = (session.pid, session.create_time(), shell.pid, shell.create_time(),
             kind, command, str(marker), stale)
-    intermediate = _detached("_start_helper", call)
+    record = _open_record(session)
+    lease = None if record is None else msvcrt.get_osfhandle(record.fileno())
+    call += ("" if record is None else record.name,)
     try:
-        code = intermediate.wait(timeout=30)
-    except subprocess.TimeoutExpired:
-        intermediate.kill()
-        intermediate.wait(timeout=10)  # gone before the marker is disarmed
-        raise OSError("the helper's launcher did not finish starting it")
-    if code != 0:
-        raise OSError(f"the helper's launcher exited {code}")
+        intermediate = _detached("_start_helper", (lease,) + call, lease)
+        try:
+            code = intermediate.wait(timeout=30)
+        except subprocess.TimeoutExpired:
+            intermediate.kill()
+            intermediate.wait(timeout=10)  # gone before the marker is disarmed
+            raise OSError("the helper's launcher did not finish starting it")
+        if code != 0:
+            raise OSError(f"the helper's launcher exited {code}")
+    except BaseException:
+        # The caller says this failed, now, to someone reading, so the record
+        # says that much for the next one. A helper that did start holds it
+        # and overwrites this with its own ending.
+        if record is not None:
+            try:
+                record.write("reported\nthe helper could not be started\n")
+            except OSError:
+                pass
+        raise
+    finally:
+        if record is not None:
+            record.close()
 
 
-def _start_helper(*call) -> None:
-    """Runs in the intermediate: start the helper, and exit."""
-    _detached("bring_back", call)
+def _open_record(session):
+    """A new, open, inheritable record of this attempt, or None when there is
+    none - the session's directory unreadable, say. Its absence costs only
+    the report, never the restart."""
+    try:
+        path = paths_mod.relaunch_attempt(session.cwd(), time.time())
+        record = open(path, "x", encoding="utf-8")
+    except Exception:
+        return None
+    try:
+        os.set_handle_inheritable(msvcrt.get_osfhandle(record.fileno()), True)
+    except OSError:
+        record.close()
+        _try_unlink(path)
+        return None
+    return record
 
 
-def _detached(function: str, call: tuple):
+def _start_helper(lease, *call) -> None:
+    """Runs in the intermediate: start the helper, handing on the lease on its
+    record, and exit."""
+    _detached("bring_back", call, lease)
+
+
+def _detached(function: str, call: tuple, lease: int | None = None):
     """Run `function(*call)` from this module in a new process: windowless,
-    its own process group, out of any job, logging to the log file."""
+    its own process group, out of any job, logging to the log file. `lease`
+    is a handle the process inherits, and nothing else is."""
     package_dir = str(pathlib.Path(__file__).resolve().parents[1])
     bootstrap = (f"import sys; sys.path.insert(0, {package_dir!r}); "
                  f"from reloaded.relaunch import {function}; "
                  f"{function}(*{call!r})")
     flags = 0x08000000 | 0x00000200 | 0x01000000  # NO_WINDOW|NEW_GROUP|BREAKAWAY
+    inherit = {}
+    if lease is not None:
+        info = subprocess.STARTUPINFO()
+        info.lpAttributeList = {"handle_list": [lease]}
+        inherit["startupinfo"] = info
     try:
         account = open(log_path(), "a", buffering=1, encoding="utf-8")
     except OSError:
@@ -275,7 +397,8 @@ def _detached(function: str, call: tuple):
     try:
         return subprocess.Popen([sys.executable, "-u", "-c", bootstrap],
                                 creationflags=flags, stdin=subprocess.DEVNULL,
-                                stdout=account, stderr=account, close_fds=True)
+                                stdout=account, stderr=account, close_fds=True,
+                                **inherit)
     finally:
         if account is not subprocess.DEVNULL:
             account.close()
@@ -314,18 +437,48 @@ def _end(session) -> None:
 
 def bring_back(session_pid: int, session_created: float, shell_pid: int,
                shell_created: float, kind: str, command: str,
-               marker: str, stale: bool = False) -> None:
+               marker: str, stale: bool = False, record: str = "") -> None:
     """The helper: have the session quit, then see it back into its tab.
 
     `stale`: the tab's loop is older than marker commands and will replay a
     command that brings back no conversation.
 
-    Runs detached, so it prints to the log rather than to anyone.
+    Runs detached, so it prints to the log rather than to anyone - and leaves
+    how it ended in `record`, for the next `/relaunch` here (report_earlier).
+    "ok" means it did its part: handed the session to its loop, or wrote the
+    command into its shell. Whether that command then starts is not something
+    it watches.
     """
-    marker_path = pathlib.Path(marker)
+    try:
+        status, said = _bring_back(session_pid, session_created, shell_pid,
+                                   shell_created, kind, command,
+                                   pathlib.Path(marker), stale)
+    except BaseException as exc:
+        _settle(record, "failed", f"the helper stopped on an error: {exc!r}")
+        raise
+    _settle(record, status, said)
+    _note(said)
 
-    def note(line: str) -> None:
-        print(stamped(f"[relaunch] {line}"), flush=True)
+
+def _note(line: str) -> None:
+    print(stamped(f"[relaunch] {line}"), flush=True)
+
+
+def _settle(record: str, status: str, said: str) -> None:
+    """Write how this attempt ended into its record. Written whole, once: a
+    reader takes an empty or unreadable record as one that never reported."""
+    if not record:
+        return
+    try:
+        pathlib.Path(record).write_text(f"{status}\n{said}\n", encoding="utf-8")
+    except OSError as exc:
+        _note(f"could not record how this ended ({exc})")
+
+
+def _bring_back(session_pid, session_created, shell_pid, shell_created, kind,
+                command, marker_path, stale):
+    """bring_back's work. Returns (status, what to say): "ok", "failed", or
+    "cancelled" for a restart called off with its session left running."""
 
     # Not before this process is out of the session's tree: the quit ends the
     # tree, and the intermediate that started this may not have exited yet.
@@ -333,33 +486,33 @@ def bring_back(session_pid: int, session_created: float, shell_pid: int,
         # Quit now and the session's cleanup could end this too, before it
         # brings a plain tab back. Calling it off loses nothing.
         marker_path.unlink(missing_ok=True)
-        note(f"still inside pid {session_pid}'s process tree after "
-             f"{CALLER_WAIT_SECONDS:.0f}s - restart called off, left running")
-        return
+        return "cancelled", (f"still inside pid {session_pid}'s process tree "
+                             f"after {CALLER_WAIT_SECONDS:.0f}s - restart "
+                             "called off, left running")
     # The marker is the go-ahead. `relaunch` removes it when it gives up on a
     # helper that was slow to start - one that may yet start, like this - and
     # a session quit with no marker would not come back.
     if not marker_path.exists():
-        note(f"pid {session_pid}: the restart was called off - left running")
-        return
+        return "cancelled", (f"pid {session_pid}: the restart was called off "
+                             "- left running")
     try:
         send_keys(session_pid, agents_mod.for_kind(kind).quit_keys)
     except OSError as exc:
-        note(f"could not write the quit keys to pid {session_pid}: {exc}")
+        _note(f"could not write the quit keys to pid {session_pid}: {exc}")
 
     if not _wait_until_gone(session_pid, session_created, QUIT_WAIT_SECONDS):
-        note(f"pid {session_pid} did not quit in {QUIT_WAIT_SECONDS:.0f}s - "
-             "ending it")
+        _note(f"pid {session_pid} did not quit in {QUIT_WAIT_SECONDS:.0f}s - "
+              "ending it")
         # Fresh, so that the loop still takes it however long the wait was.
         marker_path.write_text(command, encoding="utf-8")
         try:
             _end(discover_mod._ps().Process(session_pid))
         except Exception as exc:
-            note(f"could not end pid {session_pid}: {exc}")
+            _note(f"could not end pid {session_pid}: {exc}")
         if not _wait_until_gone(session_pid, session_created, EXIT_WAIT_SECONDS):
             marker_path.unlink(missing_ok=True)
-            note(f"pid {session_pid} did not end - nothing written to its tab")
-            return
+            return "failed", (f"pid {session_pid} did not end - nothing "
+                              "written to its tab")
 
     # A loop takes the marker on the line after its agent returns.
     deadline = time.time() + LOOP_GRACE_SECONDS
@@ -371,32 +524,30 @@ def bring_back(session_pid: int, session_created: float, shell_pid: int,
         marker_path.unlink()
     except FileNotFoundError:
         if not stale:
-            note(f"pid {session_pid} ended; its tab's loop is bringing it back")
-            return
+            return "ok", (f"pid {session_pid} ended; its tab's loop is "
+                          "bringing it back")
         # Ended on startup, the replay leaves the loop at its prompt: no
         # marker, so it breaks, and too young for it to close the tab.
         if not _stop_replay(shell_pid, shell_created, kind):
-            note(f"pid {session_pid} ended; its tab's loop predates exact "
-                 "relaunch, and its replay could not be stopped in time")
-            return
-        note(f"pid {session_pid} ended; stopped its tab's old loop replaying "
-             "how the tab was launched")
+            return "failed", (f"pid {session_pid} ended; its tab's loop "
+                              "predates exact relaunch, and its replay could "
+                              "not be stopped in time")
+        _note(f"pid {session_pid} ended; stopped its tab's old loop replaying "
+              "how the tab was launched")
     except OSError as exc:
         # Still there, so nothing took it: bring the session back anyway. The
         # marker expires on its own; the tab would not.
-        note(f"could not remove the restart marker ({exc}); it expires in 2 min")
+        _note(f"could not remove the restart marker ({exc}); it expires in 2 min")
 
     # Nobody took it, so this is a plain shell sitting at its prompt.
     if not _alive(shell_pid, shell_created):
-        note(f"pid {session_pid} ended, but its shell (pid {shell_pid}) went "
-             "with it - reopen it by hand")
-        return
+        return "failed", (f"pid {session_pid} ended, but its shell (pid "
+                          f"{shell_pid}) went with it - reopen it by hand")
     try:
         type_into_console(shell_pid, command)
     except OSError as exc:
-        note(f"could not write to shell pid {shell_pid}: {exc}")
-        return
-    note(f"pid {session_pid} ended; started `{command}` in its tab")
+        return "failed", f"could not write to shell pid {shell_pid}: {exc}"
+    return "ok", f"pid {session_pid} ended; started `{command}` in its tab"
 
 
 def _stop_replay(shell_pid: int, shell_created: float, kind: str) -> bool:

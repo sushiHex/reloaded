@@ -29,7 +29,7 @@ Titles now only order a window's tabs. A restore then skips a tab only when that
 directory and agent kind are both already running.
 
 The rest of the tool is still keyed by normalized working directory: live
-discovery for restarts, restart markers, and teardown's aim. `status` notes any
+discovery for restarts, and teardown's aim. `status` notes any
 directory hosting more than one agent, since `restart` refuses one and `down`
 may quit only one of its sessions. A restored layout records an agent kind and
 command, not a separate conversation ID. See
@@ -45,14 +45,13 @@ other, and the outcome is reported against the wrong one. `restart --self`
 does not refuse: it takes its session's pid from its own process ancestry and
 ends exactly that process.
 
-It still arms the directory's marker, because that is how a loop is told to
-relaunch, and the marker does not name a session. A second looping session in
-the same directory that exits while the marker is armed — from just before the
-caller is ended until its own loop, or for a hand tab the helper, takes it —
-would take it instead, and the caller would not come back. Closing
-that needs a marker that names a session rather than a directory, which the
-launcher's generated PowerShell cannot be given retroactively — it is already
-running in every open tab.
+Where the session's loop reads a marker of its own (`$rlOwn=` in its shell's
+command line), both write that one, named by the shell's pid, so a second loop
+in the same directory cannot take the request. Otherwise they write the
+directory's, which every loop reads: a loop launched before shells had markers
+of their own, one typed into a hand-started shell (whose command line does not
+show it), or a shell that cannot be read. There a sibling that exits first
+takes the request, and the caller does not come back.
 
 ## Capture and placement
 
@@ -73,6 +72,14 @@ rather than the run; a loss is printed as well, since the capture summary shows
 what remains and never what went. The reconcile task rewrites the layout every
 five minutes under `pyw.exe` with no console, so before this it changed the one
 durable artifact thousands of times without leaving a trace.
+
+A refusal that recurs every reconcile is recorded once, then every six hours
+as "still refusing", and closed by the next save of that layout (`refusal.py`).
+Each run is a fresh process, so what has been said lives in a small per-layout
+file under `~/.reloaded/refusals/`. It records what the log was told, not
+anything about the user's sessions, so losing or racing on it costs at most a
+repeated or missing line, never a hidden new refusal. That is why it carries
+none of a layout's recovery or locking concerns (#20).
 
 Pinned editor entries survive capture even when their sessions are absent.
 A capture refuses to drop previously saved repositories that are still running
@@ -127,14 +134,19 @@ tabs and holdouts remain open; agent processes are not forcibly killed.
 
 ## Restart markers
 
-A named restart arms a marker as each target's turn begins. On agent exit, its
-shell consumes the marker and starts the command again in the same tab. Markers
-expire after 120 seconds and are consumed once. If deletion fails, the loop
-stops instead of repeatedly launching against an unconsumed marker.
+A named restart arms a marker as each target's turn begins, unless that
+session has already ended on its own. On agent exit, its shell consumes the
+marker and starts the command again in the same tab. A loop reads
+`shell-<its pid>.marker` first and its directory's `<sha256(cwd)[:16]>.marker`
+second; requests go to the first wherever the loop has one. Markers expire
+after 120 seconds and are consumed once. If deletion fails, the loop stops
+instead of repeatedly launching against an unconsumed marker.
 
 The restart coordinator leaves timed-out markers in place because a slow
 session may still exit within the valid interval. The launcher handles expiry;
-subsequent named restarts sweep stale markers.
+subsequent named restarts sweep stale markers, re-checking each one's age just
+before deleting it, so a concurrent restart can lose its marker only by
+re-arming it in the instant between the two.
 
 For hand-started sessions, Reloaded types a short command invoking a generated
 PowerShell script into the waiting shell. Keeping the full launcher in a file
@@ -174,11 +186,26 @@ Claude Code ends the process tree of the command it is running when it quits,
 and the command is still running then - waiting for that quit - so a helper
 started from it directly died with the session. It is spawned windowless and
 with breakaway-from-job, and nothing changes if Windows refuses that. The
-helper removes the marker if the session outlives its wait. Its only report is
-the log.
+helper removes the marker if the session outlives its wait.
+
+Once the session is gone, the helper has nobody to tell, so each attempt
+leaves a record in `~/.reloaded/attempts/` for the next `--self` in that
+directory to read. The dispatching process creates it before the spawn, since
+a helper that dies cannot be relied on to; the helper writes how it ended
+into it. One file per attempt, named by directory, dispatch time and a token,
+so overlapping attempts never settle each other. The record is held open from
+creation on - by the dispatcher until the intermediate exits, and by the
+handle each child inherits - and Windows refuses to rename a file held that
+way. A reader claims a record by renaming it, so "still running" is the OS's
+answer about the helper rather than a sum of timeouts, and two readers cannot
+take one record. A record whose helper wrote nothing, or not all of it, is
+reported as never having reported back. A reader that dies between claiming
+and saying loses that report; re-reading abandoned claims let a second, living
+reader repeat one that was about to be said. Records wait for the next `--self`
+in their directory, so there are at most a few per directory ever restarted.
 
 There is no generation or nonce on a restart marker. Overlapping restarts of
-one repository collapse into one request; full and named restarts do not
+one session collapse into one request; full and named restarts do not
 coordinate. Reconcile can temporarily capture the gap between old and new
 processes. If a fallback must open a new tab, Terminal's most-recent window may
 receive it instead of the original one.

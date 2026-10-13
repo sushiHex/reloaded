@@ -5,6 +5,7 @@ reads what Claude Code and Windows already record.
 """
 from __future__ import annotations
 
+import itertools
 import json
 import os
 import pathlib
@@ -12,7 +13,7 @@ import re
 import unicodedata
 from collections import Counter
 from dataclasses import dataclass
-from typing import Container, NamedTuple
+from typing import Container, Iterator, NamedTuple
 
 from . import pwsh
 from .agents import DEFAULT_KIND
@@ -189,6 +190,26 @@ def launcher_kind(pid: int) -> str:
         return HAND
 
 
+# In the command line of a loop launched since shells had markers of their
+# own: it checks paths.shell_marker(its pid) before its directory's.
+OWN_MARKER = "$rlOwn="
+
+
+def marker_shell(pid: int) -> int | None:
+    """The pid of the loop running session `pid`, if it reads its own marker.
+
+    Addressed there, a request reaches this session and no sibling in the same
+    directory. None for a hand-started session, a shell whose command line
+    does not carry OWN_MARKER, or one that cannot be read: those are sent the
+    directory's, which every loop reads.
+    """
+    try:
+        shell = _ps().Process(pid).parent()
+        return shell.pid if OWN_MARKER in " ".join(shell.cmdline()) else None
+    except Exception:
+        return None
+
+
 # Codex also runs as a child of its desktop app, where it is not a terminal tab
 # at all - both are live on this machine at once. Excluding by image name would
 # lose the real tab along with it, so the parent process is what distinguishes
@@ -197,12 +218,34 @@ DESKTOP_HOSTS = ("chatgpt.exe",)
 
 # How far up to look for a host. The observed nesting is three hops
 # (codex.exe <- python.exe <- hardline-mcp.exe <- claude.exe); a tab's agent
-# has its shell as the immediate parent. Bounded because a pid loop is cheaper
-# to survive than to diagnose.
+# has its shell as the immediate parent.
 _HOST_SEARCH_DEPTH = 8
 
+# psutil's create_time() and the table's agree exactly (measured: 915 of 915
+# processes); the slack only absorbs rounding between the two conversions.
+_SAME_START_SECONDS = 0.001
 
-def _hosted_elsewhere(proc, agent_images: Container[str]) -> bool:
+
+def _ancestry(pid: int, table: dict) -> Iterator[int]:
+    """The pids above `pid`, nearest first, read from one `win32.process_table`.
+
+    A parent pid outlives its process, and Windows hands it out again, so a
+    recorded parent is only believed if it is no younger than its child -
+    psutil.Process.parent()'s own rule, checked against the same snapshot
+    instead of a fresh one per hop. A pid loop ends the walk.
+    """
+    seen = {pid}
+    child = table.get(pid)
+    while child is not None:
+        parent = table.get(child.ppid)
+        if child.ppid in seen or parent is None or parent.created > child.created:
+            return
+        yield child.ppid
+        seen.add(child.ppid)
+        child = parent
+
+
+def _hosted_elsewhere(pid: int, table: dict, agent_images: Container[str]) -> bool:
     """Whether this agent process is running inside something that is not a tab.
 
     Two shapes, one rule: an agent nested inside another program is that
@@ -221,24 +264,47 @@ def _hosted_elsewhere(proc, agent_images: Container[str]) -> bool:
     keying by cwd let last-writer-wins decide what kind that directory was -
     and a Codex verdict there sends Ctrl+C to a Claude session.
 
-    An unreadable ancestor ends the walk and the process is kept. The common
-    cause is a permissions error, and dropping a real session over one is the
-    worse failure - the same trade the desktop-host check has always made.
+    A chain that ends - a parent that has exited, or a pid since reused - ends
+    the search and the process is kept: dropping a real session is the worse
+    failure.
     """
-    for _hop in range(_HOST_SEARCH_DEPTH):
-        try:
-            proc = proc.parent()
-        except Exception:
-            return False
-        if proc is None:
-            return False
-        try:
-            name = (proc.name() or "").lower()
-        except Exception:
-            return False
+    for ancestor in itertools.islice(_ancestry(pid, table), _HOST_SEARCH_DEPTH):
+        name = table[ancestor].name.lower()
         if name in DESKTOP_HOSTS or name in agent_images:
             return True
     return False
+
+
+def _agent_processes(table: dict) -> Iterator[tuple[int, str, str]]:
+    """(pid, kind, cwd) for every agent process in `table` that is a session
+    of its own, in pid order - the order psutil.process_iter gave.
+
+    Names and ancestry come from the table; psutil is asked only for the cwd
+    of what is left, which nothing cheaper records - and only from the
+    process the table described: a pid that has exited and been reused since
+    starts later, and is the next sweep's to see. Without psutil there is
+    nothing, as everywhere else here.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return
+    from . import agents as agents_mod
+
+    by_process = agents_mod.BY_PROCESS
+    for pid in sorted(table):
+        kind = by_process.get(table[pid].name.lower())
+        if kind is None or _hosted_elsewhere(pid, table, by_process):
+            continue
+        try:
+            proc = psutil.Process(pid)
+            if abs(proc.create_time() - table[pid].created) > _SAME_START_SECONDS:
+                continue
+            cwd = proc.cwd()
+        except Exception:
+            continue
+        if cwd:
+            yield pid, kind, cwd
 
 
 class Session(NamedTuple):
@@ -261,31 +327,14 @@ def sessions() -> list[Session]:
     sessions in one directory share a title, and keyed on the directory the
     second one was never saved, so it was never restored.
     """
-    try:
-        import psutil
-    except ImportError:
-        return []
-
-    from . import agents as agents_mod
     from . import win32
 
-    by_process = agents_mod.BY_PROCESS
+    table = win32.process_table()
     shells = win32.tab_shells()
-    found: list[Session] = []
-    for proc in psutil.process_iter(["pid", "name", "create_time"]):
-        kind = by_process.get((proc.info.get("name") or "").lower())
-        if kind is None or _hosted_elsewhere(proc, by_process):
-            continue
-        try:
-            cwd = proc.cwd()
-            line = [p.pid for p in proc.parents()]
-        except Exception:
-            continue
-        if cwd:
-            hwnd = next((shells[pid] for pid in line if pid in shells), None)
-            found.append(Session(int(proc.info["pid"]), cwd, kind,
-                                 float(proc.info.get("create_time") or 0), hwnd))
-    return found
+    return [Session(pid, cwd, kind, table[pid].created,
+                    next((shells[a] for a in _ancestry(pid, table) if a in shells),
+                         None))
+            for pid, kind, cwd in _agent_processes(table)]
 
 
 def running() -> Counter:
@@ -317,7 +366,7 @@ def claim_running(running: Counter, live: dict[str, int], cwd: str,
 
 class Census(NamedTuple):
     """Every live agent session from one process walk: normalized cwd ->
-    [(pid, kind), ...] in the order psutil reported them.
+    [(pid, kind), ...] in pid order.
 
     The directory-keyed answers are views of it, so a caller that wants
     several - `status` wants all three - pays one walk rather than one each.
@@ -346,36 +395,18 @@ class Census(NamedTuple):
 
 def census() -> Census:
     """The walk under every directory-keyed answer below."""
-    try:
-        import psutil
-    except ImportError:
-        return Census({})
+    from . import win32
 
-    from . import agents as agents_mod
-
-    by_process = agents_mod.BY_PROCESS
     found: dict[str, list[tuple[int, str]]] = {}
-    # Never "ppid": on Windows psutil answers each one with a snapshot of every
-    # process, so asking for it here took 16.7s of a 17s sweep (805 processes).
-    for proc in psutil.process_iter(["pid", "name"]):
-        kind = by_process.get((proc.info.get("name") or "").lower())
-        if kind is None:
-            continue
-        if _hosted_elsewhere(proc, by_process):
-            continue
-        try:
-            cwd = proc.cwd()
-        except Exception:
-            continue
-        if cwd:
-            found.setdefault(norm(cwd), []).append((int(proc.info["pid"]), kind))
+    for pid, kind, cwd in _agent_processes(win32.process_table()):
+        found.setdefault(norm(cwd), []).append((pid, kind))
     return Census(found)
 
 
 def sweep() -> tuple[dict[str, int], dict[str, list[str]]]:
     """Live sessions by cwd, and the directories that collapsed, in one walk:
-    a caller that wants them separately pays two `process_iter` sweeps for
-    one question."""
+    a caller that wants them separately pays two process sweeps for one
+    question."""
     c = census()
     return c.live(), c.crowded()
 

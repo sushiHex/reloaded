@@ -9,11 +9,14 @@ First capture the arrangement you want and verify its launch commands with
 runs, and resolve any agent sign-in or directory-trust prompts in its tab.
 
 The automation runs through `pyw.exe -3`, independently of your pipx or virtual
-environment. Install its dependencies into the Python selected by that launcher:
+environment, so its Python needs `psutil` and `uiautomation` of its own.
+Before it writes anything, `install-tasks` runs `pyw.exe -3` from its own
+environment, the way both entries will, and imports Reloaded and both
+dependencies. If that fails it installs nothing and
+names the interpreter and the error. When a dependency is missing, it also
+prints the `pip install` command for that interpreter:
 
 ```powershell
-py -3 -m pip install psutil uiautomation
-py -3 -c "import psutil, uiautomation; print('Automation dependencies available')"
 reloaded install-tasks
 ```
 
@@ -26,6 +29,14 @@ reloaded --layout work --repos-root "D:\repos" install-tasks
 
 Installing again replaces the entries with those settings; this is one
 automation setup per user, not a separate task pair for every layout.
+
+A failed install puts back what was there before: the previous Startup entry
+(or none) and the previous scheduled task definition (or none), so the two
+never disagree about layout or root. If either cannot be put back, or whether
+the task changed cannot be told, the output says so. This covers failures the
+install sees. It is not a transaction: the new Startup entry is in place while
+the task registers, an install that is killed partway does not roll back, and
+two installs run at once can undo each other.
 
 | Entry | Behavior |
 | --- | --- |
@@ -97,8 +108,10 @@ automation, so a later sign-in can restore the saved layout again.
 | --- | --- |
 | `~/.reloaded/layouts/<name>.json` | Saved windows, tabs, geometry, and launch commands. |
 | `~/.reloaded/reloaded.log` | Unattended deployment output, readiness results, crash reports, and every change a capture made to the layout. |
+| `~/.reloaded/refusals/` | Which capture refusal the log last reported, one file per layout, so a repeating one is not written every run. |
 | `~/.reloaded/restart/` | Short-lived restart markers. |
 | `~/.reloaded/relaunch/` | Launcher scripts used to upgrade hand-started tabs. |
+| `~/.reloaded/attempts/` | One record per `restart --self`, read by the next one in that directory. |
 
 In Windows, `~` denotes your user profile directory. To inspect the log in
 PowerShell:
@@ -112,6 +125,17 @@ gained or lost, with full paths, and any refusal to overwrite — whether or not
 the run was attended. It writes nothing when the set of repositories is
 unchanged, so the log stays short enough to skim: a capture every five minutes
 that said "same as last time" would bury the one line that matters.
+
+Refusals follow the same rule. A capture that cannot read any tab while
+sessions are running, or cannot reach Windows Terminal's tabs at all, is
+recorded as a refusal too. The first refusal is recorded; the same refusal
+again is recorded only every six hours, as `still refusing, since <time> (<n>
+times)`; and the next save of that layout records how many refusals preceded it
+and since when. A different refusal is recorded at once. What has already been
+said is kept per layout in `~/.reloaded/refusals/`.
+
+Past 1 MB the log is moved to `reloaded.log.1`, replacing any previous one, and
+a new log is started.
 
 ```
 2026-09-18 01:01:54  [reloaded] layout gained 1 (c:\users\kfaim\repos\kakeibo)
@@ -131,7 +155,7 @@ point of writing them down.
 | `capture`/`edit` reports missing UI Automation | Install `uiautomation` into the interpreter running Reloaded; the scheduled interpreter may differ from the interactive one. |
 | Zero sessions or unmatched tabs | Confirm a terminal agent is running and `psutil` is installed. Check titles and repository-root matching. Desktop and nested agents are excluded intentionally. |
 | Capture refuses to replace a layout | Previously saved sessions are still running but did not match captured tabs. Let windows settle and retry; use `--force` only to accept that omission. |
-| Logon restores nothing | Inspect `reloaded.log`, confirm the saved layout exists, check the registered package path, and test imports with `py -3`. |
+| Logon restores nothing | Inspect `reloaded.log`, confirm the saved layout exists, check the registered package path, and re-run `install-tasks`, which checks the scheduled interpreter. |
 | A tab opens without an agent | Read the tab's startup error or trust prompt. Verify the captured executable is on PATH and the repository exists. |
 | `down` or `restart` times out | Read the per-session result. Active prompts can consume quit keys; finish the work and retry the intended target. A waiting restart marker may still be active. |
 | Geometry is wrong | Check `reloaded status` for changed monitors and the Terminal version. Placement can fall back when a window cannot be identified. |
