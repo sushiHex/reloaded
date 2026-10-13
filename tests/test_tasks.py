@@ -26,6 +26,17 @@ from reloaded.tasks import (
 
 ROOT = r"C:\repos"
 
+# The real ones, taken before the fixture below replaces them on the module.
+_real_preflight = tasks_mod._preflight
+_real_run_powershell = tasks_mod._run_powershell
+
+
+@pytest.fixture(autouse=True)
+def _interpreter_is_fine(monkeypatch):
+    """The preflight starts a real interpreter, which no test may do; the ones
+    about the preflight call `_real_preflight` with subprocess.run faked."""
+    monkeypatch.setattr(tasks_mod, "_preflight", lambda package_dir: "")
+
 
 def test_vbs_quote_wraps_in_double_quotes():
     assert _vbs_quote("hello") == '"hello"'
@@ -351,6 +362,7 @@ def _mock_powershell(monkeypatch, returncode, stdout="", stderr=""):
         # is load-bearing: powershell is console-subsystem, so without this
         # flag it gets a visible window - and install/uninstall are reachable
         # from a windowless parent.
+        assert argv[0] == "powershell", f"not PowerShell: {argv[0]!r}"
         assert kwargs.get("creationflags") == readiness_mod.NO_WINDOW, (
             "PowerShell spawned without CREATE_NO_WINDOW"
         )
@@ -457,10 +469,314 @@ def test_install_leaves_a_working_launcher_when_the_write_fails(
     assert not list(fake_startup.glob("*.tmp")), "left a temp file behind"
 
 
-def test_install_fails_cleanly_when_task_registration_is_denied(fake_startup, monkeypatch, tmp_path):
-    _mock_powershell(monkeypatch, 1, stderr="Access is denied.")
+def test_install_fails_cleanly_when_task_registration_is_denied(
+        fake_startup, monkeypatch, tmp_path, capsys):
+    _mock_powershell(monkeypatch, 1, stdout="TASK:KEPT\n", stderr="Access is denied.")
     rc = install(str(tmp_path / "pkg"), "default", ROOT)
     assert rc != 0
+    out = capsys.readouterr().out
+    assert "Access is denied." in out, "failed for some other reason"
+    assert "is as it was before this install" in out
+
+
+# ── a failed install leaves both launchers as they were (#23) ─────────────
+
+
+def test_a_first_install_that_fails_removes_the_launcher_it_wrote(
+        fake_startup, monkeypatch, tmp_path):
+    """The case that left a launcher the user did not know they had."""
+    _mock_powershell(monkeypatch, 1, stdout="TASK:KEPT\n", stderr="denied")
+
+    assert install(str(tmp_path / "pkg"), "default", ROOT) != 0
+    assert not (fake_startup / STARTUP_VBS_NAME).exists()
+
+
+def test_a_reinstall_that_fails_puts_the_previous_launcher_back(
+        fake_startup, monkeypatch, tmp_path):
+    """Byte for byte: the previous one carries the previous layout and root,
+    which is what keeps the two launchers agreeing with each other."""
+    fake_startup.mkdir(parents=True)
+    target = fake_startup / STARTUP_VBS_NAME
+    target.write_bytes(b"previous launcher")
+    _mock_powershell(monkeypatch, 1, stdout="TASK:KEPT\n", stderr="denied")
+
+    assert install(str(tmp_path / "pkg"), "work", r"D:\work") != 0
+    assert target.read_bytes() == b"previous launcher"
+    assert not list(fake_startup.glob("*.tmp"))
+
+
+def test_a_launcher_that_cannot_be_read_is_never_taken_for_absent(
+        fake_startup, monkeypatch, tmp_path):
+    """Read as absent, a failed install would delete a launcher it replaced."""
+    fake_startup.mkdir(parents=True)
+    (fake_startup / STARTUP_VBS_NAME).write_bytes(b"previous launcher")
+    monkeypatch.setattr(tasks_mod.pathlib.Path, "read_bytes",
+                        lambda self: (_ for _ in ()).throw(PermissionError(13, "denied")))
+    monkeypatch.setattr(tasks_mod.subprocess, "run",
+                        lambda *a, **k: pytest.fail("touched the task"))
+
+    assert install(str(tmp_path / "pkg"), "default", ROOT) == 1
+
+
+def test_a_failed_install_keeps_the_legacy_launcher(fake_startup, monkeypatch, tmp_path):
+    fake_startup.mkdir(parents=True)
+    (fake_startup / _LEGACY_CMD_NAME).write_text("stub", encoding="utf-8")
+    _mock_powershell(monkeypatch, 1, stdout="TASK:KEPT\n", stderr="denied")
+
+    install(str(tmp_path / "pkg"), "default", ROOT)
+
+    assert (fake_startup / _LEGACY_CMD_NAME).exists()
+
+
+def test_powershell_that_will_not_start_still_rolls_the_launcher_back(
+        fake_startup, monkeypatch, tmp_path, capsys):
+    """No exit code to look at, and it was once outside every handler."""
+    def missing(argv, **kwargs):
+        raise FileNotFoundError(2, "The system cannot find the file specified")
+
+    monkeypatch.setattr(tasks_mod.subprocess, "run", missing)
+
+    assert install(str(tmp_path / "pkg"), "default", ROOT) != 0
+    assert not (fake_startup / STARTUP_VBS_NAME).exists()
+    assert "is as it was before this install" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("stdout, said", [
+    ("TASK:CHANGED access denied\n", "could not be put back"),
+    ("", "could not tell whether"),
+])
+def test_a_task_that_may_have_changed_is_not_reported_as_kept(
+        stdout, said, fake_startup, monkeypatch, tmp_path, capsys):
+    _mock_powershell(monkeypatch, 1, stdout=stdout, stderr="denied")
+
+    install(str(tmp_path / "pkg"), "default", ROOT)
+
+    out = capsys.readouterr().out
+    assert said in out
+    assert "as it was before" not in out
+
+
+def test_a_launcher_that_cannot_be_put_back_says_what_it_will_run(
+        fake_startup, monkeypatch, tmp_path, capsys):
+    """Restoring is a second write that can fail like the first. What is left
+    behind is then the new launcher, and the message says what that runs."""
+    fake_startup.mkdir(parents=True)
+    (fake_startup / STARTUP_VBS_NAME).write_bytes(b"previous launcher")
+    _mock_powershell(monkeypatch, 1, stdout="TASK:KEPT\n", stderr="denied")
+    real_publish = tasks_mod._publish
+    calls = []
+
+    def publish(path, data):
+        calls.append(data)
+        if len(calls) > 1:
+            raise PermissionError(13, "Access is denied")
+        real_publish(path, data)
+
+    monkeypatch.setattr(tasks_mod, "_publish", publish)
+
+    install(str(tmp_path / "pkg"), "work", r"D:\work")
+
+    out = capsys.readouterr().out
+    assert "could not put the previous logon launcher back" in out
+    assert r"--layout work --repos-root D:\work" in out
+
+
+def test_an_interpreter_that_cannot_run_reloaded_stops_the_install_first(
+        fake_startup, monkeypatch, tmp_path, capsys):
+    """#22: before either launcher exists, not at the next sign-in."""
+    monkeypatch.setattr(tasks_mod, "_preflight", lambda package_dir: "no psutil")
+    monkeypatch.setattr(tasks_mod.subprocess, "run",
+                        lambda *a, **k: pytest.fail("touched the task"))
+
+    assert install(str(tmp_path / "pkg"), "default", ROOT) == 1
+    assert not (fake_startup / STARTUP_VBS_NAME).exists()
+    assert "no psutil" in capsys.readouterr().out
+
+
+# ── the registration script's own rollback, run in real PowerShell ────────
+#
+# Python fakes cannot tell whether the script restores anything; this runs it
+# with the scheduled-task cmdlets replaced by functions (which PowerShell
+# resolves ahead of cmdlets) over an in-memory table. Nothing reaches Task
+# Scheduler.
+
+_FAKE_CMDLETS = r"""
+$global:defs = @{}
+$global:restored = 0
+function Root($TaskPath) { if ($TaskPath -ne '\') { throw "wrong folder: $TaskPath" } }
+function Get-ScheduledTask {
+    param($TaskPath, $TaskName)
+    Root $TaskPath
+    if ($global:unreadable) { Write-Error -Category PermissionDenied 'unreadable' }
+    if (-not $global:defs.ContainsKey($TaskName)) { Write-Error -Category ObjectNotFound 'none' }
+    [pscustomobject]@{ TaskName = $TaskName }
+}
+function Export-ScheduledTask { param($TaskPath, $TaskName) Root $TaskPath; $global:defs[$TaskName] }
+function New-ScheduledTaskAction { 'action' }
+function New-ScheduledTaskTrigger { 'trigger' }
+function New-ScheduledTaskSettingsSet { 'settings' }
+function Register-ScheduledTask {
+    param($TaskPath, $TaskName, $Action, $Trigger, $Settings, $Xml, [switch]$Force)
+    Root $TaskPath
+    if ($Xml) {
+        $global:restored++
+        if ($global:restoreFails) { throw 'restore denied' }
+        $global:defs[$TaskName] = $Xml; return
+    }
+    if ($global:half) { $global:defs[$TaskName] = $global:half }
+    if ($global:registerFails) { throw 'register denied' }
+    $global:defs[$TaskName] = '<Task>new</Task>'
+}
+function Unregister-ScheduledTask { param($TaskPath, $TaskName, $Confirm) Root $TaskPath; $global:defs.Remove($TaskName) }
+"""
+
+
+def _run_with_fake_cmdlets(monkeypatch, setup: str):
+    runs = []
+
+    def run(script):
+        wrapped = (_FAKE_CMDLETS + setup + "\ntry {\n" + script + "\n} finally { "
+                   f"'STATE:' + $global:defs['{TASK_RECONCILE}']; "
+                   "'RESTORES:' + $global:restored }")
+        runs.append(_real_run_powershell(wrapped))
+        return runs[-1]
+
+    monkeypatch.setattr(tasks_mod, "_run_powershell", run)
+    rc, detail, kept = tasks_mod._register_reconcile_task(r"C:\pkg", "default", ROOT)
+    out = runs[0].stdout
+    state = next(l[6:] for l in out.splitlines() if l.startswith("STATE:"))
+    restores = int(next(l[9:] for l in out.splitlines() if l.startswith("RESTORES:")))
+    return rc, kept, state, restores
+
+
+def _existing(xml):
+    return f"\n$global:defs['{TASK_RECONCILE}'] = '{xml}'"
+
+
+@pytest.mark.parametrize("setup, kept, state, restores", [
+    # Changed, then failed: the old definition goes back. Differs only in case,
+    # which PowerShell's -eq would have called equal.
+    (_existing("<Task>A</Task>") + "; $global:half = '<Task>a</Task>'; $global:registerFails = 1",
+     True, "<Task>A</Task>", 1),
+    # Created, then failed, with nothing before: removed, not restored.
+    ("\n$global:half = '<Task>half</Task>'; $global:registerFails = 1", True, "", 0),
+    # Failed without changing anything: nothing to put back.
+    (_existing("<Task>A</Task>") + "; $global:registerFails = 1", True, "<Task>A</Task>", 0),
+    # Putting it back failed too.
+    (_existing("<Task>A</Task>") + "; $global:half = '<Task>a</Task>'; "
+     "$global:registerFails = 1; $global:restoreFails = 1", False, "<Task>a</Task>", 1),
+    # Could not read what was there: nothing touched, and never read as absent.
+    (_existing("<Task>A</Task>") + "; $global:unreadable = 1", True, "<Task>A</Task>", 0),
+])
+def test_a_failed_registration_puts_the_task_back(monkeypatch, setup, kept, state, restores):
+    rc, got_kept, got_state, got_restores = _run_with_fake_cmdlets(monkeypatch, setup)
+
+    assert rc != 0
+    assert (got_kept, got_state, got_restores) == (kept, state, restores)
+
+
+def test_a_successful_registration_reports_success(monkeypatch):
+    rc, _kept, state, restores = _run_with_fake_cmdlets(
+        monkeypatch, _existing("<Task>A</Task>"))
+
+    assert rc == 0
+    assert (state, restores) == ("<Task>new</Task>", 0)
+
+
+# ── the interpreter the launchers will start (#22) ────────────────────────
+
+
+def _interpreter(monkeypatch, returncode, stdout="", stderr="", raises=None):
+    seen = []
+
+    def run(argv, **kwargs):
+        seen.append(argv)
+        if raises:
+            raise raises
+        return subprocess.CompletedProcess(argv, returncode, stdout=stdout, stderr=stderr)
+
+    monkeypatch.setattr(tasks_mod.subprocess, "run", run)
+    return seen
+
+
+# A directory that does not exist, so no sibling python.exe is found on the
+# machine running the suite.
+INTERPRETER = "interpreter 'C:\\\\NoSuchPython\\\\pythonw.exe'\n"
+
+
+def test_the_preflight_runs_what_the_launchers_run(monkeypatch):
+    """`pyw.exe -3`, not sys.executable: that is whatever ran this install."""
+    seen = _interpreter(monkeypatch, 0, INTERPRETER + "imports ok\n")
+
+    assert _real_preflight(r"C:\pkg") == ""
+    assert seen[0][:2] == ["pyw.exe", "-3"]
+    assert "psutil" in seen[0][3] and "uiautomation" in seen[0][3]
+
+
+def test_a_missing_dependency_names_the_interpreter_and_the_fix(monkeypatch):
+    _interpreter(monkeypatch, 1, INTERPRETER,
+                 "Traceback ...\nModuleNotFoundError: No module named 'psutil'\n")
+
+    problem = _real_preflight(r"C:\pkg")
+
+    assert r"C:\NoSuchPython\pythonw.exe" in problem
+    assert "No module named 'psutil'" in problem
+    # A quoted path runs in PowerShell only behind the call operator.
+    assert "& 'C:\\NoSuchPython\\pythonw.exe' -m pip install psutil uiautomation" in problem
+
+
+def test_an_apostrophe_in_the_interpreter_path_is_still_read(monkeypatch):
+    """ascii() switches to double quotes for it."""
+    record = "interpreter " + ascii("C:\\Users\\O'Brien\\pythonw.exe") + "\n"
+    _interpreter(monkeypatch, 1, record,
+                 "ModuleNotFoundError: No module named 'psutil'\n")
+
+    problem = _real_preflight(r"C:\pkg")
+
+    assert "C:\\Users\\O'Brien\\pythonw.exe, which" in problem
+    assert "'C:\\Users\\O''Brien\\pythonw.exe' -m pip" in problem
+
+
+def test_another_failure_is_shown_as_it_is(monkeypatch):
+    """A broken checkout is not fixed by installing two packages."""
+    _interpreter(monkeypatch, 1, INTERPRETER, "SyntaxError: invalid syntax\n")
+
+    problem = _real_preflight(r"C:\pkg")
+
+    assert "SyntaxError: invalid syntax" in problem
+    assert "pip install" not in problem
+
+
+def test_a_non_ascii_interpreter_path_survives(monkeypatch):
+    _interpreter(monkeypatch, 1, "interpreter 'C:\\\\r\\xe9pos\\\\pythonw.exe'\n",
+                 "ModuleNotFoundError: No module named 'uiautomation'\n")
+
+    assert "C:\\r\u00e9pos\\pythonw.exe" in _real_preflight(r"C:\pkg")
+
+
+def test_exit_zero_without_the_closing_record_is_not_success(monkeypatch):
+    """PYLAUNCHER_DRYRUN, for one, exits 0 without running Python."""
+    _interpreter(monkeypatch, 0, "C:\\NoSuchPython\\pythonw.exe -3 -c ...\n")
+
+    assert _real_preflight(r"C:\pkg") != ""
+
+
+def test_no_launcher_is_not_reported_as_missing_imports(monkeypatch):
+    _interpreter(monkeypatch, 0, raises=FileNotFoundError(2, "not found"))
+
+    problem = _real_preflight(r"C:\pkg")
+
+    assert "pyw.exe was not found" in problem
+    assert "pip install" not in problem
+
+
+def test_a_launcher_that_starts_no_python_says_so(monkeypatch):
+    _interpreter(monkeypatch, 103, "", "No suitable Python runtime found\n")
+
+    problem = _real_preflight(r"C:\pkg")
+
+    assert "did not start a Python" in problem
+    assert "No suitable Python runtime found" in problem
 
 
 def test_uninstall_reports_success_when_the_task_never_existed(fake_startup, monkeypatch):
