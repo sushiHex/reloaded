@@ -87,6 +87,18 @@ def _codex_home() -> str:
         os.path.expanduser("~"), ".codex")
 
 
+def _claude_home() -> str:
+    """Claude Code's configuration home, which is not always ~/.claude.
+
+    CLAUDE_CONFIG_DIR moves it ("the configuration home (CLAUDE_CONFIG_DIR)",
+    2.1.296), and its conversations with it. Read past, the folder that
+    deploy.nothing_to_resume looks in would be empty beside a real
+    conversation - the one case its fallback must never start a new one in.
+    """
+    return os.environ.get("CLAUDE_CONFIG_DIR") or os.path.join(
+        os.path.expanduser("~"), ".claude")
+
+
 DEFAULT_KIND = "claude"
 
 CLAUDE = Agent(
@@ -99,7 +111,7 @@ CLAUDE = Agent(
     # `--fork-session` only means anything beside a resume, where it makes it
     # a new conversation: `resume_exactly` has to drop it with the rest.
     resume_tokens=("--continue", "-c", "--resume", "-r", "--fork-session"),
-    sessions_dir=os.path.join(os.path.expanduser("~"), ".claude", "projects"),
+    sessions_dir=os.path.join(_claude_home(), "projects"),
     repairs_transcripts=True,
     resume_by_id=("--resume", "-r"),
     # From `claude --help`, 2.1.296: every option with no <value> or [value],

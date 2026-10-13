@@ -648,7 +648,9 @@ def read_transcript_info(jsonl_path, stat_result=None, need_title: bool = True) 
 
 
 def default_projects_dir() -> pathlib.Path:
-    return pathlib.Path(os.path.expanduser("~")) / ".claude" / "projects"
+    from . import agents as agents_mod
+
+    return pathlib.Path(agents_mod.CLAUDE.sessions_dir)
 
 
 def transcript_index(projects_dir=None, need_title: bool = True) -> dict[str, TranscriptInfo]:
