@@ -57,6 +57,7 @@ def world(monkeypatch, tmp_path):
                         lambda: {norm(CWD): "codex"})
     monkeypatch.setattr(main_mod.discover_mod, "launcher_kind", lambda pid: HAND)
     monkeypatch.setattr(main_mod, "RELAUNCH_WAIT_SECONDS", 0.2, raising=False)
+    monkeypatch.setattr(main_mod, "RELAUNCH_SETTLE_SECONDS", 0)
     monkeypatch.setattr(main_mod, "RELAUNCH_POLL_SECONDS", 0.01, raising=False)
     monkeypatch.setattr(main_mod, "_live_tab_count", lambda hwnd: 2)
 

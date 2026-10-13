@@ -55,6 +55,7 @@ def world(monkeypatch, tmp_path):
                         lambda pid: w["kinds"][
                             next(c for c, p in w["pids"].items() if p == pid)])
     monkeypatch.setattr(main_mod, "RELAUNCH_WAIT_SECONDS", 0.2, raising=False)
+    monkeypatch.setattr(main_mod, "RELAUNCH_SETTLE_SECONDS", 0)
     monkeypatch.setattr(main_mod, "RELAUNCH_POLL_SECONDS", 0.01, raising=False)
     monkeypatch.setattr(main_mod, "_live_tab_count", lambda hwnd: w["tabs"])
     monkeypatch.setattr(main_mod, "_launch_single_tab",
