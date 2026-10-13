@@ -139,7 +139,9 @@ reloaded restart "C:\work\my-project"
 
 Before a named restart, every requested repository must be running and resolve
 to a terminal tab. If any cannot be found, none are exited. Once execution
-starts, a later failure can still leave a partially restarted batch.
+starts, a later failure can still leave a partially restarted batch. A tab is
+found by its title, which is its directory's name, so a repository is refused
+while another running session is in a directory with the same name.
 
 A Reloaded-launched tab restarts through its shell loop, retaining its slot.
 A hand-started session is exited and its waiting shell receives a launcher
