@@ -869,7 +869,7 @@ def cmd_restart_one(args, repos: list[str]) -> int:
         print(refusal)
         return 1
 
-    refusal = _shared_directory(cwds, crowded)
+    refusal = _shared_directory(cwds, crowded) or _shared_name(cwds, live)
     if refusal:
         print(refusal)
         return 1
@@ -969,6 +969,38 @@ def _shared_directory(cwds, crowded) -> str:
         "one ends a session you",
         "    did not ask to end. Move one to its own directory, or restart it "
         "by hand.",
+        "    Nothing was restarted.",
+    ]
+    return "\n".join(lines)
+
+
+def _shared_name(cwds, live) -> str:
+    """Why this batch cannot be aimed, or "" if each repo's name is its own.
+
+    A tab is found by its title, and the title Reloaded gives a tab is its
+    directory's name (paths.tab_title). Two running sessions in directories of
+    one name - `a\\twin` and `b\\twin` - leave the title saying neither, so
+    `_shared_directory`'s problem returns one level up. Refused before the tab
+    walk, with that reason: the walk found no tab, and the refusal it led to
+    sent the user looking outside Windows Terminal and at UIA (#60).
+
+    Refused whole, for `_shared_directory`'s reason.
+    """
+    names = Counter(norm(tab_title(k)) for k in live)
+    shared = [(c, names[norm(tab_title(c))]) for c in cwds
+              if names[norm(tab_title(c))] > 1]
+    if not shared:
+        return ""
+    lines = [f"{n} running sessions are in directories named {tab_title(c)}, "
+             f"among them {c}." for c, n in shared]
+    lines += [
+        "",
+        "    A tab is found by its title, which is its directory's name, so "
+        "which tab holds which",
+        "    session cannot be established — and restarting the wrong one ends "
+        "a session you did",
+        "    not ask to end. Rename one of the directories, or restart it by "
+        "hand.",
         "    Nothing was restarted.",
     ]
     return "\n".join(lines)
