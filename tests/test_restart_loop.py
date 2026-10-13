@@ -280,6 +280,20 @@ def test_a_directory_with_no_conversation_starts_one(run_launcher, tmp_path):
                        "--dangerously-skip-permissions"], proc.stderr
 
 
+def test_it_starts_one_however_long_the_failed_resume_took(run_launcher, tmp_path,
+                                                         monkeypatch):
+    """In a directory not yet trusted, Claude Code asks first and looks for a
+    conversation only once answered: exit 1 at 35s, measured. A brand-new
+    repo opens that way. With no grace at all, every run is past it."""
+    monkeypatch.setattr(deploy_mod, "STARTUP_GRACE_SECONDS", 0)
+    lines = _claude_without_a_conversation(tmp_path)
+
+    _runs, _left, proc = run_launcher()
+
+    assert lines() == ["--dangerously-skip-permissions --continue",
+                       "--dangerously-skip-permissions"], proc.stderr
+
+
 def test_where_a_conversation_exists_a_failed_resume_is_left_on_screen(run_launcher,
                                                                       tmp_path):
     """A quick exit 1 there is a resume that failed some other way. A new
