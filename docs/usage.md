@@ -123,6 +123,12 @@ warning does not pause execution or rewrite the command. Review launch settings
 before exiting. Restoring a directory and tab is not a guarantee of restoring
 a particular conversation; Reloaded does not store a separate conversation ID.
 
+A Claude Code directory with no conversation yet gives `--continue` nothing to
+resume, and Claude exits at once. A Reloaded tab then starts a new
+conversation, but only when Claude's folder for that directory holds no saved
+conversation. Where one exists, the error stays on screen instead: a new
+conversation would become the latest, the one later restarts resume.
+
 Reloaded fixes the titles of tabs it launches to repository directory names so
 it can find them again. A renamed conversation may therefore keep showing the
 repository name in the tab strip. Codex directory-trust prompts require a user

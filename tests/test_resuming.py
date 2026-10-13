@@ -8,6 +8,8 @@ empty conversation on every restore and every relaunch through its loop.
 """
 from __future__ import annotations
 
+import pathlib
+
 import pytest
 
 import reloaded.agents as agents_mod
@@ -68,3 +70,54 @@ def test_the_launcher_never_starts_an_empty_conversation():
     cmd = launcher_command(r"C:\repos\app", 0, 0, "claude", SKIP)
 
     assert f"{SKIP} --continue" in cmd
+
+
+@pytest.mark.parametrize("invocation, expected", [
+    # #59: where there is no conversation, the latest one cannot be resumed.
+    (f"{SKIP} --continue", SKIP),
+    ("claude -c --model opus", "claude --model opus"),
+    ("claude --fork-session --continue", "claude"),
+    ("claude --continue --append-system-prompt 'be brief'",
+     "claude --append-system-prompt 'be brief'"),
+    # A named conversation that is gone is another failure; a new one would
+    # hide it.
+    (f"{SKIP} --resume 0673eda5", ""),
+    (f"{SKIP} --resume=0673eda5", ""),
+    (f"{SKIP} --resume=0673eda5 --fork-session", ""),
+    # Nothing resumed, nothing to fall back from.
+    (SKIP, ""),
+    ("claude --fork-session", ""),
+])
+def test_a_claude_resume_of_the_latest_falls_back_to_a_new_conversation(
+        invocation, expected):
+    assert agents_mod.fresh("claude", invocation) == expected
+
+
+@pytest.mark.parametrize("cwd, folder", [
+    # Folders Claude Code made on the machine this was measured on.
+    (r"C:\Users\kfaim\repos\reloaded", "C--Users-kfaim-repos-reloaded"),
+    (r"C:\Users\kfaim\.claude\jobs\dc5c72cf\tmp",
+     "C--Users-kfaim--claude-jobs-dc5c72cf-tmp"),
+    # The same rule for a space, and for a trailing separator, which the
+    # directory itself does not have.
+    (r"C:\Users\kfaim\repos\with space", "C--Users-kfaim-repos-with-space"),
+    ("C:\\repos\\app\\", "C--repos-app"),
+])
+def test_claude_files_a_directorys_conversations_under_its_path_spelled_out(
+        cwd, folder):
+    assert agents_mod.conversations_dir("claude", cwd) == str(
+        pathlib.Path(agents_mod.CLAUDE.sessions_dir) / folder)
+
+
+def test_a_folder_name_that_claude_would_hash_is_not_guessed():
+    """Over 200 characters Claude Code cuts the name and appends a hash; a
+    wrong guess would find no conversation where there is one."""
+    assert agents_mod.conversations_dir("claude", "C:\\" + "a" * 200) == ""
+
+
+def test_codex_needs_no_fallback():
+    """`codex resume --last` with nothing to resume starts a new conversation
+    (measured, 0.162.1). Nor does Codex file its sessions by directory."""
+    assert agents_mod.fresh("codex", agents_mod.CODEX.launch) == ""
+    assert agents_mod.conversations_dir("codex", r"C:\repos\app") == ""
+    assert "$LASTEXITCODE" not in launcher_command(r"C:\repos\app", 0, 0, "codex")

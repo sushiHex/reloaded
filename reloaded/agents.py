@@ -12,6 +12,7 @@ confident wrong answers.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass
 
 from . import pwsh
@@ -66,7 +67,7 @@ class Agent:
     variadic_flags: tuple = ()
     # What resumes the directory's latest conversation, standing in for a
     # `resume_by_id` flag given no id - which opens a picker. See
-    # `resuming`.
+    # `resuming`, and `fresh` for a directory with none.
     resume_latest: str = ""
     # Whether transcript.py's torn-tail guard has been verified against this
     # kind's session records. Repair ends in a truncation, so running it on an
@@ -279,6 +280,57 @@ def resuming(kind, command: str) -> str:
     if not resumes_any:
         kept.append(agent.resume_latest)
     return " ".join(kept)
+
+
+def fresh(kind, invocation: str) -> str:
+    """`invocation` starting a new conversation instead of the directory's
+    latest, for when it has none - or "" where nothing needs one.
+
+    Measured, Claude Code 2.1.296: `--continue` in a directory with no
+    conversation prints "No conversation found to continue" and exits 1 after
+    about two seconds, so a repo first opened through Reloaded never started.
+    Codex's `resume --last` (0.162.1) starts a new conversation instead, and
+    a kind without `resume_latest` gets "".
+
+    Only for an invocation whose one resume is the latest conversation. One
+    naming its conversation fails for another reason, which a new
+    conversation would hide.
+    """
+    agent = for_kind(kind)
+    if not agent.resume_latest:
+        return ""
+    tokens = _ps_tokens(invocation)
+    flags = [value.split("=", 1)[0] for _s, _e, _t, _q, value in tokens[1:]]
+    resumes = set(flags) & set(agent.resume_tokens)
+    # `--fork-session` only qualifies a resume; alone it resumes nothing.
+    if resumes & set(agent.resume_by_id) or not resumes - {"--fork-session"}:
+        return ""
+    # What is left takes no id: the latest conversation, its short form, and
+    # the qualifier.
+    return " ".join([tokens[0][2]] + [text for (_s, _e, text, _q, _v), flag
+                                      in zip(tokens[1:], flags)
+                                      if flag not in agent.resume_tokens])
+
+
+# Claude Code's name for a directory's folder of conversations, from its
+# source (2.1.296): every character but an ASCII letter or digit becomes `-`,
+# and a name longer than this is cut and given a hash not reproduced here.
+_CLAUDE_FOLDER_LIMIT = 200
+
+
+def conversations_dir(kind, cwd: str) -> str:
+    """The folder where `kind` keeps the conversations held in `cwd`, or ""
+    where that is not known.
+
+    Only Claude Code files them by directory. Codex files its sessions by
+    date (see `sessions_dir`), so no folder answers the question for it.
+    """
+    if for_kind(kind) is not CLAUDE:
+        return ""
+    name = re.sub(r"[^a-zA-Z0-9]", "-", os.path.normpath(cwd))
+    if len(name) > _CLAUDE_FOLDER_LIMIT:
+        return ""
+    return os.path.join(CLAUDE.sessions_dir, name)
 
 
 _SINGLE = pwsh.SINGLE_QUOTES
