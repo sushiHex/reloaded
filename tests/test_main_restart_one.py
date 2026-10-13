@@ -75,6 +75,7 @@ def world(monkeypatch, tmp_path):
     monkeypatch.setattr(main_mod.layout_mod, "save",
                         lambda lo, path: w.__setitem__("saved_layout", True))
     monkeypatch.setattr(main_mod, "RELAUNCH_WAIT_SECONDS", 0.2, raising=False)
+    monkeypatch.setattr(main_mod, "RELAUNCH_SETTLE_SECONDS", 0)
     monkeypatch.setattr(main_mod, "RELAUNCH_POLL_SECONDS", 0.01, raising=False)
 
     def plan_down(repos_root, **kw):
