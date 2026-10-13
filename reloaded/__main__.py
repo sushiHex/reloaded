@@ -18,6 +18,7 @@ from . import editor as editor_mod
 from . import layout as layout_mod
 from . import pwsh
 from . import readiness as readiness_mod
+from . import refusal as refusal_mod
 from . import relaunch as relaunch_mod
 from . import tabs as tabs_mod
 from . import tasks as tasks_mod
@@ -184,6 +185,16 @@ def _report_layout_change(before: set[str], after) -> None:
             print(f"    - {cwd}")
 
 
+def _save_capture(lo, path, args) -> None:
+    """Write a capture over the saved layout, and record what that did: the
+    repos it gained or lost, and the end of any refusal the log is tracking."""
+    before = _saved_repos(path)
+    layout_mod.save(lo, path)
+    _report_layout_change(before, lo)
+    refusal_mod.saved(args.layout, _record,
+                      forced=bool(getattr(args, "force", False)))
+
+
 def _capture_layout(args):
     """Load the previous layout (if any) and capture the current live
     arrangement. Returns (Layout, path, live, title_map) - the last two are
@@ -213,6 +224,9 @@ def cmd_capture(args) -> int:
     try:
         lo, path, live, _title_map = _capture_layout(args)
     except tabs_mod.UIAUnavailable as exc:
+        # Printed only, this was silent under pyw on every reconcile.
+        refusal_mod.note(args.layout,
+                         f"[reloaded] capture could not read tabs: {exc}", _record)
         return _report_uia_unavailable(exc)
 
     # capture runs every 5 minutes forever via the reconcile task — cheap,
@@ -222,11 +236,21 @@ def cmd_capture(args) -> int:
     if pruned:
         print(f"[reloaded] pruned {len(pruned)} stale .torn backup(s)")
 
+    unresolved = _unresolved_live_repos(lo, live)
     if not lo.windows:
+        if unresolved:
+            # Every tab unreadable is the same failed read as some tabs
+            # unreadable, only total - and it returned here, before the
+            # shrinkage guard, so it was the one case the log never heard of.
+            # Nothing found and nothing running is not a refusal at all.
+            refusal_mod.note(
+                args.layout,
+                f"[reloaded] captured nothing, though {len(unresolved)} "
+                f"repo(s) have a running session — {', '.join(unresolved)}",
+                _record)
         print("No agent sessions found — nothing captured, existing layout untouched.")
         return 1
 
-    unresolved = _unresolved_live_repos(lo, live)
     if unresolved:
         print(
             f"[reloaded] {len(unresolved)} running session(s) did not match any tab: "
@@ -251,9 +275,7 @@ def cmd_capture(args) -> int:
     if _restore_in_flight(args):
         return 1
 
-    before = _saved_repos(path)
-    layout_mod.save(lo, path)
-    _report_layout_change(before, lo)
+    _save_capture(lo, path, args)
     _print_capture_summary(lo, path)
     return 0
 
@@ -330,16 +352,32 @@ def _capture_shrinkage(fresh, path, live) -> str:
     return f"{len(lost)} running session(s) missing from this capture — {names}"
 
 
-def _append(line: str) -> None:
+# Past this, the log is moved to `reloaded.log.1` (replacing the last one) and
+# started again. Nothing else ever trims it, and a month of a real machine's
+# log is about 50 KB, so this is years of history kept, not a budget.
+LOG_MAX_BYTES = 1024 * 1024
+
+
+def _append(line: str) -> bool:
+    """Write one line to the log; whether it landed."""
+    path = log_path()
     try:
-        with open(log_path(), "a", encoding="utf-8") as fh:
+        if path.stat().st_size > LOG_MAX_BYTES:
+            path.replace(path.with_name(path.name + ".1"))
+    except OSError:
+        # Missing, or held open by a relaunch helper (which writes to it
+        # directly, so it cannot rotate it). The next write tries again.
+        pass
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
             fh.write(line + "\n")
+        return True
     except OSError:
         # Losing a log line must never fail the run that produced it.
-        pass
+        return False
 
 
-def _record(message: str) -> None:
+def _record(message: str) -> bool:
     """Append one timestamped line to the log, without printing it.
 
     Separate from `_log` because the two answer different questions. `_log` is
@@ -347,7 +385,7 @@ def _record(message: str) -> None:
     else to send it. This is an audit line about the user's saved state, and
     that is worth keeping whether or not a console was attached.
     """
-    _append(stamped(message))
+    return _append(stamped(message))
 
 
 def _refused_for_shrinkage(lo, path, live, args, *, cost: str, escape: str) -> bool:
@@ -378,8 +416,11 @@ def _refused_for_shrinkage(lo, path, live, args, *, cost: str, escape: str) -> b
         # The record matters most for `capture`, which the reconcile runs
         # unattended with nowhere to print; a restart is always interactive and
         # gets the line anyway, because what changed about the saved layout is
-        # worth the same entry whoever was watching.
-        _record(f"[reloaded] refused to overwrite the layout: {shrink}")
+        # worth the same entry whoever was watching. Once, though: the same
+        # refusal again is only a periodic "still" (see refusal.py).
+        refusal_mod.note(args.layout,
+                         f"[reloaded] refused to overwrite the layout: {shrink}",
+                         _record)
     print(f"[reloaded] {'would refuse' if dry else 'refusing'} to overwrite "
           f"the layout: {shrink}")
     print(
@@ -1263,9 +1304,7 @@ def cmd_restart(args) -> int:
     if _restore_in_flight(args):
         return 1
 
-    before = _saved_repos(path)
-    layout_mod.save(lo, path)
-    _report_layout_change(before, lo)
+    _save_capture(lo, path, args)
     _print_capture_summary(lo, path)
 
     try:

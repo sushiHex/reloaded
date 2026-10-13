@@ -73,6 +73,14 @@ what remains and never what went. The reconcile task rewrites the layout every
 five minutes under `pyw.exe` with no console, so before this it changed the one
 durable artifact thousands of times without leaving a trace.
 
+A refusal that recurs every reconcile is recorded once, then every six hours
+as "still refusing", and closed by the next save of that layout (`refusal.py`).
+Each run is a fresh process, so what has been said lives in a small per-layout
+file under `~/.reloaded/refusals/`. It records what the log was told, not
+anything about the user's sessions, so losing or racing on it costs at most a
+repeated or missing line, never a hidden new refusal. That is why it carries
+none of a layout's recovery or locking concerns (#20).
+
 Pinned editor entries survive capture even when their sessions are absent.
 A capture refuses to drop previously saved repositories that are still running
 but were missed by the tab scan — one check, shared by `capture` and a full
