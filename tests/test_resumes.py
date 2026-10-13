@@ -158,3 +158,28 @@ def test_it_falls_back_to_the_home_directory(monkeypatch):
     monkeypatch.delenv("CODEX_HOME", raising=False)
 
     assert agents_mod._codex_home().endswith(".codex")
+
+
+# ── CLAUDE_CONFIG_DIR ────────────────────────────────────────────────────
+
+
+def test_claudes_home_follows_claude_config_dir(monkeypatch):
+    """Its conversations move with it. Looked for under ~/.claude instead,
+    the folder #63's fallback checks would be empty beside a real
+    conversation, and a quick exit 1 there would start a new latest one."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", r"D:\elsewhere\claude")
+
+    assert agents_mod._claude_home() == r"D:\elsewhere\claude"
+
+
+def test_claudes_home_falls_back_to_the_home_directory(monkeypatch):
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+    assert agents_mod._claude_home().endswith(".claude")
+
+
+def test_discovery_reads_the_same_folder_the_fallback_checks():
+    """One answer to "where are Claude's conversations", not two."""
+    import reloaded.discover as discover_mod
+
+    assert str(discover_mod.default_projects_dir()) == agents_mod.CLAUDE.sessions_dir
