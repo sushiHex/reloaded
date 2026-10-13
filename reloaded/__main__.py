@@ -787,11 +787,16 @@ def _type_relaunch(s: _Restarting) -> bool:
     Written to a file and run by one short line rather than typed out, because
     SendKeys reads `{` and `(` as syntax - escaped, the launcher is 838
     keystrokes, and they did not all arrive when tried.
+
+    With a byte-order mark, because it runs as a file: Windows PowerShell 5.1
+    reads one without in the ANSI code page, and everything non-ASCII in it -
+    a captured command's arguments, a marker path under a home directory with
+    an accent - came back mangled (measured).
     """
     path = relaunch_script_path(s.cwd)
     path.write_text(
         deploy_mod.relaunch_script(s.cwd, s.size_bytes, s.agent, s.command),
-        encoding="utf-8")
+        encoding="utf-8-sig")
 
     import uiautomation as auto
 
