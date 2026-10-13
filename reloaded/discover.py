@@ -189,6 +189,26 @@ def launcher_kind(pid: int) -> str:
         return HAND
 
 
+# In the command line of a loop launched since shells had markers of their
+# own: it checks paths.shell_marker(its pid) before its directory's.
+OWN_MARKER = "$rlOwn="
+
+
+def marker_shell(pid: int) -> int | None:
+    """The pid of the loop running session `pid`, if it reads its own marker.
+
+    Addressed there, a request reaches this session and no sibling in the same
+    directory. None for a hand-started session, a shell whose command line
+    does not carry OWN_MARKER, or one that cannot be read: those are sent the
+    directory's, which every loop reads.
+    """
+    try:
+        shell = _ps().Process(pid).parent()
+        return shell.pid if OWN_MARKER in " ".join(shell.cmdline()) else None
+    except Exception:
+        return None
+
+
 # Codex also runs as a child of its desktop app, where it is not a terminal tab
 # at all - both are live on this machine at once. Excluding by image name would
 # lose the real tab along with it, so the parent process is what distinguishes

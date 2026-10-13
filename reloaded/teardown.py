@@ -188,22 +188,26 @@ def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=Non
     """
     if not tabs.select_tab(hwnd, item):
         return Sent(reached=False, keys=0)
+
+    def running() -> bool:
+        if pid is None:
+            return True
+        import psutil
+
+        return psutil.pid_exists(pid)
+
+    def still_needed() -> bool:
+        return running() and tabs.tab_is_selected(item) and win32.is_foreground(hwnd)
+
     # After the tab is focused, before anything is typed. `restart` arms its
     # marker here so a tab that could not be foregrounded is never armed: it
     # will never read the marker, and one left on disk would fire on the
-    # user's next manual exit instead. It is also disk I/O between the proof
-    # and the typing, which is exactly why the proof is re-asked below rather
-    # than trusted.
-    if before_send is not None:
+    # user's next manual exit instead. Nor is a session that ended on its own
+    # while its tab was being found: its loop has already looked for a marker.
+    # It is also disk I/O between the proof and the typing, which is exactly
+    # why the proof is re-asked below rather than trusted.
+    if before_send is not None and running():
         before_send()
-
-    def still_needed() -> bool:
-        if pid is not None:
-            import psutil
-
-            if not psutil.pid_exists(pid):
-                return False
-        return tabs.tab_is_selected(item) and win32.is_foreground(hwnd)
 
     keys = tabs.send_quit_keystrokes(quit_keys, dismiss_overlay=dismiss_overlay,
                                      still_needed=still_needed)

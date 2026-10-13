@@ -28,7 +28,16 @@ def clean_exit(monkeypatch):
     monkeypatch.setattr(teardown_mod, "EXIT_POLL_SECONDS", 0.01)
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: True)
     monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", lambda *a, **k: None)
-    monkeypatch.setattr(psutil, "pid_exists", lambda pid: False)
+    # Running when its turn comes, gone as soon as it is asked to quit: a
+    # session already gone is never armed (test_a_gone_session_is_not_armed).
+    asked = set()
+
+    def pid_exists(pid):
+        alive = pid not in asked
+        asked.add(pid)
+        return alive
+
+    monkeypatch.setattr(psutil, "pid_exists", pid_exists)
     monkeypatch.setattr(teardown_mod.win32, "close_window", lambda hwnd: True)
 
 

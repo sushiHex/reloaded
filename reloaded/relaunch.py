@@ -138,7 +138,7 @@ def relaunch(pid: int, cwd: str, kind: str, *, dry_run: bool = False,
         loop = " ".join(shell.cmdline()) if looping else ""
     except Exception:
         loop = ""
-    own = not looping or "$rlOwn=" in loop
+    own = not looping or discover_mod.OWN_MARKER in loop
     marker = shell_marker(shell.pid) if own else restart_marker(cwd)
     # The command, not just a flag: a loop runs it in place of the one its tab
     # was launched with (deploy.restart_loop), so a looping tab comes back to

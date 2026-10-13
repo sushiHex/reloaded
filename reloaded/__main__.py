@@ -5,6 +5,7 @@ import argparse
 import math
 from collections import Counter
 import os
+import pathlib
 import sys
 import time
 from dataclasses import dataclass
@@ -31,6 +32,7 @@ from .paths import (
     resolve_repo,
     restart_marker,
     restart_marker_dir,
+    shell_marker,
     stamped,
     tab_title,
 )
@@ -676,11 +678,22 @@ class _Restarting:
     # accident.
     command: str
     size_bytes: int
+    # The pid of its loop when that loop reads a marker of its own
+    # (discover.marker_shell). None means the directory's, which every tab
+    # there watches.
+    marker_shell: int | None = None
 
     @property
     def key(self) -> str:
         """Its normalized cwd, which is how every map around it is keyed."""
         return norm(self.cwd)
+
+    @property
+    def marker(self) -> pathlib.Path:
+        """Where its restart request goes, and the only file it may delete."""
+        if self.marker_shell is None:
+            return restart_marker(self.cwd)
+        return shell_marker(self.marker_shell)
 
 
 def _launch_single_tab(s: _Restarting) -> None:
@@ -773,13 +786,16 @@ def _sweep_stale_markers() -> None:
     """
     cutoff = time.time() - deploy_mod.RESTART_MARKER_TTL_SECONDS
     try:
-        stale = [m for m in restart_marker_dir().glob("*.marker")
-                 if m.stat().st_mtime < cutoff]
+        markers = list(restart_marker_dir().glob("*.marker"))
     except OSError:
         return
-    for m in stale:
+    for m in markers:
+        # Judged as it is deleted, not when listed: a restart running alongside
+        # this one can re-arm a listed path in between, and deleting that fresh
+        # marker closes the tab it was meant to bring back.
         try:
-            m.unlink()
+            if m.stat().st_mtime < cutoff:
+                m.unlink()
         except OSError:
             pass
 
@@ -824,7 +840,7 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     def arm(cwd):
         s = by_key.get(norm(cwd))
         if s is not None and s.launcher == discover_mod.RELOADED:
-            restart_marker(cwd).write_text("restart", encoding="utf-8")
+            s.marker.write_text("restart", encoding="utf-8")
 
     _warn_about_empty_relaunches(sessions)
 
@@ -968,15 +984,18 @@ def _snapshot_restarts(plans, args) -> list[_Restarting]:
                 # capture would otherwise hand claude's flags to a Codex tab,
                 # and launcher_command trusts the command over the agent.
                 command = saved_command
+            launcher = discover_mod.launcher_kind(t.pid)
             sessions.append(_Restarting(
                 hwnd=plan.hwnd,
                 item=t.item,
                 cwd=t.cwd,
                 pid=t.pid,
-                launcher=discover_mod.launcher_kind(t.pid),
+                launcher=launcher,
                 agent=agent,
                 command=command,
                 size_bytes=sizes.get(key, 0),
+                marker_shell=(discover_mod.marker_shell(t.pid)
+                              if launcher == discover_mod.RELOADED else None),
             ))
     return sessions
 
@@ -1033,7 +1052,7 @@ def _report_never_exited(s: _Restarting) -> bool:
         return False
     # Read, not assumed: the marker has been ageing through the whole wait, so
     # quoting the TTL as a constant would describe a window that is partly gone.
-    left = _marker_life_left(s.cwd)
+    left = _marker_life_left(s)
     if left > 0:
         print(f"        its restart is still armed: it will restart if it "
               f"exits in the next {left:.0f}s")
@@ -1043,15 +1062,15 @@ def _report_never_exited(s: _Restarting) -> bool:
     return False
 
 
-def _marker_life_left(cwd: str) -> float:
-    """How much of `cwd`'s restart marker is left, in seconds, or 0.
+def _marker_life_left(s: _Restarting) -> float:
+    """How much of `s`'s restart marker is left, in seconds, or 0.
 
     The tab's own shell compares the marker's age at the moment its agent exits
     against the same TTL (`deploy.restart_loop`), so this is the same question
     that shell will ask, asked early.
     """
     try:
-        age = time.time() - restart_marker(cwd).stat().st_mtime
+        age = time.time() - s.marker.stat().st_mtime
     except OSError:
         return 0.0
     return max(0.0, deploy_mod.RESTART_MARKER_TTL_SECONDS - age)
@@ -1107,21 +1126,24 @@ def _reopen_in_a_new_tab(s: _Restarting) -> bool:
     """
     print(f"    {s.cwd} did not relaunch in place — its tab closed; reopening it")
     try:
-        restart_marker(s.cwd).unlink(missing_ok=True)
+        s.marker.unlink(missing_ok=True)
     except OSError as exc:
         # Swallowing this used to be safe-looking and was not. The tab opened
         # below DOES carry the restart loop, so a marker that survives here
         # outlives the tab that ignored it and fires on the user's next /exit,
         # restarting a session they meant to close. The docstring above says
         # deleting it is necessary; a failed delete has to be treated as
-        # exactly that, not as a shrug.
-        print(f"    [warn] could not clear {s.cwd}'s restart marker: {exc}")
-        print("        Not reopening it here — the new tab would inherit that "
-              "marker and restart on your next /exit.")
-        repo = tab_title(s.cwd)
-        print(f"        Delete {restart_marker(s.cwd)} and run "
-              f"`reloaded open {repo}`.")
-        return False
+        # exactly that, not as a shrug. Only the directory's is inherited,
+        # though: a shell's own is named by a pid the new tab's shell does
+        # not have, and the next sweep clears it.
+        if s.marker_shell is None:
+            print(f"    [warn] could not clear {s.cwd}'s restart marker: {exc}")
+            print("        Not reopening it here — the new tab would inherit "
+                  "that marker and restart on your next /exit.")
+            repo = tab_title(s.cwd)
+            print(f"        Delete {s.marker} and run "
+                  f"`reloaded open {repo}`.")
+            return False
     _launch_single_tab(s)
     if _wait_for_session(s.cwd) is None:
         print(f"    [warn] {s.cwd} did not come back — start it by hand")
