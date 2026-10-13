@@ -283,3 +283,12 @@ def test_cmd_restart_reports_teardown_uiautomation_failure(tmp_path, monkeypatch
     rc = main_mod.cmd_restart(_args(dry_run=False))
     assert rc == 1
     assert "pip install uiautomation" in capsys.readouterr().out
+
+
+def test_the_repos_root_is_normalized_as_it_is_parsed():
+    """#61: typed with forward slashes, it was saved as `C:/x/repos\\app`."""
+    args = main_mod.build_parser().parse_args(
+        ["--repos-root", "C:/Users/me/repos/", "status"])
+
+    assert args.repos_root == r"C:\Users\me\repos"
+    assert main_mod.resolve_repo("app", args.repos_root) == r"C:\Users\me\repos\app"

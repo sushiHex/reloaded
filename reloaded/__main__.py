@@ -1650,7 +1650,11 @@ def build_parser() -> argparse.ArgumentParser:
         prog="reloaded", description="Windows Terminal launcher for Claude Code and Codex CLI."
     )
     p.add_argument("--layout", default="default", help="layout name (default: default)")
-    p.add_argument("--repos-root", default=DEFAULT_REPOS_ROOT, help="root directory holding repos")
+    # Normalized once, here: a root typed with forward slashes, as Git Bash
+    # users type it, was joined to tab titles as given and saved paths read
+    # `C:/x/repos\app`. Comparison never minded (paths.norm), a reader did.
+    p.add_argument("--repos-root", default=DEFAULT_REPOS_ROOT, type=os.path.normpath,
+                   help="root directory holding repos")
     sub = p.add_subparsers(dest="command")
 
     cap = sub.add_parser("capture", help="snapshot the current arrangement into the layout")
