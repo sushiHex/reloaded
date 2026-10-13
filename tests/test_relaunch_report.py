@@ -16,6 +16,7 @@ renamed. The holds here are real file handles, in this process.
 from __future__ import annotations
 
 import datetime
+import pathlib
 import types
 
 import pytest
@@ -127,17 +128,45 @@ def test_the_directory_is_matched_however_it_is_spelled():
     assert len(_report(r"c:\repos\app\.")) == 1
 
 
-def test_a_claim_that_was_never_finished_is_reported_next_time():
-    """A reader that died between claiming and saying would otherwise lose
-    the report for good. Saying it twice is the better failure."""
+def test_another_readers_claim_is_never_taken_from_it():
+    """Found by review: re-reading claims that looked abandoned let a second,
+    living reader take one the first was about to report - one failure, said
+    twice. A claim belongs to whoever made it."""
     path = _record(outcome="failed\nit broke\n")
-    stranded = path.with_name(".".join(path.name.split(".")[:3]
-                                       + ["dead", "claimed"]))
-    path.rename(stranded)
+    path.rename(path.with_suffix(".claimed"))
+
+    assert _report() == []
+
+
+def test_a_record_cut_off_while_being_written_never_reported_back():
+    """Written whole or not at all, from the reader's side: a helper killed
+    mid-write has not said how it went, whatever the first bytes say."""
+    _record(outcome="ok")
 
     (said,) = _report()
 
-    assert "14:02:11 did not bring its session back: it broke" in said
+    assert "never reported back" in said
+
+
+def test_an_undecodable_record_is_reported_not_raised():
+    """Found by review: a decode error escaped, kept the claim, and would have
+    stopped every later restart here before it began."""
+    path = paths_mod.relaunch_attempt(CWD, WHEN.timestamp())
+    path.write_bytes(b"\xff\xfe\n\xff\n")
+
+    (said,) = _report()
+
+    assert "never reported back" in said
+    assert paths_mod.relaunch_attempts(CWD) == []
+
+
+def test_an_unreadable_history_is_no_reason_to_refuse_a_restart(monkeypatch):
+    def _broken(cwd):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(paths_mod, "relaunch_attempts", _broken)
+
+    assert _report() == []
 
 
 def test_a_dry_run_reads_nothing():
@@ -234,15 +263,54 @@ def test_the_dispatcher_lets_go_once_the_intermediate_is_gone(spawn):
     record.rename(record)  # raises if still held
 
 
-def test_a_launch_that_failed_leaves_no_record(spawn):
-    """The caller says so, then and there - and nothing holds the record, so
-    no helper was started to say anything later."""
+def test_a_launch_that_failed_is_not_reported_twice(spawn):
+    """The caller says so, then and there. Deleting the record instead raced
+    a reader claiming it between the close and the delete."""
     spawn.state["code"] = 1
 
     with pytest.raises(OSError):
         spawn.run()
 
+    assert len(paths_mod.relaunch_attempts(CWD)) == 1
+    assert _report() == []
+
+
+def test_a_session_that_cannot_be_read_leaves_no_record(spawn):
+    """Found by review: read after the record existed, a failure here left an
+    empty one behind to be reported as a helper that stopped - for a helper
+    that never started."""
+    class _Unreadable(_Proc):
+        def create_time(self):
+            raise OSError("gone")
+
+    with pytest.raises(OSError):
+        spawn.run(_Unreadable(20))
+
     assert paths_mod.relaunch_attempts(CWD) == []
+
+
+def test_the_hold_is_inherited_by_a_real_process():
+    """The fakes above cannot inherit anything. A real child - a plain
+    interpreter that sleeps, since the blast door rightly refuses anything
+    bootstrapped from relaunch - handed the record the way _detached hands
+    it: while it runs, the record cannot be claimed although this process
+    has let go, and once it exits it can."""
+    import subprocess
+    import sys
+
+    record = relaunch_mod._open_record(_Proc(20))
+    path = pathlib.Path(record.name)
+    info = subprocess.STARTUPINFO()
+    info.lpAttributeList = {
+        "handle_list": [relaunch_mod.msvcrt.get_osfhandle(record.fileno())]}
+    child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3)"],
+                             startupinfo=info, close_fds=True)
+    record.close()
+
+    with pytest.raises(PermissionError):
+        path.rename(path.with_suffix(".claimed"))
+    child.wait(timeout=60)
+    path.rename(path.with_suffix(".claimed"))
 
 
 def test_an_unreadable_directory_still_starts_the_helper(spawn):
@@ -313,7 +381,25 @@ def test_a_helper_that_crashes_records_that_and_still_raises(helper):
     assert status == "failed" and "boom" in said
 
 
-def test_end_to_end_a_failure_reaches_the_next_relaunch(helper):
+def test_the_ending_is_recorded_even_if_the_log_cannot_be_written(helper,
+                                                                  monkeypatch):
+    """Found by review: logged first, a log that raised meant nothing was
+    recorded - the one account that reaches anyone."""
+    record = _record()
+    helper.ending.update(status="failed", said="what happened")
+
+    def _no_log(line):
+        raise OSError("log gone")
+
+    monkeypatch.setattr(relaunch_mod, "_note", _no_log)
+
+    with pytest.raises(OSError):
+        helper.run(record)
+
+    assert record.read_text(encoding="utf-8") == "failed\nwhat happened\n"
+
+
+def test_a_helper_failure_reaches_the_next_reader(helper):
     record = _record()
     helper.ending.update(status="failed", said="could not write to shell pid 10")
 

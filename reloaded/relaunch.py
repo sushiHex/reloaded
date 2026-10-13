@@ -55,7 +55,6 @@ import pathlib
 import subprocess
 import sys
 import time
-import uuid
 
 from . import agents as agents_mod
 from . import discover as discover_mod
@@ -196,22 +195,32 @@ def report_earlier(cwd: str, say=print) -> None:
     here finds out. A record still held is an attempt still running, and is
     left alone. One that is free is claimed by renaming it, so that two
     readers cannot both take it, and read: a helper that finished wrote what
-    happened; one that stopped first wrote nothing. A claim a reader never
-    finished with is found and claimed again, which risks saying something
-    twice rather than not at all.
+    happened; one that stopped first wrote nothing, or not all of it.
+
+    A reader that dies between claiming and saying loses that report. Picking
+    such claims up again was tried, and let a second, living reader take a
+    claim the first was about to report: one failure, said twice.
+
+    Never in the way of the restart it runs ahead of: this is history.
     """
-    for path in paths_mod.relaunch_attempts(cwd):
-        claimed = path.with_name(
-            ".".join(path.name.split(".")[:3] + [uuid.uuid4().hex, "claimed"]))
+    try:
+        records = paths_mod.relaunch_attempts(cwd)
+    except OSError:
+        return
+    for path in records:
+        claimed = path.with_suffix(".claimed")
         try:
             path.rename(claimed)
         except OSError:
             continue  # still held, or taken by another reader
         try:
-            status, _, said = claimed.read_text(encoding="utf-8").partition("\n")
+            text = claimed.read_bytes().decode("utf-8", errors="replace")
         except OSError:
-            continue
-        line = _earlier(path.name, status, said.strip())
+            text = ""
+        # Written whole, in one write ending in a newline (_settle); anything
+        # short of that is a helper that stopped while writing.
+        lines = text.splitlines() if text.endswith("\n") else []
+        line = _earlier(path.name, *(lines + ["", ""])[:2])
         if line:
             say(line)
         _try_unlink(claimed)
@@ -219,7 +228,7 @@ def report_earlier(cwd: str, say=print) -> None:
 
 def _earlier(name: str, status: str, said: str) -> str:
     """What to say about one earlier attempt, from its record."""
-    if status == "ok":
+    if status in ("ok", "reported"):
         return ""
     try:
         at = datetime.datetime.fromtimestamp(int(name.split(".")[1]) / 1000)
@@ -313,11 +322,11 @@ def _spawn_helper(session, shell, kind: str, command: str, marker,
     "still working" is the helper's real state, not a sum of timeouts.
     Measured through a venv's redirector, which holds it for its child.
     """
+    call = (session.pid, session.create_time(), shell.pid, shell.create_time(),
+            kind, command, str(marker), stale)
     record = _open_record(session)
     lease = None if record is None else msvcrt.get_osfhandle(record.fileno())
-    call = (session.pid, session.create_time(), shell.pid, shell.create_time(),
-            kind, command, str(marker), stale,
-            "" if record is None else record.name)
+    call += ("" if record is None else record.name,)
     try:
         intermediate = _detached("_start_helper", (lease,) + call, lease)
         try:
@@ -329,12 +338,14 @@ def _spawn_helper(session, shell, kind: str, command: str, marker,
         if code != 0:
             raise OSError(f"the helper's launcher exited {code}")
     except BaseException:
-        # The caller says this failed, now, to someone reading. The record
-        # goes too - unless a helper did start and holds it, in which case
-        # the helper will say what became of it.
+        # The caller says this failed, now, to someone reading, so the record
+        # says that much for the next one. A helper that did start holds it
+        # and overwrites this with its own ending.
         if record is not None:
-            record.close()
-            _try_unlink(pathlib.Path(record.name))
+            try:
+                record.write("reported\nthe helper could not be started\n")
+            except OSError:
+                pass
         raise
     finally:
         if record is not None:
@@ -342,15 +353,20 @@ def _spawn_helper(session, shell, kind: str, command: str, marker,
 
 
 def _open_record(session):
-    """A new, open, inheritable record of this attempt, or None when the
-    session's directory cannot be read (there would be nothing to file it
-    under)."""
+    """A new, open, inheritable record of this attempt, or None when there is
+    none - the session's directory unreadable, say. Its absence costs only
+    the report, never the restart."""
     try:
         path = paths_mod.relaunch_attempt(session.cwd(), time.time())
         record = open(path, "x", encoding="utf-8")
     except Exception:
         return None
-    os.set_handle_inheritable(msvcrt.get_osfhandle(record.fileno()), True)
+    try:
+        os.set_handle_inheritable(msvcrt.get_osfhandle(record.fileno()), True)
+    except OSError:
+        record.close()
+        _try_unlink(path)
+        return None
     return record
 
 
@@ -440,8 +456,8 @@ def bring_back(session_pid: int, session_created: float, shell_pid: int,
     except BaseException as exc:
         _settle(record, "failed", f"the helper stopped on an error: {exc!r}")
         raise
-    _note(said)
     _settle(record, status, said)
+    _note(said)
 
 
 def _note(line: str) -> None:

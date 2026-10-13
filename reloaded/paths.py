@@ -108,9 +108,8 @@ def relaunch_attempt(cwd: str, dispatched: float) -> pathlib.Path:
 
 
 def relaunch_attempts(cwd: str) -> list[pathlib.Path]:
-    """Every record of a `/relaunch` in `cwd`, oldest first: unread ones, and
-    ones a reader claimed (renamed) and never finished with."""
-    return sorted(_attempts_dir().glob(f"{_digest(cwd)}.*"),
+    """Every unread record of a `/relaunch` in `cwd`, oldest first."""
+    return sorted(_attempts_dir().glob(f"{_digest(cwd)}.*.attempt"),
                   key=lambda p: p.name.split(".")[1])
 
 

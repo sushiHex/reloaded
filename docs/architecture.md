@@ -186,8 +186,11 @@ creation on - by the dispatcher until the intermediate exits, and by the
 handle each child inherits - and Windows refuses to rename a file held that
 way. A reader claims a record by renaming it, so "still running" is the OS's
 answer about the helper rather than a sum of timeouts, and two readers cannot
-take one record. A record whose helper wrote nothing is reported as never
-having reported back.
+take one record. A record whose helper wrote nothing, or not all of it, is
+reported as never having reported back. A reader that dies between claiming
+and saying loses that report; re-reading abandoned claims let a second, living
+reader repeat one that was about to be said. Records wait for the next `--self`
+in their directory, so there are at most a few per directory ever restarted.
 
 There is no generation or nonce on a restart marker. Overlapping restarts of
 one repository collapse into one request; full and named restarts do not
