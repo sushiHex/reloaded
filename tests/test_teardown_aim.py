@@ -145,3 +145,41 @@ def test_the_log_says_already_gone_rather_than_sent(monkeypatch):
     assert "had already gone" in joined
     assert "sent /exit" not in joined
     assert result["exited"] == [("app", r"C:\repos\app")]
+
+
+def _zero_keys_from_a_live_session(monkeypatch, *, alive_after: bool):
+    """execute_down for one session that is running when its tab is
+    reached, sends no quit key, and then is gone or is not."""
+    import psutil
+    answers = iter([True])  # asked first as the tab is reached
+    monkeypatch.setattr(tabs_mod, "select_tab", lambda hwnd, item, **kw: True)
+    monkeypatch.setattr(tabs_mod, "send_quit_keystrokes", lambda keys, **kw: 0)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: next(answers, alive_after))
+    monkeypatch.setattr(win32_mod, "close_window", lambda hwnd: True)
+    monkeypatch.setattr(win32_mod, "is_wt_window", lambda hwnd: True)
+    monkeypatch.setattr(teardown_mod.time, "sleep", lambda s: None)
+    monkeypatch.setattr(teardown_mod, "EXIT_TIMEOUT_SECONDS", 0)
+
+    lines = []
+    plan = teardown_mod.WindowPlan(
+        hwnd=1, total_tabs=2,
+        targets=[teardown_mod.Target("app", r"C:\repos\app", 9, _Tab())])
+    teardown_mod.execute_down([plan], log=lines.append)
+    return "\n".join(lines)
+
+
+def test_a_session_ended_by_the_escape_is_not_said_to_have_gone(monkeypatch):
+    """#62: at Claude Code's folder-trust dialog the Escape sent ahead of
+    /exit means "No, exit". The session was there for its turn."""
+    joined = _zero_keys_from_a_live_session(monkeypatch, alive_after=False)
+
+    assert "app ended before /exit was typed" in joined
+    assert "had already gone" not in joined
+
+
+def test_a_session_still_running_after_zero_keys_is_not_said_to_have_gone(monkeypatch):
+    """No key went out because focus moved - and the session is still there."""
+    joined = _zero_keys_from_a_live_session(monkeypatch, alive_after=True)
+
+    assert "app lost focus before /exit was typed" in joined
+    assert "had already gone" not in joined
