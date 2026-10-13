@@ -48,7 +48,6 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as w
-import datetime
 import os
 import pathlib
 import subprocess
@@ -59,7 +58,7 @@ from . import agents as agents_mod
 from . import discover as discover_mod
 from . import win32 as win32_mod
 from .deploy import RESTART_MARKER_TTL_SECONDS
-from .paths import log_path, restart_marker, shell_marker
+from .paths import log_path, restart_marker, shell_marker, stamped
 
 # The shells a resume command can be written into. The command is quoted for
 # PowerShell (discover._format_command), so nothing else would parse it.
@@ -326,8 +325,7 @@ def bring_back(session_pid: int, session_created: float, shell_pid: int,
     marker_path = pathlib.Path(marker)
 
     def note(line: str) -> None:
-        stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"{stamp}  [relaunch] {line}", flush=True)
+        print(stamped(f"[relaunch] {line}"), flush=True)
 
     # Not before this process is out of the session's tree: the quit ends the
     # tree, and the intermediate that started this may not have exited yet.

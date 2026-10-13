@@ -1,6 +1,7 @@
 """Path normalization and state-directory resolution."""
 from __future__ import annotations
 
+import datetime
 import hashlib
 import os
 import pathlib
@@ -38,6 +39,11 @@ def layout_path(name: str = "default") -> pathlib.Path:
 
 def log_path() -> pathlib.Path:
     return state_dir() / "reloaded.log"
+
+
+def stamped(message: str) -> str:
+    """A line for the log: every writer stamps it the same way."""
+    return f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  {message}"
 
 
 def restore_marker() -> pathlib.Path:
@@ -102,3 +108,15 @@ def shell_marker(pid: int) -> pathlib.Path:
     has one reader. deploy.restart_loop checks it before the directory's.
     """
     return restart_marker_dir() / f"shell-{pid}.marker"
+
+
+def tab_title(cwd: str) -> str:
+    """What reloaded calls a tab it launched.
+
+    The repo's own directory name - which is also what resolve_tab's
+    repos-root guess looks for, and what every recorded title on a real
+    machine turned out to be. One definition, used for the tab itself, for the
+    banner the shell prints, and, through the guess, for finding the tab again
+    afterwards.
+    """
+    return os.path.basename(cwd.rstrip("\\/")) or cwd

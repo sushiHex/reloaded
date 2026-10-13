@@ -113,13 +113,6 @@ def _class_name(hwnd: int) -> str:
     return buf.value
 
 
-def window_title(hwnd: int) -> str:
-    n = _u32.GetWindowTextLengthW(wintypes.HWND(hwnd))
-    buf = ctypes.create_unicode_buffer(n + 1)
-    _u32.GetWindowTextW(wintypes.HWND(hwnd), buf, n + 1)
-    return buf.value
-
-
 def list_wt_windows() -> list[int]:
     """Visible Windows Terminal top-level windows, in Z-order as EnumWindows yields them."""
     found: list[int] = []

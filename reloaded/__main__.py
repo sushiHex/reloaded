@@ -15,6 +15,7 @@ from . import deploy as deploy_mod
 from . import discover as discover_mod
 from . import editor as editor_mod
 from . import layout as layout_mod
+from . import pwsh
 from . import readiness as readiness_mod
 from . import relaunch as relaunch_mod
 from . import tabs as tabs_mod
@@ -30,6 +31,8 @@ from .paths import (
     resolve_repo,
     restart_marker,
     restart_marker_dir,
+    stamped,
+    tab_title,
 )
 
 DEFAULT_REPOS_ROOT = os.path.join(os.path.expanduser("~"), "repos")
@@ -266,7 +269,7 @@ def _unresolved_live_repos(fresh, live) -> list[str]:
     """
     captured = {norm(t.cwd) for w in fresh.windows for t in w.tabs}
     return sorted(
-        os.path.basename(cwd.rstrip("\\/")) or cwd
+        tab_title(cwd)
         for cwd in live
         if norm(cwd) not in captured
     )
@@ -306,11 +309,11 @@ def _capture_shrinkage(fresh, path, live) -> str:
     for w in fresh.windows:
         for t in w.tabs:
             discover_mod.claim_running(unclaimed, live, t.cwd, t.agent)
-            captured[(norm(t.cwd), t.agent or "claude")] += 1
+            captured[(norm(t.cwd), t.agent or agents_mod.DEFAULT_KIND)] += 1
     lost_cwds = set()
     for w in previous.windows:
         for t in w.tabs:
-            key = (norm(t.cwd), t.agent or "claude")
+            key = (norm(t.cwd), t.agent or agents_mod.DEFAULT_KIND)
             if captured[key] > 0:
                 captured[key] -= 1
             elif discover_mod.claim_running(unclaimed, live, t.cwd, t.agent):
@@ -319,16 +322,10 @@ def _capture_shrinkage(fresh, path, live) -> str:
     if not lost:
         return ""
 
-    names = ", ".join(os.path.basename(c.rstrip("\\/")) for c in lost[:6])
+    names = ", ".join(tab_title(c) for c in lost[:6])
     if len(lost) > 6:
         names += f" (+{len(lost) - 6} more)"
     return f"{len(lost)} running session(s) missing from this capture — {names}"
-
-
-def _stamped(message: str) -> str:
-    import datetime
-
-    return f"{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}  {message}"
 
 
 def _append(line: str) -> None:
@@ -348,7 +345,7 @@ def _record(message: str) -> None:
     else to send it. This is an audit line about the user's saved state, and
     that is worth keeping whether or not a console was attached.
     """
-    _append(_stamped(message))
+    _append(stamped(message))
 
 
 def _refused_for_shrinkage(lo, path, live, args, *, cost: str, escape: str) -> bool:
@@ -397,7 +394,7 @@ def _log(message: str) -> None:
     # from separate `now()` calls lets them disagree by a second whenever the
     # write lands across a tick, and lining console up against log is the whole
     # reason anyone reads both for the same run.
-    line = _stamped(message)
+    line = stamped(message)
     print(line)
     _append(line)
 
@@ -717,8 +714,6 @@ def _type_relaunch(s: _Restarting) -> bool:
     SendKeys reads `{` and `(` as syntax - escaped, the launcher is 838
     keystrokes, and they did not all arrive when tried.
     """
-    import time
-
     path = relaunch_script_path(s.cwd)
     path.write_text(
         deploy_mod.relaunch_script(s.cwd, s.size_bytes, s.agent, s.command),
@@ -735,7 +730,7 @@ def _type_relaunch(s: _Restarting) -> bool:
     time.sleep(1.0)
     if not tabs_mod.select_tab(s.hwnd, s.item):
         return False
-    auto.SendKeys("& '%s'{Enter}" % path)
+    auto.SendKeys("& %s{Enter}" % pwsh.literal(str(path)))
     return True
 
 
@@ -757,8 +752,6 @@ def _wait_for_session(cwd: str, *, not_pid: int | None = None) -> int | None:
     as long as the old process stayed alive, which for a timed-out exit is
     indefinitely.
     """
-    import time
-
     key = norm(cwd)
     deadline = time.time() + RELAUNCH_WAIT_SECONDS
     while True:
@@ -778,8 +771,6 @@ def _sweep_stale_markers() -> None:
     a race we lose. deploy's TTL already makes an old marker inert, so this is
     housekeeping, not correctness.
     """
-    import time
-
     cutoff = time.time() - deploy_mod.RESTART_MARKER_TTL_SECONDS
     try:
         stale = [m for m in restart_marker_dir().glob("*.marker")
@@ -797,9 +788,8 @@ def cmd_restart_one(args, repos: list[str]) -> int:
     """Restart only the named sessions, in place, without closing their tabs."""
     cwds = [resolve_repo(r, args.repos_root) for r in repos]
 
-    # Both halves of one walk. Asking `live_sessions()` and `crowded_dirs()`
-    # separately pays two full process_iter sweeps for one question - 1.47s
-    # each against 679 processes on the machine this was measured on.
+    # Both halves of one walk: asked separately, they are two process sweeps
+    # for one question.
     live, crowded = discover_mod.sweep()
 
     refusal = _nothing_running_there(cwds, live)
@@ -933,20 +923,6 @@ def _no_tab_to_type_into(cwds, plans) -> str:
     )
 
 
-def _print_hand_upgrade(verb: str) -> None:
-    """The one consequence of restarting a hand-started session that outlives
-    the restart: its tab stops being a plain shell.
-
-    One wording, two tenses, because two paths describe the same fact - the
-    named restart's preview, and `--self`'s refusal to do it to you. Written
-    separately they drift, and the version a user happens to meet decides
-    whether they understood what they agreed to.
-    """
-    print(f"    its tab {verb} upgraded to the reloaded launcher, which "
-          "self-closes")
-    print("    when the session exits.")
-
-
 def _preview_restart(plans) -> None:
     """`--dry-run`: what would happen, and the one consequence worth previewing."""
     for t in teardown_mod.targets(plans):
@@ -956,7 +932,9 @@ def _preview_restart(plans) -> None:
             # permanently. A preview that reads the same for both kinds hides
             # that until after the fact.
             print("    Started by hand, so restarting it changes the tab:")
-            _print_hand_upgrade("would be")
+            print("    its tab would be upgraded to the reloaded launcher, "
+                  "which self-closes")
+            print("    when the session exits.")
     print("\nDry run — no marker written, nothing sent.")
 
 
@@ -968,7 +946,7 @@ def _snapshot_restarts(plans, args) -> list[_Restarting]:
     than merely tidy.
     """
     sizes = _transcript_sizes(discover_mod.transcript_index(need_title=False))
-    live_kinds = discover_mod.live_agents()
+    live_kinds = None  # a full process sweep, so only if a process is unreadable
     saved = _recorded_launches(args)
 
     sessions = []
@@ -980,7 +958,10 @@ def _snapshot_restarts(plans, args) -> list[_Restarting]:
             # Both from the same process, in one read. See session_launch for
             # what taking them from two sweeps costs.
             agent, command = discover_mod.session_launch(t.pid)
-            agent = agent or live_kinds.get(key) or saved_agent
+            if not agent:
+                if live_kinds is None:
+                    live_kinds = discover_mod.live_agents()
+                agent = live_kinds.get(key) or saved_agent
             if not command and agent == saved_agent:
                 # The layout lends its command line only to the agent it
                 # recorded it for. A repo that has changed CLI since the last
@@ -1069,8 +1050,6 @@ def _marker_life_left(cwd: str) -> float:
     against the same TTL (`deploy.restart_loop`), so this is the same question
     that shell will ask, asked early.
     """
-    import time
-
     try:
         age = time.time() - restart_marker(cwd).stat().st_mtime
     except OSError:
@@ -1139,7 +1118,7 @@ def _reopen_in_a_new_tab(s: _Restarting) -> bool:
         print(f"    [warn] could not clear {s.cwd}'s restart marker: {exc}")
         print("        Not reopening it here — the new tab would inherit that "
               "marker and restart on your next /exit.")
-        repo = os.path.basename(s.cwd.rstrip("\\/")) or s.cwd
+        repo = tab_title(s.cwd)
         print(f"        Delete {restart_marker(s.cwd)} and run "
               f"`reloaded open {repo}`.")
         return False
@@ -1338,7 +1317,17 @@ def cmd_uninstall_tasks(args) -> int:
 
 
 def cmd_status(args) -> int:
+    import concurrent.futures
+
     path = layout_path(args.layout)
+    # A PowerShell package query, ~1.7s: started now, it runs during the sweep.
+    # Only with a layout to report on - without one, `status` returns before
+    # reading it, and the exiting process would still wait for the query.
+    has_layout = path.exists()
+    if has_layout:
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        wt_check = pool.submit(readiness_mod.check_wt_version)
+        pool.shutdown(wait=False)
     live, crowded = discover_mod.sweep()
 
     print(f"live sessions : {len(live)}")
@@ -1359,7 +1348,7 @@ def cmd_status(args) -> int:
               "may leave one")
         print("       running: quitting is aimed by directory, not by session.")
 
-    if not path.exists():
+    if not has_layout:
         print(f"\nno layout saved at {path} — run `reloaded capture`")
         return 1
 
@@ -1380,7 +1369,7 @@ def cmd_status(args) -> int:
     ready, reason = readiness_mod.wait_for_ready(lo, timeout=0)
     print(f"readiness     : {reason}" if ready else f"[warn] readiness: {reason}")
 
-    wt_ok, wt_detail = readiness_mod.check_wt_version()
+    wt_ok, wt_detail = wt_check.result()
     print(f"terminal      : {wt_detail}" if wt_ok else f"[warn] terminal: {wt_detail}")
 
     would_launch = 0
@@ -1438,12 +1427,6 @@ def _recorded_launches(args) -> dict[str, tuple[str, str]]:
     return out
 
 
-def _recorded_launch(args, cwd) -> tuple[str, str]:
-    """One repo's (agent, command) from the saved layout, or the defaults."""
-    return _recorded_launches(args).get(
-        norm(cwd), (agents_mod.DEFAULT_KIND, ""))
-
-
 def cmd_open(args) -> int:
     cwd = resolve_repo(args.repo, args.repos_root)
     if not os.path.isdir(cwd):
@@ -1460,7 +1443,8 @@ def cmd_open(args) -> int:
     # only record of what this repo runs. Absent from it, or no layout at
     # all, means Claude Code - which is what every repo meant before a
     # second kind existed.
-    agent, command = _recorded_launch(args, cwd)
+    agent, command = _recorded_launches(args).get(
+        norm(cwd), (agents_mod.DEFAULT_KIND, ""))
     argv = deploy_mod.wt_argv_single_tab(cwd, sizes.get(norm(cwd), 0),
                                          agent, command)
 
@@ -1566,7 +1550,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        return _dispatch(args, parser)
+        return _dispatch(args)
     except SystemExit:
         raise
     except BaseException:
@@ -1599,27 +1583,18 @@ def _report_crash(args) -> int:
     return 1
 
 
-def _dispatch(args, parser) -> int:
-    if args.command == "capture":
-        return cmd_capture(args)
-    if args.command == "up":
-        return cmd_up(args)
-    if args.command == "status":
-        return cmd_status(args)
-    if args.command == "open":
-        return cmd_open(args)
-    if args.command == "down":
-        return cmd_down(args)
-    if args.command == "restart":
-        return cmd_restart(args)
-    if args.command == "install-tasks":
-        return cmd_install_tasks(args)
-    if args.command == "uninstall-tasks":
-        return cmd_uninstall_tasks(args)
-    if args.command in (None, "edit"):
-        return cmd_edit(args)
-    parser.print_help()
-    return 0
+def _dispatch(args) -> int:
+    """argparse rejects anything else; no subcommand opens the editor."""
+    return {
+        "capture": cmd_capture,
+        "up": cmd_up,
+        "status": cmd_status,
+        "open": cmd_open,
+        "down": cmd_down,
+        "restart": cmd_restart,
+        "install-tasks": cmd_install_tasks,
+        "uninstall-tasks": cmd_uninstall_tasks,
+    }.get(args.command, cmd_edit)(args)
 
 
 if __name__ == "__main__":

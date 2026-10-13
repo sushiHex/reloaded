@@ -293,7 +293,7 @@ def test_execute_down_never_types_into_a_window_that_did_not_actually_foreground
     unrelated window actually has focus. Must skip, not guess."""
     monkeypatch.setattr(teardown_mod.tabs, "select_tab", lambda hwnd, item: False)
     sent = []
-    monkeypatch.setattr(teardown_mod.tabs, "send_exit_keystrokes", lambda **k: sent.append(1))
+    monkeypatch.setattr(teardown_mod.tabs, "send_quit_keystrokes", lambda *a, **k: sent.append(1))
     monkeypatch.setattr(
         psutil,
         "pid_exists",

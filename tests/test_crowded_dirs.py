@@ -44,14 +44,14 @@ def test_one_agent_per_directory_is_not_crowded(processes):
     processes += [_Proc("claude.exe", 1, r"C:\repos\app"),
                   _Proc("codex.exe", 2, r"C:\repos\beta")]
 
-    assert discover_mod.crowded_dirs() == {}
+    assert discover_mod.sweep()[1] == {}
 
 
 def test_two_kinds_in_one_directory_are_named(processes):
     processes += [_Proc("codex.exe", 1, r"C:\repos\app"),
                   _Proc("claude.exe", 2, r"C:\repos\app")]
 
-    assert discover_mod.crowded_dirs() == {norm(r"C:\repos\app"): ["claude", "codex"]}
+    assert discover_mod.sweep()[1] == {norm(r"C:\repos\app"): ["claude", "codex"]}
 
 
 def test_two_of_the_same_kind_are_named_too(processes):
@@ -60,7 +60,7 @@ def test_two_of_the_same_kind_are_named_too(processes):
     processes += [_Proc("claude.exe", 1, r"C:\repos\app"),
                   _Proc("claude.exe", 2, r"C:\repos\app")]
 
-    assert discover_mod.crowded_dirs() == {norm(r"C:\repos\app"): ["claude", "claude"]}
+    assert discover_mod.sweep()[1] == {norm(r"C:\repos\app"): ["claude", "claude"]}
 
 
 def test_the_collapsed_session_map_is_unchanged(processes):
@@ -101,3 +101,17 @@ def test_status_says_nothing_when_no_directory_is_shared(monkeypatch, tmp_path, 
                                               repos_root=r"C:\repos"))
 
     assert "share" not in capsys.readouterr().out
+
+
+def test_status_without_a_layout_starts_no_terminal_query(monkeypatch, tmp_path):
+    """Found by review: started and never read, the ~1.7s PowerShell query
+    still held the exiting process until it finished."""
+    monkeypatch.setattr(main_mod, "layout_path", lambda name: tmp_path / "none.json")
+    monkeypatch.setattr(main_mod.discover_mod, "sweep", lambda: ({}, {}))
+    asked = []
+    monkeypatch.setattr(main_mod.readiness_mod, "check_wt_version",
+                        lambda: asked.append(1) or (True, ""))
+
+    assert main_mod.cmd_status(types.SimpleNamespace(
+        layout="default", repos_root=r"C:\repos")) == 1
+    assert asked == []

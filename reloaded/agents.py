@@ -14,6 +14,8 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 
+from . import pwsh
+
 
 @dataclass(frozen=True)
 class Agent:
@@ -66,6 +68,10 @@ class Agent:
     # `resume_by_id` flag given no id - which opens a picker. See
     # `resuming`.
     resume_latest: str = ""
+    # Whether transcript.py's torn-tail guard has been verified against this
+    # kind's session records. Repair ends in a truncation, so running it on an
+    # unverified format is a guess with a destructive edit on the end.
+    repairs_transcripts: bool = False
 
 
 def _codex_home() -> str:
@@ -91,6 +97,7 @@ CLAUDE = Agent(
     # a new conversation: `resume_exactly` has to drop it with the rest.
     resume_tokens=("--continue", "-c", "--resume", "-r", "--fork-session"),
     sessions_dir=os.path.join(os.path.expanduser("~"), ".claude", "projects"),
+    repairs_transcripts=True,
     resume_by_id=("--resume", "-r"),
     # From `claude --help`, 2.1.280: every option with no <value> or [value],
     # and every one whose value is <values...>. A flag added later reads as
@@ -136,6 +143,10 @@ CODEX = Agent(
 )
 
 AGENTS = {a.kind: a for a in (CLAUDE, CODEX)}
+
+# Kind by image name (lowercase, as psutil reports it) and by launch binary.
+BY_PROCESS = {a.process: a.kind for a in AGENTS.values()}
+BY_BINARY = {a.binary: a.kind for a in AGENTS.values()}
 
 
 def resumes(kind, command: str) -> bool:
@@ -270,7 +281,7 @@ def resuming(kind, command: str) -> str:
     return " ".join(kept)
 
 
-_SINGLE = "'‘’‚‛"  # every character PowerShell reads as `'`
+_SINGLE = pwsh.SINGLE_QUOTES
 
 
 def _ps_tokens(command: str) -> list:

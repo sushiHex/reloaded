@@ -15,7 +15,7 @@ from . import deploy as deploy_mod
 from . import layout as layout_mod
 from . import tabs as tabs_mod
 from .layout import Layout, Tab, Window
-from .paths import resolve_repo
+from .paths import resolve_repo, tab_title
 
 
 def _live_agent(cwd: str) -> tuple[str, str]:
@@ -32,12 +32,11 @@ def _live_agent(cwd: str) -> tuple[str, str]:
     from .paths import norm
 
     try:
-        key = norm(cwd)
-        kind = discover_mod.live_agents().get(key)
-        if kind is None:
+        pid = discover_mod.live_sessions().get(norm(cwd))
+        if pid is None:
             return agents_mod.DEFAULT_KIND, ""
-        return kind, discover_mod.session_command(
-            discover_mod.live_sessions().get(key, -1))
+        kind, command = discover_mod.session_launch(pid)
+        return kind or agents_mod.DEFAULT_KIND, command
     except Exception:
         return agents_mod.DEFAULT_KIND, ""
 
@@ -228,7 +227,7 @@ def run(lo: Layout, layout_file, repos_root: str) -> int:
             agent, command = _live_agent(cwd)
             # Pinned: this repo may not be running, and a capture only sees live
             # sessions. Without the flag the next reconcile would erase it.
-            tab = Tab(cwd=cwd, title=os.path.basename(cwd), pinned=True,
+            tab = Tab(cwd=cwd, title=tab_title(cwd), pinned=True,
                       agent=agent, command=command)
             lo.windows[wi].tabs.append(tab)
             print(f"added {cwd}{layout_mod.tab_flags(tab)}")

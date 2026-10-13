@@ -158,7 +158,7 @@ def plan_down(
 
 
 def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=None,
-               quit_keys=("/exit", "{Enter}"), pid: int | None = None) -> "Sent":
+               quit_keys=agents.CLAUDE.quit_keys, pid: int | None = None) -> "Sent":
     """Foreground `item`'s tab and type its agent's quit keys into it.
 
     Returns a `Sent`. `reached` False means the tab could not be confirmed and
@@ -241,7 +241,6 @@ def close_dead_tabs(plans, exited, still_open=None, log=print) -> int:
     element. Returns how many were closed, so the caller can subtract them
     from the window's remaining tab count.
     """
-    from . import tabs as tabs_mod
 
     ended = {cwd for _title, cwd in exited}
     closed = 0
@@ -250,7 +249,7 @@ def close_dead_tabs(plans, exited, still_open=None, log=print) -> int:
             continue
         if still_open is not None and not still_open(t.item):
             continue
-        if tabs_mod.close_tab(t.item):
+        if tabs.close_tab(t.item):
             log(f"    closed the empty tab left by {t.title}")
             closed += 1
     return closed
@@ -399,7 +398,7 @@ def execute_down(
                     # dismiss_overlay=False: Escape would cancel rather than
                     # answer Claude Code's background-agent /exit
                     # confirmation - the exact thing this resend exists to
-                    # get past. See tabs.send_exit_keystrokes.
+                    # get past. See tabs.send_quit_keystrokes.
                     resent = _send_exit(plan.hwnd, item, dismiss_overlay=False,
                                         quit_keys=quit_keys, pid=pid)
                     # `keys` as well as `reached`: a zero with the tab reached

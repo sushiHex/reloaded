@@ -26,12 +26,10 @@ def live(monkeypatch):
     """What discovery reports for the repo about to be added."""
     state = {"agents": {}, "commands": {}}
 
-    monkeypatch.setattr(discover_mod, "live_agents",
-                        lambda: {norm(c): k for c, k in state["agents"].items()})
     monkeypatch.setattr(discover_mod, "live_sessions",
                         lambda: {norm(c): 99 for c in state["agents"]})
-    monkeypatch.setattr(discover_mod, "session_command",
-                        lambda pid: state["commands"].get(pid, ""))
+    monkeypatch.setattr(discover_mod, "session_launch", lambda pid: (
+        next(iter(state["agents"].values()), ""), state["commands"].get(pid, "")))
     monkeypatch.setattr(editor_mod, "resolve_repo", lambda ref, root: CWD)
     monkeypatch.setattr(editor_mod.os.path, "isdir", lambda p: True)
     return state
@@ -70,7 +68,7 @@ def test_a_repo_that_is_not_running_falls_back_to_the_default(live, monkeypatch,
 def test_discovery_failing_does_not_take_the_editor_down(live, monkeypatch, tmp_path):
     """psutil is not needed to edit a layout. An editor that cannot add a repo
     because a process sweep raised would be a poor trade."""
-    monkeypatch.setattr(discover_mod, "live_agents",
+    monkeypatch.setattr(discover_mod, "live_sessions",
                         lambda: (_ for _ in ()).throw(OSError("no psutil")))
 
     lo = _run(monkeypatch, tmp_path, "a 1 thing")

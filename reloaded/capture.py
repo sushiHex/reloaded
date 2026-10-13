@@ -4,9 +4,9 @@ from __future__ import annotations
 import datetime
 import os
 
-from . import discover, tabs, win32
+from . import agents, discover, tabs, win32
 from .layout import LAYOUT_VERSION, Layout, Monitor, Tab, Window
-from .paths import norm
+from .paths import norm, tab_title
 
 
 def resolve_tab(
@@ -52,7 +52,7 @@ def build_layout(
     session of the kind `kinds` names, placed by title alone, as before.
     """
     pool = sorted(sessions if sessions is not None else [
-        discover.Session(pid, cwd, (kinds or {}).get(cwd, "claude"), 0.0, None)
+        discover.Session(pid, cwd, (kinds or {}).get(cwd, agents.DEFAULT_KIND), 0.0, None)
         for cwd, pid in live.items()], key=lambda s: s.started)
     # Once each, across the whole layout: two titles can resolve to one
     # session, and a duplicate would launch it twice against one transcript.
@@ -86,7 +86,7 @@ def build_layout(
         # In this window by its shell, under a title that names no repo.
         for s in pool:
             if s.pid not in taken and hwnd is not None and s.hwnd == hwnd:
-                add(s, s.cwd, os.path.basename(s.cwd.rstrip("\\/")), False)
+                add(s, s.cwd, tab_title(s.cwd), False)
         if not tab_objs:
             continue
         windows.append(
@@ -121,7 +121,7 @@ def merge_pinned(fresh: Layout, previous: Layout | None) -> Layout:
     # a Claude and a Codex tab, and a pinned Codex tab is not present because
     # its Claude neighbour is.
     def identity(t):
-        return norm(t.cwd), t.agent or "claude"
+        return norm(t.cwd), t.agent or agents.DEFAULT_KIND
 
     present = {identity(t) for w in fresh.windows for t in w.tabs}
 

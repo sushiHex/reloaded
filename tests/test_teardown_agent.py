@@ -66,13 +66,6 @@ def test_the_retry_skips_the_escape(keys):
     assert "{Esc}" not in _sent(keys)
 
 
-def test_the_old_entry_point_still_sends_claude_keys(keys):
-    """Callers predating agent kinds keep working."""
-    tabs_mod.send_exit_keystrokes()
-
-    assert _sent(keys) == ["{Esc}", "/exit", "{Enter}"]
-
-
 # ── wired into teardown ──────────────────────────────────────────────────
 
 import reloaded.teardown as teardown_mod  # noqa: E402

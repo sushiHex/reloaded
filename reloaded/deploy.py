@@ -9,11 +9,13 @@ import time
 import uuid
 from dataclasses import dataclass, field
 
+from . import agents as agents_mod
+from . import pwsh
 from . import tabs as tabs_mod
 from . import win32
 from .discover import TranscriptInfo
 from .layout import Layout, Monitor, Tab, clamp_rect, window_id
-from .paths import norm, restart_marker, restart_marker_dir, restore_marker
+from .paths import norm, restart_marker, restart_marker_dir, restore_marker, tab_title
 from .transcript import SIZE_WARN_BYTES, human_size
 
 STAGGER_SECONDS = 4
@@ -45,8 +47,6 @@ RESUME_SUPPRESSOR = "$env:CLAUDE_CODE_RESUME_TOKEN_THRESHOLD='999999999'"
 # In PowerShell assigning $null removes the variable outright rather than
 # setting it empty, so children of this shell do not see it at all (verified).
 CHILD_SESSION_CLEAR = "$env:CLAUDE_CODE_CHILD_SESSION=$null"
-
-CLAUDE_COMMAND = "claude --dangerously-skip-permissions --continue"
 
 # A tab exists to host one Claude Code session, so once that session ends the
 # tab is dead weight. `-NoExit` (see new_tab_args) keeps the shell alive on
@@ -81,7 +81,7 @@ CLOSE_TAB_IF_STARTED = (
 RESTART_MARKER_TTL_SECONDS = 120
 
 
-def restart_loop(cwd: str, invocation: str = CLAUDE_COMMAND) -> str:
+def restart_loop(cwd: str, invocation: str) -> str:
     """Wrap `invocation` so `restart <repo>` can relaunch a session without the
     tab ever closing.
 
@@ -110,8 +110,8 @@ def restart_loop(cwd: str, invocation: str = CLAUDE_COMMAND) -> str:
     checked before the directory's. Only this shell reads it, so a sibling
     tab in the same directory cannot take a request meant for this one.
     """
-    m = _ps_quote(str(restart_marker(cwd)))
-    own = _ps_quote(str(restart_marker_dir() / "shell-"))
+    m = pwsh.escape(str(restart_marker(cwd)))
+    own = pwsh.escape(str(restart_marker_dir() / "shell-"))
     body = "; ".join((
         f"if ($rlNext) {{ Invoke-Expression $rlNext }} else {{ {invocation} }}",
         f"$rlM=$null; if (Test-Path -LiteralPath $rlOwn) {{ $rlM=$rlOwn }} "
@@ -159,11 +159,6 @@ def shell_executable() -> str:
     return "pwsh" if shutil.which("pwsh") else "powershell"
 
 
-def _ps_quote(s: str) -> str:
-    """Escape for a PowerShell single-quoted string."""
-    return s.replace("'", "''")
-
-
 def _wt_escape(s: str) -> str:
     """Escape a value being passed as one wt argument.
 
@@ -177,7 +172,7 @@ def _wt_escape(s: str) -> str:
 
 
 def launcher_command(cwd: str, delay: int, size_bytes: int,
-                     agent: str = "claude", command: str = "") -> str:
+                     agent: str = agents_mod.DEFAULT_KIND, command: str = "") -> str:
     """The PowerShell command run inside one tab.
 
     `command` is what capture read off the live process; empty falls back to
@@ -185,7 +180,6 @@ def launcher_command(cwd: str, delay: int, size_bytes: int,
     environment hygiene around it, the restart loop and the self-closing guard
     are properties of the shell and apply to every tab.
     """
-    from . import agents as agents_mod
 
     invocation = (agents_mod.resuming(agent, command)
                   or agents_mod.for_kind(agent).launch)
@@ -194,9 +188,9 @@ def launcher_command(cwd: str, delay: int, size_bytes: int,
 
     if size_bytes >= SIZE_WARN_BYTES:
         warn = f"[reloaded] {name} - transcript {human_size(size_bytes)}, consider /compact"
-        parts.append(f"Write-Host '{_ps_quote(warn)}' -ForegroundColor Yellow")
+        parts.append(f"Write-Host '{pwsh.escape(warn)}' -ForegroundColor Yellow")
     else:
-        parts.append(f"Write-Host '{_ps_quote('[reloaded] ' + name)}' -ForegroundColor DarkGray")
+        parts.append(f"Write-Host '{pwsh.escape('[reloaded] ' + name)}' -ForegroundColor DarkGray")
 
     if delay > 0:
         parts.append(f"Start-Sleep {delay}")
@@ -208,7 +202,7 @@ def launcher_command(cwd: str, delay: int, size_bytes: int,
 
 
 def relaunch_script(cwd: str, size_bytes: int,
-                    agent: str = "claude", command: str = "") -> str:
+                    agent: str = agents_mod.DEFAULT_KIND, command: str = "") -> str:
     """The launcher, as a script to run inside a shell that already exists.
 
     `restart <repo>` uses this on a session started by hand rather than by
@@ -231,18 +225,6 @@ def relaunch_script(cwd: str, size_bytes: int,
         f"if (((Get-Date)-$rlStart).TotalSeconds -gt {STARTUP_GRACE_SECONDS}) "
         f"{{ Stop-Process -Id $PID }}",
     ) + "\n"
-
-
-def tab_title(cwd: str) -> str:
-    """What reloaded calls a tab it launched.
-
-    The repo's own directory name - which is also what resolve_tab's
-    repos-root guess looks for, and what every recorded title on a real
-    machine turned out to be. One definition, used for the tab itself, for the
-    banner the shell prints, and, through the guess, for finding the tab again
-    afterwards.
-    """
-    return os.path.basename(cwd.rstrip("\\/")) or cwd
 
 
 def new_tab_args(cwd: str, command: str) -> list[str]:
@@ -281,7 +263,7 @@ def new_tab_args(cwd: str, command: str) -> list[str]:
 
 
 def wt_argv_single_tab(cwd: str, size_bytes: int = 0,
-                       agent: str = "claude", command: str = "") -> list[str]:
+                       agent: str = agents_mod.DEFAULT_KIND, command: str = "") -> list[str]:
     """Open one repo as a tab in the current window (`-w 0`)."""
     return ["wt", "-w", "0"] + new_tab_args(
         cwd, launcher_command(cwd, 0, size_bytes, agent, command))
@@ -481,7 +463,7 @@ def launch_window(argv: list[str], tabs: list[Tab], timeout: float = 20.0, settl
         # mid-loop over the rest of the plan.
         return None
 
-    wanted_names = {os.path.basename(t.cwd.rstrip("\\/")) for t in tabs}
+    wanted_names = {tab_title(t.cwd) for t in tabs}
     deadline = time.time() + timeout
     while time.time() < deadline:
         time.sleep(0.25)

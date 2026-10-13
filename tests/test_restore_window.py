@@ -155,7 +155,6 @@ def capture(monkeypatch, state):
     monkeypatch.setattr(main_mod.discover_mod, "live_sessions", lambda: {})
     monkeypatch.setattr(main_mod.discover_mod, "title_to_cwd", lambda idx: {})
     monkeypatch.setattr(main_mod.discover_mod, "transcript_index", lambda: {})
-    monkeypatch.setattr(main_mod.discover_mod, "crowded_dirs", lambda: {})
     monkeypatch.setattr(main_mod.transcript_mod, "prune_torn_backups", lambda d: [])
     monkeypatch.setattr(main_mod.discover_mod, "default_projects_dir", lambda: state)
     monkeypatch.setattr(main_mod.layout_mod, "save",
