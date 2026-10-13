@@ -20,3 +20,6 @@ venv/
 
 # agent worktrees
 .claude/worktrees/
+
+# session notes captured by local hooks
+research/sessions/
