@@ -635,7 +635,7 @@ def cmd_up(args) -> int:
 # has finished reading a large transcript. This is a wait for a spawn, not for
 # a startup.
 RELAUNCH_WAIT_SECONDS = 20.0
-# A full psutil.process_iter() sweep per tick, which teardown's own polling
+# A sweep of every process per tick, which teardown's own polling
 # loop avoids precisely because it is "real, avoidable cost". It cannot be
 # avoided here - the pid being waited for does not exist yet, so there is
 # nothing cheaper to poll - so the tick is kept coarse instead. Nobody

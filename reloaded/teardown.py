@@ -361,7 +361,7 @@ def execute_down(
                 log(f"    {title} had already gone  [{cwd}]")
 
             # Polls the specific pid rather than re-scanning every process via
-            # discover.live_sessions() - a full psutil.process_iter() sweep on
+            # discover.live_sessions() - a sweep of every process on
             # every tick is real, avoidable cost across dozens of tabs. Trade-
             # off: this no longer re-confirms the pid is still claude.exe at
             # this cwd on each tick, only that it's still running - fine at
