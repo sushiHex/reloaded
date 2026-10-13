@@ -9,11 +9,14 @@ First capture the arrangement you want and verify its launch commands with
 runs, and resolve any agent sign-in or directory-trust prompts in its tab.
 
 The automation runs through `pyw.exe -3`, independently of your pipx or virtual
-environment. Install its dependencies into the Python selected by that launcher:
+environment, so its Python needs `psutil` and `uiautomation` of its own.
+Before it writes anything, `install-tasks` runs `pyw.exe -3` from its own
+environment, the way both entries will, and imports Reloaded and both
+dependencies. If that fails it installs nothing and
+names the interpreter and the error. When a dependency is missing, it also
+prints the `pip install` command for that interpreter:
 
 ```powershell
-py -3 -m pip install psutil uiautomation
-py -3 -c "import psutil, uiautomation; print('Automation dependencies available')"
 reloaded install-tasks
 ```
 
@@ -26,6 +29,14 @@ reloaded --layout work --repos-root "D:\repos" install-tasks
 
 Installing again replaces the entries with those settings; this is one
 automation setup per user, not a separate task pair for every layout.
+
+A failed install puts back what was there before: the previous Startup entry
+(or none) and the previous scheduled task definition (or none), so the two
+never disagree about layout or root. If either cannot be put back, or whether
+the task changed cannot be told, the output says so. This covers failures the
+install sees. It is not a transaction: the new Startup entry is in place while
+the task registers, an install that is killed partway does not roll back, and
+two installs run at once can undo each other.
 
 | Entry | Behavior |
 | --- | --- |
@@ -144,7 +155,7 @@ point of writing them down.
 | `capture`/`edit` reports missing UI Automation | Install `uiautomation` into the interpreter running Reloaded; the scheduled interpreter may differ from the interactive one. |
 | Zero sessions or unmatched tabs | Confirm a terminal agent is running and `psutil` is installed. Check titles and repository-root matching. Desktop and nested agents are excluded intentionally. |
 | Capture refuses to replace a layout | Previously saved sessions are still running but did not match captured tabs. Let windows settle and retry; use `--force` only to accept that omission. |
-| Logon restores nothing | Inspect `reloaded.log`, confirm the saved layout exists, check the registered package path, and test imports with `py -3`. |
+| Logon restores nothing | Inspect `reloaded.log`, confirm the saved layout exists, check the registered package path, and re-run `install-tasks`, which checks the scheduled interpreter. |
 | A tab opens without an agent | Read the tab's startup error or trust prompt. Verify the captured executable is on PATH and the repository exists. |
 | `down` or `restart` times out | Read the per-session result. Active prompts can consume quit keys; finish the work and retry the intended target. A waiting restart marker may still be active. |
 | Geometry is wrong | Check `reloaded status` for changed monitors and the Terminal version. Placement can fall back when a window cannot be identified. |

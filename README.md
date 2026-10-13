@@ -135,10 +135,11 @@ a `/relaunch` command for Claude Code.
 ## Restore at sign-in
 
 First verify the saved layout and launch commands. Automation uses the system
-Python selected by `py -3`, which needs dependencies separately from pipx:
+Python that `pyw.exe -3` selects, not your pipx environment. `install-tasks`
+checks that it can run Reloaded before installing anything, and prints the
+`pip install` command for that interpreter if it cannot:
 
 ```powershell
-py -3 -m pip install psutil uiautomation
 reloaded install-tasks
 ```
 
