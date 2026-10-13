@@ -177,6 +177,16 @@ def test_the_walk_is_bounded(monkeypatch):
     assert discover_mod.live_sessions() == {norm(REPOS + r"\zeta"): 7}
 
 
+def test_an_agent_past_the_search_depth_is_not_a_host(monkeypatch):
+    """Eight ancestors is the reach. The observed nesting is three."""
+    within = tuple(["pwsh.exe"] * 7 + ["claude.exe"])
+    beyond = tuple(["pwsh.exe"] * 8 + ["claude.exe"])
+    _stub(monkeypatch, [_Proc(7, "codex.exe", REPOS + r"\zeta", ancestors=within),
+                        _Proc(8, "codex.exe", REPOS + r"\eta", ancestors=beyond)])
+
+    assert discover_mod.live_sessions() == {norm(REPOS + r"\eta"): 8}
+
+
 # ── failures that must not drop a real session ───────────────────────────
 
 

@@ -195,6 +195,9 @@ _ntdll.NtQuerySystemInformation.argtypes = [
     wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG, ctypes.POINTER(wintypes.ULONG)]
 _SYSTEM_PROCESS_INFORMATION_CLASS = 5
 _STATUS_INFO_LENGTH_MISMATCH = ctypes.c_long(0xC0000004).value
+# Either answer means "a bigger buffer", as psutil also reads them.
+_TOO_SMALL = (_STATUS_INFO_LENGTH_MISMATCH, ctypes.c_long(0xC0000023).value)
+_MAX_TABLE_BYTES = 1 << 28  # far past any real machine; a bound, not a budget
 _FILETIME_EPOCH = 116444736000000000  # 1601-01-01 to 1970-01-01, in 100ns
 
 
@@ -212,16 +215,18 @@ def process_table() -> dict[int, Proc]:
         needed = wintypes.ULONG()
         status = _ntdll.NtQuerySystemInformation(
             _SYSTEM_PROCESS_INFORMATION_CLASS, buf, size, ctypes.byref(needed))
-        if status != _STATUS_INFO_LENGTH_MISMATCH:
+        if status not in _TOO_SMALL or size >= _MAX_TABLE_BYTES:
             break
         # Processes start between the two calls, so ask for room to spare.
-        size = max(size * 2, needed.value + (1 << 16))
+        size = min(max(size * 2, needed.value + (1 << 16)), _MAX_TABLE_BYTES)
     if status < 0:
         raise OSError(f"NtQuerySystemInformation failed: 0x{status & 0xFFFFFFFF:08X}")
 
     table: dict[int, Proc] = {}
     base, offset = ctypes.addressof(buf), 0
     while True:
+        if offset + ctypes.sizeof(_SYSTEM_PROCESS_INFORMATION) > size:
+            raise OSError("NtQuerySystemInformation returned a truncated process list")
         info = _SYSTEM_PROCESS_INFORMATION.from_address(base + offset)
         image = info.ImageName
         name = ctypes.wstring_at(image.Buffer, image.Length // 2) if image.Buffer else ""

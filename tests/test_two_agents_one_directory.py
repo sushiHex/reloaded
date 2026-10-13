@@ -253,18 +253,29 @@ def test_a_pinned_codex_tab_survives_beside_a_running_claude_one():
 def test_each_session_is_placed_through_its_tabs_shell(monkeypatch):
     """Agent -> its shell -> the window that shell's tab is in. A session
     outside any tab has no window."""
-
     # Each agent's shell, then the terminal both shells run under.
-    table = {1: Proc(10, "claude.exe", 3.0), 2: Proc(20, "codex.exe", 3.0),
-             3: Proc(7, "codex.exe", 3.0), 10: Proc(5, "pwsh.exe", 2.0),
-             20: Proc(5, "pwsh.exe", 2.0), 7: Proc(0, "pwsh.exe", 2.0),
-             5: Proc(0, "WindowsTerminal.exe", 1.0)}
-    cwds = {1: RETRO, 2: RETRO, 3: META}
-    monkeypatch.setattr(win32_mod, "process_table", lambda: table)
-    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(
-        Process=lambda pid: types.SimpleNamespace(cwd=lambda: cwds[pid])))
-    monkeypatch.setattr(win32_mod, "tab_shells", lambda: {10: 100, 20: 100})
+    _machine(monkeypatch, {1: Proc(10, "claude.exe", 3.0), 2: Proc(20, "codex.exe", 3.0),
+                           3: Proc(7, "codex.exe", 3.0), 10: Proc(5, "pwsh.exe", 2.0),
+                           20: Proc(5, "pwsh.exe", 2.0), 7: Proc(0, "pwsh.exe", 2.0),
+                           5: Proc(0, "WindowsTerminal.exe", 1.0)},
+             cwds={1: RETRO, 2: RETRO, 3: META}, shells={10: 100, 20: 100})
 
     found = {(s.pid, s.hwnd) for s in real_sessions()}
 
     assert found == {(1, 100), (2, 100), (3, None)}
+
+
+def test_a_tab_shell_far_up_the_line_still_places_its_session(monkeypatch):
+    """The host search stops at eight ancestors; finding the tab does not."""
+    line = {1: Proc(101, "claude.exe", 0.0)}
+    line.update({101 + hop: Proc(102 + hop, "cmd.exe", -1.0 - hop) for hop in range(12)})
+    _machine(monkeypatch, line, cwds={1: RETRO}, shells={112: 100})
+
+    assert [(s.pid, s.hwnd) for s in real_sessions()] == [(1, 100)]
+
+
+def _machine(monkeypatch, table, *, cwds, shells):
+    monkeypatch.setattr(win32_mod, "process_table", lambda: table)
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(
+        Process=lambda pid: types.SimpleNamespace(cwd=lambda: cwds[pid])))
+    monkeypatch.setattr(win32_mod, "tab_shells", lambda: shells)

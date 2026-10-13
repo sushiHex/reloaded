@@ -70,6 +70,16 @@ def test_the_collapsed_session_map_is_unchanged(processes):
     assert len(discover_mod.live_sessions()) == 1
 
 
+def test_the_highest_pid_holds_a_shared_directory(processes):
+    """Which one survives the collapse is pid order, as psutil.process_iter
+    gave it - not whatever order the process table happens to list."""
+    processes += [_Proc("claude.exe", 9, r"C:\repos\app"),
+                  _Proc("codex.exe", 3, r"C:\repos\app")]
+
+    assert discover_mod.live_sessions() == {norm(r"C:\repos\app"): 9}
+    assert discover_mod.live_agents() == {norm(r"C:\repos\app"): "claude"}
+
+
 def test_status_warns_about_a_shared_directory(monkeypatch, tmp_path, capsys):
     """In `status` rather than `capture`: this needs a process sweep of its
     own, and the reconcile runs capture every five minutes forever."""

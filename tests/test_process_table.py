@@ -14,9 +14,6 @@ import pytest
 import reloaded.win32 as win32_mod
 from reloaded.win32 import _SYSTEM_PROCESS_INFORMATION as SPI
 
-MISMATCH = win32_mod._STATUS_INFO_LENGTH_MISMATCH
-
-
 def _fill(buf, rows):
     """Lay `rows` of (pid, ppid, name, filetime) out the way the kernel does:
     entries chained by NextEntryOffset, names stored beside them."""
@@ -66,9 +63,10 @@ def test_each_process_has_its_parent_name_and_start(monkeypatch):
     assert table[0].name == ""
 
 
-def test_a_list_that_grew_is_asked_for_again_with_room(monkeypatch):
+@pytest.mark.parametrize("too_small", win32_mod._TOO_SMALL)
+def test_a_list_that_grew_is_asked_for_again_with_room(monkeypatch, too_small):
     """Processes start between the size query and the read."""
-    calls = _kernel(monkeypatch, [(100, 4, "pwsh.exe", EPOCH)], first=MISMATCH)
+    calls = _kernel(monkeypatch, [(100, 4, "pwsh.exe", EPOCH)], first=too_small)
 
     assert 100 in win32_mod.process_table()
     assert len(calls) == 2 and calls[1] > calls[0]
