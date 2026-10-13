@@ -116,7 +116,8 @@ for timeouts, fallback tabs, and concurrent restart limits.
 
 ## For agents
 
-Invoke Reloaded through your shell tool. Start with `reloaded status`, inspect
+Invoke Reloaded through your shell tool. Start with `reloaded status` (add
+`--json` for [a document to parse](docs/usage.md#status-as-json)), inspect
 the relevant `--dry-run`, and check the command's output and status afterward.
 An opened tab does not prove a conversation resumed.
 

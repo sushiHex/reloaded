@@ -77,9 +77,9 @@ def test_status_warns_about_a_shared_directory(monkeypatch, tmp_path, capsys):
     own, and the reconcile runs capture every five minutes forever."""
     monkeypatch.setattr(main_mod, "layout_path", lambda name: tmp_path / "none.json")
     monkeypatch.setattr(
-        main_mod.discover_mod, "sweep",
-        lambda: ({norm(r"C:\repos\app"): 1},
-                 {norm(r"C:\repos\app"): ["claude", "codex"]}))
+        main_mod.discover_mod, "census",
+        lambda: discover_mod.Census({norm(r"C:\repos\app"): [(1, "codex"),
+                                                            (2, "claude")]}))
 
     main_mod.cmd_status(types.SimpleNamespace(layout="default",
                                               repos_root=r"C:\repos"))
@@ -95,7 +95,7 @@ def test_status_warns_about_a_shared_directory(monkeypatch, tmp_path, capsys):
 
 def test_status_says_nothing_when_no_directory_is_shared(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(main_mod, "layout_path", lambda name: tmp_path / "none.json")
-    monkeypatch.setattr(main_mod.discover_mod, "sweep", lambda: ({}, {}))
+    monkeypatch.setattr(main_mod.discover_mod, "census", lambda: discover_mod.Census({}))
 
     main_mod.cmd_status(types.SimpleNamespace(layout="default",
                                               repos_root=r"C:\repos"))
@@ -107,7 +107,7 @@ def test_status_without_a_layout_starts_no_terminal_query(monkeypatch, tmp_path)
     """Found by review: started and never read, the ~1.7s PowerShell query
     still held the exiting process until it finished."""
     monkeypatch.setattr(main_mod, "layout_path", lambda name: tmp_path / "none.json")
-    monkeypatch.setattr(main_mod.discover_mod, "sweep", lambda: ({}, {}))
+    monkeypatch.setattr(main_mod.discover_mod, "census", lambda: discover_mod.Census({}))
     asked = []
     monkeypatch.setattr(main_mod.readiness_mod, "check_wt_version",
                         lambda: asked.append(1) or (True, ""))

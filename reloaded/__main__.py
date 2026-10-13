@@ -7,7 +7,7 @@ from collections import Counter
 import os
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from . import agents as agents_mod
 from . import capture as capture_mod
@@ -1316,7 +1316,48 @@ def cmd_uninstall_tasks(args) -> int:
     return tasks_mod.uninstall()
 
 
+# What `status --json` emits. Bumped only when an existing field changes
+# meaning or goes away; a new field is not a new version.
+STATUS_SCHEMA = 1
+
+
+@dataclass
+class _Status:
+    """Everything `status` reports, collected once and then rendered as text
+    or as JSON - so the two cannot give different answers.
+
+    Only `path` and `census` are known without a layout; the rest stay at
+    their defaults when there is none.
+    """
+    path: object
+    census: discover_mod.Census
+    layout: layout_mod.Layout | None = None
+    # Saved and current monitor devices, each sorted.
+    monitors: tuple = ((), ())
+    readiness: tuple = (False, "")
+    terminal: tuple = (False, "")
+    # Per window, per tab, in layout order: "running", "launch" or "missing".
+    states: list = field(default_factory=list)
+    # (cwd, kind) of every live session no saved tab claimed, one per session.
+    orphans: list = field(default_factory=list)
+
+    @property
+    def would_launch(self) -> int:
+        return sum(st == "launch" for states in self.states for st in states)
+
+
 def cmd_status(args) -> int:
+    s = _collect_status(args)
+    if getattr(args, "json", False):
+        import json
+
+        print(json.dumps(_status_json(s), indent=2))
+    else:
+        _print_status(s)
+    return 0 if s.layout is not None else 1
+
+
+def _collect_status(args) -> _Status:
     import concurrent.futures
 
     path = layout_path(args.layout)
@@ -1328,8 +1369,77 @@ def cmd_status(args) -> int:
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         wt_check = pool.submit(readiness_mod.check_wt_version)
         pool.shutdown(wait=False)
-    live, crowded = discover_mod.sweep()
+    # One walk for every live-session answer below.
+    s = _Status(path, discover_mod.census())
+    if not has_layout:
+        return s
 
+    s.layout = lo = layout_mod.load(path)
+    s.monitors = (sorted({m.device for m in lo.monitors}),
+                  sorted({m.device for m in win32_mod.list_monitors()}))
+    # readiness.wait_for_ready only ever runs inside `up --unattended`, so an
+    # attended `up` or a manual `status` never exercises it — the one piece
+    # of this package's logic with no everyday path. timeout=0 makes this an
+    # instant single check rather than the real (bounded) logon wait.
+    s.readiness = readiness_mod.wait_for_ready(lo, timeout=0)
+    s.terminal = wt_check.result()
+
+    # The same per-session answer `up` acts on, so the count is what it would
+    # really do: a directory's Codex tab is not "running" because its Claude
+    # one is.
+    unclaimed = s.census.running()
+    live = s.census.live()
+    for w in lo.windows:
+        states = []
+        for t in w.tabs:
+            if discover_mod.claim_running(unclaimed, live, t.cwd, t.agent):
+                states.append("running")
+            else:
+                # deploy.plan_deploy skips a tab whose directory is gone, so
+                # `up` would not launch it either.
+                states.append("launch" if os.path.isdir(t.cwd) else "missing")
+        s.states.append(states)
+    # What is left of `unclaimed` after the layout's tabs took theirs is live
+    # and unsaved - a directory's Codex session beside a saved Claude one
+    # included.
+    s.orphans = sorted(unclaimed.elements())
+    return s
+
+
+def _status_json(s: _Status) -> dict:
+    """The schema documented in docs/usage.md. Live paths are normalized
+    (paths.norm); saved ones are as the layout records them."""
+    found = s.census.found
+    doc = {
+        "schema": STATUS_SCHEMA,
+        "layout": {"path": str(s.path), "exists": s.layout is not None,
+                   "saved": s.layout.saved_ts if s.layout else None},
+        # Every session, so a shared directory appears once per session.
+        "live": [{"path": cwd, "pid": pid, "agent": kind}
+                 for cwd in sorted(found) for pid, kind in found[cwd]],
+        "shared": [{"path": cwd, "agents": kinds}
+                   for cwd, kinds in sorted(s.census.crowded().items())],
+    }
+    if s.layout is None:
+        return doc
+    saved, current = s.monitors
+    doc.update({
+        "monitors": {"saved": saved, "current": current},
+        "readiness": {"ok": bool(s.readiness[0]), "detail": s.readiness[1]},
+        "terminal": {"ok": bool(s.terminal[0]), "detail": s.terminal[1]},
+        "tabs": [{"window": layout_mod.window_id(i), "title": t.title,
+                  "path": t.cwd, "agent": t.agent or agents_mod.DEFAULT_KIND,
+                  "state": state}
+                 for i, (w, states) in enumerate(zip(s.layout.windows, s.states))
+                 for t, state in zip(w.tabs, states)],
+        "not_in_layout": [{"path": cwd, "agent": kind} for cwd, kind in s.orphans],
+        "would_launch": s.would_launch,
+    })
+    return doc
+
+
+def _print_status(s: _Status) -> None:
+    live = s.census.live()
     print(f"live sessions : {len(live)}")
     for cwd in sorted(live):
         print(f"    {cwd}")
@@ -1339,7 +1449,7 @@ def cmd_status(args) -> int:
     # command someone runs to find out what is going on, which is also the
     # moment this is worth knowing - the loss it describes happens at the next
     # restore, not now.
-    for cwd, kinds in sorted(crowded.items()):
+    for cwd, kinds in sorted(s.census.crowded().items()):
         print(f"\n[note] {len(kinds)} agent sessions share {cwd} "
               f"({', '.join(kinds)}).")
         print("       Capture saves each as its own tab (drift below says if the "
@@ -1348,58 +1458,37 @@ def cmd_status(args) -> int:
               "may leave one")
         print("       running: quitting is aimed by directory, not by session.")
 
-    if not has_layout:
-        print(f"\nno layout saved at {path} — run `reloaded capture`")
-        return 1
+    lo = s.layout
+    if lo is None:
+        print(f"\nno layout saved at {s.path} — run `reloaded capture`")
+        return
 
-    lo = layout_mod.load(path)
-    print(f"\nlayout        : {path}")
+    print(f"\nlayout        : {s.path}")
     print(f"saved         : {lo.saved_ts}")
 
-    saved_monitors = {m.device for m in lo.monitors}
-    current_monitors = {m.device for m in win32_mod.list_monitors()}
-    if saved_monitors != current_monitors:
-        print(f"[warn] monitors changed: saved {sorted(saved_monitors)}, now {sorted(current_monitors)}")
+    saved, current = s.monitors
+    if saved != current:
+        print(f"[warn] monitors changed: saved {saved}, now {current}")
         print("       windows will be clamped onto available monitors")
 
-    # readiness.wait_for_ready only ever runs inside `up --unattended`, so an
-    # attended `up` or a manual `status` never exercises it — the one piece
-    # of this package's logic with no everyday path. timeout=0 makes this an
-    # instant single check rather than the real (bounded) logon wait.
-    ready, reason = readiness_mod.wait_for_ready(lo, timeout=0)
+    ready, reason = s.readiness
     print(f"readiness     : {reason}" if ready else f"[warn] readiness: {reason}")
-
-    wt_ok, wt_detail = wt_check.result()
+    wt_ok, wt_detail = s.terminal
     print(f"terminal      : {wt_detail}" if wt_ok else f"[warn] terminal: {wt_detail}")
 
-    would_launch = 0
-    # The same per-session answer `up` acts on, so the count below is what it
-    # would really do: a directory's Codex tab is not "running" because its
-    # Claude one is.
-    unclaimed = discover_mod.running()
-    for i, w in enumerate(lo.windows):
+    marks = {"running": "running", "launch": "would launch", "missing": "missing"}
+    for i, (w, states) in enumerate(zip(lo.windows, s.states)):
         print(f"\n  {layout_mod.window_id(i)}  {layout_mod.window_header(w)}")
-        for t in w.tabs:
-            running = discover_mod.claim_running(unclaimed, live, t.cwd, t.agent)
-            if not running:
-                would_launch += 1
-            mark = "running" if running else "would launch"
-            print(f"      {mark:12}  {t.title}{layout_mod.tab_flags(t)}")
+        for t, state in zip(w.tabs, states):
+            print(f"      {marks[state]:12}  {t.title}{layout_mod.tab_flags(t)}")
 
-    # Per session: what is left of `unclaimed` after the layout's tabs took
-    # theirs is live and unsaved - a directory's Codex session beside a saved
-    # Claude one included. By directory when sessions are not known.
-    orphans = {f"{cwd} ({kind})" for (cwd, kind), n in unclaimed.items() if n > 0}
-    if not unclaimed:
-        orphans = set(live) - {norm(t.cwd) for w in lo.windows for t in w.tabs}
-    if orphans:
-        print(f"\n[drift] {len(orphans)} live session(s) are not in the layout:")
-        for cwd in sorted(orphans):
-            print(f"    {cwd}")
+    if s.orphans:
+        print(f"\n[drift] {len(s.orphans)} live session(s) are not in the layout:")
+        for line in sorted(f"{cwd} ({kind})" for cwd, kind in s.orphans):
+            print(f"    {line}")
         print("        run `reloaded capture` to fold them in")
 
-    print(f"\n`up` would launch {would_launch} session(s).")
-    return 0
+    print(f"\n`up` would launch {s.would_launch} session(s).")
 
 
 def _recorded_launches(args) -> dict[str, tuple[str, str]]:
@@ -1499,7 +1588,9 @@ def build_parser() -> argparse.ArgumentParser:
     up.add_argument("--unattended", action="store_true",
                     help="non-interactive: wait for readiness, log to file, never prompt")
 
-    sub.add_parser("status", help="compare the saved layout against live sessions")
+    status = sub.add_parser("status", help="compare the saved layout against live sessions")
+    status.add_argument("--json", action="store_true",
+                        help="print one JSON document instead (schema in docs/usage.md)")
 
     open_ = sub.add_parser("open", help="add one repo as a new tab in the current window (see also: up)")
     open_.add_argument("repo", help="repo name under --repos-root, or an absolute path")

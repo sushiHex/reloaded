@@ -185,10 +185,8 @@ def test_status_names_a_live_session_the_saved_layout_lacks(tmp_path, monkeypatc
     import reloaded.__main__ as main_mod
     path = _saved(tmp_path, Tab(cwd=RETRO, title="retro", agent="claude"))
     monkeypatch.setattr(main_mod, "layout_path", lambda name: path)
-    monkeypatch.setattr(main_mod.discover_mod, "sweep",
-                        lambda: ({norm(RETRO): 1}, {norm(RETRO): ["claude", "codex"]}))
-    monkeypatch.setattr(discover_mod, "running", lambda: Counter(
-        {(norm(RETRO), "claude"): 1, (norm(RETRO), "codex"): 1}))
+    monkeypatch.setattr(main_mod.discover_mod, "census", lambda: discover_mod.Census(
+        {norm(RETRO): [(1, "claude"), (2, "codex")]}))
     monkeypatch.setattr(main_mod.readiness_mod, "wait_for_ready",
                         lambda lo, timeout: (True, "ready"))
     monkeypatch.setattr(main_mod.readiness_mod, "check_wt_version",
@@ -220,10 +218,9 @@ def test_status_counts_a_directorys_missing_codex_tab(tmp_path, monkeypatch, cap
     path = _saved(tmp_path, Tab(cwd=RETRO, title="retro", agent="claude"),
                   Tab(cwd=RETRO, title="retro", agent="codex"))
     monkeypatch.setattr(main_mod, "layout_path", lambda name: path)
-    monkeypatch.setattr(main_mod.discover_mod, "sweep",
-                        lambda: ({norm(RETRO): 1}, {}))
-    monkeypatch.setattr(discover_mod, "running", lambda: Counter(
-        {(norm(RETRO), "claude"): 1}))
+    monkeypatch.setattr(main_mod.discover_mod, "census", lambda: discover_mod.Census(
+        {norm(RETRO): [(1, "claude")]}))
+    monkeypatch.setattr(main_mod.os.path, "isdir", lambda p: True)
     monkeypatch.setattr(main_mod.readiness_mod, "wait_for_ready",
                         lambda lo, timeout: (True, "ready"))
     monkeypatch.setattr(main_mod.readiness_mod, "check_wt_version",

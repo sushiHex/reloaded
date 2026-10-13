@@ -67,6 +67,31 @@ DPI to available monitors; it does not move existing sessions. `open <repo>`
 opens one missing repository in Terminal's current/most-recent window and uses
 its launch settings from the selected layout when available.
 
+## Status as JSON
+
+`reloaded status --json` prints one JSON document and nothing else. It is built
+from the same collected answers as the text, so the two always agree. It only
+reads; it captures, launches and writes nothing.
+
+| Field | Meaning |
+| --- | --- |
+| `schema` | `1`. Bumped only when an existing field changes meaning or is removed. |
+| `layout` | `path`, `exists`, and `saved` (the layout's timestamp, or `null`). |
+| `live` | Every live session: `path`, `pid`, `agent`. A shared directory appears once per session. |
+| `shared` | Directories holding more than one session: `path`, `agents`. |
+| `monitors` | `saved` and `current` monitor devices. |
+| `readiness`, `terminal` | `ok` and `detail`. `ok` is `false` exactly when the text prints a warning; an undeterminable Terminal version is `true`, with the detail saying so. |
+| `tabs` | Every saved tab in layout order: `window` (`w1`...), `title`, `path`, `agent`, and `state`: `running`, `launch`, or `missing` (its directory is gone, so `up` skips it). |
+| `not_in_layout` | Live sessions no saved tab accounts for, one entry per session: `path`, `agent`. |
+| `would_launch` | How many tabs `up` would launch: those in state `launch`. |
+
+Live paths are normalized (lowercase); saved paths are as the layout records
+them. Without a layout, only `schema`, `layout`, `live` and `shared` are present
+and `layout.exists` is `false`.
+
+The exit code is the text command's: `1` when no layout is saved, otherwise `0`,
+including when readiness, the Terminal version, or drift would print a warning.
+
 ## Launch commands and resumption
 
 Capture stores each tab's `agent` and `command` from its live process. Relaunch
