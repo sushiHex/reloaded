@@ -54,17 +54,49 @@ def _render(lo: Layout) -> None:
         print("\n  (empty)")
 
 
-MENU = """
+MENU = r"""
 commands:
   c            recapture from the live arrangement (replaces everything)
   m W.T W      move tab W.T into window W
   o W.T N      move tab W.T to position N within its window
   a W <repo>   add a repo as a new tab at the end of window W
+               (a name under the repos root, or a path: "C:\work repos\app")
   d W.T        delete tab W.T
   n            add a new empty window (geometry copied from the last one)
   s            save and exit
   q            quit without saving
 """
+
+
+def split_input(raw: str) -> list[str]:
+    """Split an editor line on whitespace, with double quotes grouping.
+
+    A quoted span is literal: backslashes are path separators, never escapes,
+    so `"C:\\work repos\\app\\"` keeps its trailing backslash. shlex and
+    CommandLineToArgvW both read `\\"` as an escaped quote and would swallow
+    the rest of the line. A Windows path cannot contain `"`, so there is
+    nothing a quote would need escaping for. Quotes may sit inside a token
+    (`C:\\"work repos"\\app`); they are removed and the pieces join.
+    Raises ValueError on an unterminated quote.
+    """
+    tokens: list[str] = []
+    current = None  # None between tokens; "" for a token that is just `""`
+    quoted = False
+    for ch in raw:
+        if ch == '"':
+            quoted = not quoted
+            current = current or ""
+        elif ch.isspace() and not quoted:
+            if current is not None:
+                tokens.append(current)
+            current = None
+        else:
+            current = (current or "") + ch
+    if quoted:
+        raise ValueError("unterminated quote")
+    if current is not None:
+        tokens.append(current)
+    return tokens
 
 
 def _parse_ref(token: str) -> tuple[int, int] | None:
@@ -107,10 +139,13 @@ def run(lo: Layout, layout_file, repos_root: str) -> int:
         except (EOFError, KeyboardInterrupt):
             print()
             return 1
-        if not raw:
+        try:
+            parts = split_input(raw)
+        except ValueError as exc:
+            print(f"{exc} — nothing changed")
             continue
-
-        parts = raw.split()
+        if not parts:
+            continue
         cmd = parts[0].lower()
 
         if cmd == "q":
@@ -215,6 +250,11 @@ def run(lo: Layout, layout_file, repos_root: str) -> int:
                 continue
             if not _valid(lo, wi):
                 print("no such window")
+                continue
+            if not parts[2].strip():
+                # Only quoting can produce this, and resolved it is the repos
+                # root itself - which exists, and would be added and pinned.
+                print("no repo given")
                 continue
             cwd = resolve_repo(parts[2], repos_root)
             if not os.path.isdir(cwd):
