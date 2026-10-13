@@ -62,9 +62,14 @@ def _list_tab_items_uia(hwnd: int) -> list[tuple[str, object]]:
     # This runs on list_tab_items' worker, a new thread every call. comtypes
     # initializes COM only on the thread that first imports it, and the
     # client uiautomation creates on first use cannot be created on any
-    # other: "CoInitialize has not been called" (measured; #51). Once
-    # created, it serves every thread.
-    auto.InitializeUIAutomationInCurrentThread()
+    # other: "CoInitialize has not been called" (measured; #51). Released
+    # again on the way out; the client and the items returned outlive it
+    # (measured: every window, read from another thread afterwards).
+    with auto.UIAutomationInitializerInThread():
+        return _read_tab_strip(auto, hwnd)
+
+
+def _read_tab_strip(auto, hwnd: int) -> list[tuple[str, object]]:
     root = auto.ControlFromHandle(hwnd)
     if root is None:
         raise UIAUnavailable(f"no UIA control for hwnd 0x{hwnd:X}")

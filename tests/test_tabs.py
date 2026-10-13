@@ -131,11 +131,19 @@ def test_the_walk_initializes_com_on_its_own_thread(monkeypatch):
     import types
 
     calls = []
-    fake = types.SimpleNamespace(
-        InitializeUIAutomationInCurrentThread=lambda: calls.append(
-            ("init", threading.get_ident())),
-        ControlFromHandle=lambda hwnd: calls.append(
-            ("use", threading.get_ident())))
+
+    def note(what):
+        calls.append((what, threading.get_ident()))
+
+    class _Initializer:
+        def __enter__(self):
+            note("init")
+
+        def __exit__(self, *exc):
+            note("release")
+
+    fake = types.SimpleNamespace(UIAutomationInitializerInThread=_Initializer,
+                                 ControlFromHandle=lambda hwnd: note("use"))
     monkeypatch.setitem(sys.modules, "uiautomation", fake)
 
     try:
@@ -143,6 +151,6 @@ def test_the_walk_initializes_com_on_its_own_thread(monkeypatch):
     except tabs_mod.UIAUnavailable:
         pass  # the fake has no control for it; only the order matters here
 
-    (first, worker), (then, same) = calls
-    assert (first, then) == ("init", "use")
-    assert worker == same != threading.get_ident()
+    assert [what for what, _t in calls] == ["init", "use", "release"]
+    assert len({t for _w, t in calls}) == 1
+    assert calls[0][1] != threading.get_ident()
