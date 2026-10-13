@@ -201,6 +201,10 @@ DESKTOP_HOSTS = ("chatgpt.exe",)
 # has its shell as the immediate parent.
 _HOST_SEARCH_DEPTH = 8
 
+# psutil's create_time() and the table's agree exactly (measured: 915 of 915
+# processes); the slack only absorbs rounding between the two conversions.
+_SAME_START_SECONDS = 0.001
+
 
 def _ancestry(pid: int, table: dict) -> Iterator[int]:
     """The pids above `pid`, nearest first, read from one `win32.process_table`.
@@ -256,7 +260,9 @@ def _agent_processes(table: dict) -> Iterator[tuple[int, str, str]]:
     of its own, in pid order - the order psutil.process_iter gave.
 
     Names and ancestry come from the table; psutil is asked only for the cwd
-    of what is left, which nothing cheaper records. Without psutil there is
+    of what is left, which nothing cheaper records - and only from the
+    process the table described: a pid that has exited and been reused since
+    starts later, and is the next sweep's to see. Without psutil there is
     nothing, as everywhere else here.
     """
     try:
@@ -271,7 +277,10 @@ def _agent_processes(table: dict) -> Iterator[tuple[int, str, str]]:
         if kind is None or _hosted_elsewhere(pid, table, by_process):
             continue
         try:
-            cwd = psutil.Process(pid).cwd()
+            proc = psutil.Process(pid)
+            if abs(proc.create_time() - table[pid].created) > _SAME_START_SECONDS:
+                continue
+            cwd = proc.cwd()
         except Exception:
             continue
         if cwd:

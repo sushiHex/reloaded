@@ -52,17 +52,19 @@ def _stub(monkeypatch, procs, table=None):
             table[pid] = Proc(parent, names[hop], float(-hop))
     cwds = {p.pid: p.cwd for p in procs}
 
-    class _Fake:
-        @staticmethod
-        def Process(pid):
-            def cwd():
-                if cwds.get(pid) is None:
-                    raise PermissionError("denied")
-                return cwds[pid]
-            return types.SimpleNamespace(cwd=cwd)
+    def cwd(pid):
+        if cwds.get(pid) is None:
+            raise PermissionError("denied")
+        return cwds[pid]
 
     monkeypatch.setattr(win32_mod, "process_table", lambda: table)
-    monkeypatch.setitem(sys.modules, "psutil", _Fake)
+    _psutil(monkeypatch, cwd, lambda pid: table[pid].created)
+
+
+def _psutil(monkeypatch, cwd, started):
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(
+        Process=lambda pid: types.SimpleNamespace(
+            cwd=lambda: cwd(pid), create_time=lambda: started(pid))))
 
 
 def test_a_claude_session_is_found(monkeypatch):
@@ -211,10 +213,19 @@ def test_a_parent_as_old_as_its_child_is_still_its_parent(monkeypatch):
 def test_a_pid_loop_ends_the_walk(monkeypatch):
     _stub(monkeypatch, [], table={
         8: Proc(9, "codex.exe", 0.0), 9: Proc(8, "pwsh.exe", 0.0)})
-    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(
-        Process=lambda pid: types.SimpleNamespace(cwd=lambda: REPOS + r"\eta")))
+    _psutil(monkeypatch, lambda pid: REPOS + r"\eta", lambda pid: 0.0)
 
     assert discover_mod.live_sessions() == {norm(REPOS + r"\eta"): 8}
+
+
+def test_a_session_pid_reused_since_the_snapshot_is_not_read(monkeypatch):
+    """The table named a Codex session at that pid; the process there now
+    started later and is something else. Its cwd would be filed under the
+    old session's kind."""
+    _stub(monkeypatch, [_Proc(8, "codex.exe", REPOS + r"\eta")])
+    _psutil(monkeypatch, lambda pid: REPOS + r"\eta", lambda pid: 5.0)
+
+    assert discover_mod.live_sessions() == {}
 
 
 def test_a_process_with_no_parent_at_all_is_kept(monkeypatch):

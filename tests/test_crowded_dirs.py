@@ -34,7 +34,7 @@ def processes(monkeypatch):
                         lambda: {p.pid: Proc(0, p.name, 0.0) for p in procs})
     monkeypatch.setitem(__import__("sys").modules, "psutil", types.SimpleNamespace(
         Process=lambda pid: types.SimpleNamespace(
-            cwd=lambda: {p.pid: p.cwd for p in procs}[pid])))
+            cwd=lambda: {p.pid: p.cwd for p in procs}[pid], create_time=lambda: 0.0)))
     return procs
 
 

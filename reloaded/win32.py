@@ -224,11 +224,15 @@ def process_table() -> dict[int, Proc]:
 
     table: dict[int, Proc] = {}
     base, offset = ctypes.addressof(buf), 0
+    end = base + min(needed.value, size)  # what was written, not what was allocated
+    malformed = OSError("NtQuerySystemInformation returned a malformed process list")
     while True:
-        if offset + ctypes.sizeof(_SYSTEM_PROCESS_INFORMATION) > size:
-            raise OSError("NtQuerySystemInformation returned a truncated process list")
+        if base + offset + ctypes.sizeof(_SYSTEM_PROCESS_INFORMATION) > end:
+            raise malformed
         info = _SYSTEM_PROCESS_INFORMATION.from_address(base + offset)
         image = info.ImageName
+        if image.Buffer and not base <= image.Buffer <= end - image.Length:
+            raise malformed
         name = ctypes.wstring_at(image.Buffer, image.Length // 2) if image.Buffer else ""
         table[info.UniqueProcessId or 0] = Proc(
             info.InheritedFromUniqueProcessId or 0, name,

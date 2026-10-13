@@ -16,7 +16,8 @@ from reloaded.win32 import _SYSTEM_PROCESS_INFORMATION as SPI
 
 def _fill(buf, rows):
     """Lay `rows` of (pid, ppid, name, filetime) out the way the kernel does:
-    entries chained by NextEntryOffset, names stored beside them."""
+    entries chained by NextEntryOffset, names stored beside them. Returns the
+    bytes written."""
     base, offset = ctypes.addressof(buf), 0
     stride = ctypes.sizeof(SPI) + 64
     for i, (pid, ppid, name, created) in enumerate(rows):
@@ -31,9 +32,10 @@ def _fill(buf, rows):
             entry.ImageName.Length = 2 * len(name)
             entry.ImageName.Buffer = text
         offset += stride
+    return offset
 
 
-def _kernel(monkeypatch, rows, first=0):
+def _kernel(monkeypatch, rows, first=0, damage=None):
     calls = []
 
     def query(cls, buf, size, needed):
@@ -41,7 +43,9 @@ def _kernel(monkeypatch, rows, first=0):
         if first and len(calls) == 1:
             needed._obj.value = size + 1
             return first
-        _fill(buf, rows)
+        needed._obj.value = _fill(buf, rows)
+        if damage:
+            damage(SPI.from_address(ctypes.addressof(buf)))
         return 0
 
     monkeypatch.setattr(win32_mod._ntdll, "NtQuerySystemInformation", query)
@@ -77,6 +81,24 @@ def test_a_failed_read_raises_rather_than_reporting_no_processes(monkeypatch):
     _kernel(monkeypatch, [], first=ctypes.c_long(0xC0000022).value)  # ACCESS_DENIED
 
     with pytest.raises(OSError, match="C0000022"):
+        win32_mod.process_table()
+
+
+def _name_elsewhere(entry):
+    entry.ImageName.Buffer = 64
+
+
+def _chain_past_the_end(entry):
+    entry.NextEntryOffset = 1 << 20
+
+
+@pytest.mark.parametrize("damage", [_name_elsewhere, _chain_past_the_end])
+def test_a_list_pointing_outside_what_was_written_raises(monkeypatch, damage):
+    """Read past what the kernel wrote and the allocation's zeroed slack
+    parses as a process with pid 0, or a name is read from wherever it points."""
+    _kernel(monkeypatch, [(100, 4, "pwsh.exe", EPOCH)], damage=damage)
+
+    with pytest.raises(OSError, match="malformed"):
         win32_mod.process_table()
 
 

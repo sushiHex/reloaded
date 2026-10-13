@@ -277,5 +277,6 @@ def test_a_tab_shell_far_up_the_line_still_places_its_session(monkeypatch):
 def _machine(monkeypatch, table, *, cwds, shells):
     monkeypatch.setattr(win32_mod, "process_table", lambda: table)
     monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(
-        Process=lambda pid: types.SimpleNamespace(cwd=lambda: cwds[pid])))
+        Process=lambda pid: types.SimpleNamespace(
+            cwd=lambda: cwds[pid], create_time=lambda: table[pid].created)))
     monkeypatch.setattr(win32_mod, "tab_shells", lambda: shells)
