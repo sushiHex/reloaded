@@ -186,8 +186,23 @@ Claude Code ends the process tree of the command it is running when it quits,
 and the command is still running then - waiting for that quit - so a helper
 started from it directly died with the session. It is spawned windowless and
 with breakaway-from-job, and nothing changes if Windows refuses that. The
-helper removes the marker if the session outlives its wait. Its only report is
-the log.
+helper removes the marker if the session outlives its wait.
+
+Once the session is gone, the helper has nobody to tell, so each attempt
+leaves a record in `~/.reloaded/attempts/` for the next `--self` in that
+directory to read. The dispatching process creates it before the spawn, since
+a helper that dies cannot be relied on to; the helper writes how it ended
+into it. One file per attempt, named by directory, dispatch time and a token,
+so overlapping attempts never settle each other. The record is held open from
+creation on - by the dispatcher until the intermediate exits, and by the
+handle each child inherits - and Windows refuses to rename a file held that
+way. A reader claims a record by renaming it, so "still running" is the OS's
+answer about the helper rather than a sum of timeouts, and two readers cannot
+take one record. A record whose helper wrote nothing, or not all of it, is
+reported as never having reported back. A reader that dies between claiming
+and saying loses that report; re-reading abandoned claims let a second, living
+reader repeat one that was about to be said. Records wait for the next `--self`
+in their directory, so there are at most a few per directory ever restarted.
 
 There is no generation or nonce on a restart marker. Overlapping restarts of
 one session collapse into one request; full and named restarts do not
