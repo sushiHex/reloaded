@@ -97,6 +97,7 @@ automation, so a later sign-in can restore the saved layout again.
 | --- | --- |
 | `~/.reloaded/layouts/<name>.json` | Saved windows, tabs, geometry, and launch commands. |
 | `~/.reloaded/reloaded.log` | Unattended deployment output, readiness results, crash reports, and every change a capture made to the layout. |
+| `~/.reloaded/refusals/<name>.json` | Which capture refusal the log last reported for a layout, so a repeating one is not written every run. |
 | `~/.reloaded/restart/` | Short-lived restart markers. |
 | `~/.reloaded/relaunch/` | Launcher scripts used to upgrade hand-started tabs. |
 
@@ -112,6 +113,17 @@ gained or lost, with full paths, and any refusal to overwrite — whether or not
 the run was attended. It writes nothing when the set of repositories is
 unchanged, so the log stays short enough to skim: a capture every five minutes
 that said "same as last time" would bury the one line that matters.
+
+Refusals follow the same rule. A capture that cannot read any tab while
+sessions are running, or cannot reach Windows Terminal's tabs at all, is
+recorded as a refusal too. The first refusal is recorded; the same refusal
+again is recorded only every six hours, as `still refusing, since <time> (<n>
+times)`; and the next save of that layout records how many refusals preceded it
+and since when. A different refusal is recorded at once. What has already been
+said is kept per layout in `~/.reloaded/refusals/`.
+
+Past 1 MB the log is moved to `reloaded.log.1`, replacing any previous one, and
+a new log is started.
 
 ```
 2026-09-18 01:01:54  [reloaded] layout gained 1 (c:\users\kfaim\repos\kakeibo)
