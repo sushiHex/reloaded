@@ -24,5 +24,10 @@ reloaded = "reloaded.__main__:main"
 requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
+# Named, not discovered: any other top-level directory (research/) stops a
+# flat-layout build outright.
+[tool.setuptools]
+packages = ["reloaded"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
