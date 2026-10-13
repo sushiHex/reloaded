@@ -65,10 +65,17 @@ class Sent(NamedTuple):
     what it governs: a stub returning None then meant "could not reach the
     tab", and a real zero meant "the session had already gone", and nothing
     could tell them apart.
+
+    And a third, for the same reason: zero keys from a session that was still
+    running when its turn came is not one that had already gone. The Escape
+    sent ahead of the keys answers a prompt that binds it to quitting - Claude
+    Code's folder-trust dialog reads it as "No, exit" - and that session was
+    reported as having gone on its own (#62).
     """
 
     reached: bool  # the tab was confirmed; False means nothing was typed
     keys: int      # how many quit keys actually went out
+    alive: bool = False  # the session was running once its tab was reached
 
 
 @dataclass
@@ -206,12 +213,13 @@ def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=Non
     # while its tab was being found: its loop has already looked for a marker.
     # It is also disk I/O between the proof and the typing, which is exactly
     # why the proof is re-asked below rather than trusted.
-    if before_send is not None and running():
+    alive = running()
+    if before_send is not None and alive:
         before_send()
 
     keys = tabs.send_quit_keystrokes(quit_keys, dismiss_overlay=dismiss_overlay,
                                      still_needed=still_needed)
-    return Sent(reached=True, keys=keys or 0)
+    return Sent(reached=True, keys=keys or 0, alive=alive)
 
 
 def _still_has_tabs(hwnd: int) -> bool:
@@ -354,15 +362,28 @@ def execute_down(
                 all_exited = False
                 continue
 
+            # Only reached with a real pid, which plan_down could only have
+            # produced via discover.live_sessions() - psutil is therefore
+            # already imported; this is a cached re-import, not a fresh load.
+            import psutil
+
+            # Targets are handled one at a time with a wait on each, so a
+            # session can end on its own well before its turn. Saying "sent
+            # /exit" when no key went out would describe something that did
+            # not happen, in the log a user reads to decide whether to go
+            # looking - and so would saying it had gone on its own when it
+            # was there for its turn.
             if sent.keys:
                 log(f"    sent {agent.quit_label} -> {title}  [{cwd}]")
-            else:
-                # Targets are handled one at a time with a wait on each, so a
-                # session can end on its own well before its turn. Saying
-                # "sent /exit" here would describe something that did not
-                # happen, in the log a user reads to decide whether to go
-                # looking.
+            elif not sent.alive:
                 log(f"    {title} had already gone  [{cwd}]")
+            elif not psutil.pid_exists(pid):
+                log(f"    {title} ended before {agent.quit_label} was typed - "
+                    f"the Escape sent first can answer a prompt, such as a "
+                    f"folder-trust dialog  [{cwd}]")
+            else:
+                log(f"    {title} lost focus before {agent.quit_label} was "
+                    f"typed  [{cwd}]")
 
             # Polls the specific pid rather than re-scanning every process via
             # discover.live_sessions() - a sweep of every process on
@@ -370,10 +391,6 @@ def execute_down(
             # off: this no longer re-confirms the pid is still claude.exe at
             # this cwd on each tick, only that it's still running - fine at
             # this timescale (Windows does not aggressively recycle pids).
-            # Only reached with a real pid, which plan_down could only have
-            # produced via discover.live_sessions() - psutil is therefore
-            # already imported; this is a cached re-import, not a fresh load.
-            import psutil
 
             start = time.time()
             deadline = start + EXIT_TIMEOUT_SECONDS
