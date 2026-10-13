@@ -4,7 +4,7 @@
 
 `reloaded/` contains the Windows Terminal launcher for Claude Code and Codex CLI. `__main__.py` handles CLI commands; `agents.py` defines agent differences; `capture.py`, `deploy.py`, and `teardown.py` manage session lifecycles. `layout.py` owns persisted models and geometry, while `tabs.py` and `win32.py` wrap desktop integration. Supporting modules cover discovery, transcripts, readiness, editing, and scheduled tasks.
 
-`tests/` contains pytest suites and shared fixtures in `conftest.py`. `docs/` holds session-identity notes and design plans. `.github/workflows/ci.yml` defines Windows CI. There is no separate assets directory.
+`tests/` contains pytest suites and shared fixtures in `conftest.py`. `docs/` holds session-identity notes and design plans. `.github/workflows/ci.yml` defines Windows CI. `tools/smoke.py` drives the live smoke test against throwaway repos (`docs/smoke-testing.md`); it touches the real desktop and is never run by the suite. There is no separate assets directory.
 
 ## Build, Test, and Development Commands
 

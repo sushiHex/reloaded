@@ -158,6 +158,7 @@ installed. See [automation setup and troubleshooting](docs/automation.md).
 | [Layouts and sessions](docs/usage.md) | Installation alternatives, editing, launch defaults, restart behavior, and agent workflows. |
 | [Automation](docs/automation.md) | Logon setup, shared state, logs, and troubleshooting. |
 | [Architecture](docs/architecture.md) | Discovery, window placement, restart markers, transcript handling, and design limits. |
+| [Smoke testing](docs/smoke-testing.md) | Checking a release live, with throwaway repos, without disturbing your own sessions. |
 
 ## Development
 
