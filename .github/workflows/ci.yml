@@ -13,11 +13,17 @@ jobs:
   test:
     runs-on: windows-latest
     timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        # The floor the package promises, and what its scheduled tasks run
+        # on the machine it was built for (`pyw -3`).
+        python-version: ["3.9", "3.14"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
           cache: "pip"
       - name: Install
         run: python -m pip install -e ".[dev]"
