@@ -145,6 +145,34 @@ def test_the_marker_really_exists_on_disk_when_armed(world):
     assert main_mod.restart_marker(CWD_A).exists()
 
 
+def test_a_loop_with_its_own_marker_is_armed_there(world, monkeypatch, tmp_path):
+    """Not the directory's, which a sibling loop there would take (#37)."""
+    monkeypatch.setattr(main_mod.discover_mod, "marker_shell", lambda pid: 4242)
+    monkeypatch.setattr(main_mod, "shell_marker",
+                        lambda pid: tmp_path / f"shell-{pid}.marker")
+
+    main_mod.cmd_restart(_args(repos=["app-a"]))
+
+    assert (tmp_path / "shell-4242.marker").exists()
+    assert not main_mod.restart_marker(CWD_A).exists()
+
+
+def test_a_shell_marker_left_behind_does_not_block_reopening(world, monkeypatch,
+                                                             tmp_path):
+    """The new tab's shell has another pid, so it never reads that file."""
+    monkeypatch.setattr(main_mod.discover_mod, "marker_shell", lambda pid: 4242)
+    stuck = tmp_path / "shell-4242.marker"
+    stuck.mkdir()  # unlink() of a directory fails
+    monkeypatch.setattr(main_mod, "shell_marker", lambda pid: stuck)
+    monkeypatch.setattr(main_mod.pathlib.Path, "write_text",
+                        lambda self, *a, **k: None)
+    world["wont_relaunch"].add(CWD_A)
+
+    main_mod.cmd_restart(_args(repos=["app-a"]))
+
+    assert world["launched"] == [CWD_A]
+
+
 def test_a_targeted_restart_never_closes_windows(world):
     main_mod.cmd_restart(_args(repos=["app-a"]))
 

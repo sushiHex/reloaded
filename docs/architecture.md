@@ -29,7 +29,7 @@ Titles now only order a window's tabs. A restore then skips a tab only when that
 directory and agent kind are both already running.
 
 The rest of the tool is still keyed by normalized working directory: live
-discovery for restarts, restart markers, and teardown's aim. `status` notes any
+discovery for restarts, and teardown's aim. `status` notes any
 directory hosting more than one agent, since `restart` refuses one and `down`
 may quit only one of its sessions. A restored layout records an agent kind and
 command, not a separate conversation ID. See
@@ -45,14 +45,13 @@ other, and the outcome is reported against the wrong one. `restart --self`
 does not refuse: it takes its session's pid from its own process ancestry and
 ends exactly that process.
 
-It still arms the directory's marker, because that is how a loop is told to
-relaunch, and the marker does not name a session. A second looping session in
-the same directory that exits while the marker is armed — from just before the
-caller is ended until its own loop, or for a hand tab the helper, takes it —
-would take it instead, and the caller would not come back. Closing
-that needs a marker that names a session rather than a directory, which the
-launcher's generated PowerShell cannot be given retroactively — it is already
-running in every open tab.
+Where the session's loop reads a marker of its own (`$rlOwn=` in its shell's
+command line), both write that one, named by the shell's pid, so a second loop
+in the same directory cannot take the request. Otherwise they write the
+directory's, which every loop reads: a loop launched before shells had markers
+of their own, one typed into a hand-started shell (whose command line does not
+show it), or a shell that cannot be read. There a sibling that exits first
+takes the request, and the caller does not come back.
 
 ## Capture and placement
 
@@ -127,14 +126,19 @@ tabs and holdouts remain open; agent processes are not forcibly killed.
 
 ## Restart markers
 
-A named restart arms a marker as each target's turn begins. On agent exit, its
-shell consumes the marker and starts the command again in the same tab. Markers
-expire after 120 seconds and are consumed once. If deletion fails, the loop
-stops instead of repeatedly launching against an unconsumed marker.
+A named restart arms a marker as each target's turn begins, unless that
+session has already ended on its own. On agent exit, its shell consumes the
+marker and starts the command again in the same tab. A loop reads
+`shell-<its pid>.marker` first and its directory's `<sha256(cwd)[:16]>.marker`
+second; requests go to the first wherever the loop has one. Markers expire
+after 120 seconds and are consumed once. If deletion fails, the loop stops
+instead of repeatedly launching against an unconsumed marker.
 
 The restart coordinator leaves timed-out markers in place because a slow
 session may still exit within the valid interval. The launcher handles expiry;
-subsequent named restarts sweep stale markers.
+subsequent named restarts sweep stale markers, re-checking each one's age just
+before deleting it, so a concurrent restart can lose its marker only by
+re-arming it in the instant between the two.
 
 For hand-started sessions, Reloaded types a short command invoking a generated
 PowerShell script into the waiting shell. Keeping the full launcher in a file
@@ -178,7 +182,7 @@ helper removes the marker if the session outlives its wait. Its only report is
 the log.
 
 There is no generation or nonce on a restart marker. Overlapping restarts of
-one repository collapse into one request; full and named restarts do not
+one session collapse into one request; full and named restarts do not
 coordinate. Reconcile can temporarily capture the gap between old and new
 processes. If a fallback must open a new tab, Terminal's most-recent window may
 receive it instead of the original one.
