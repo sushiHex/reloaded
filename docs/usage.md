@@ -69,7 +69,8 @@ its launch settings from the selected layout when available.
 
 ## Status as JSON
 
-`reloaded status --json` prints one JSON document and nothing else. It is built
+`reloaded status --json` prints one JSON document and nothing else (a layout
+file that cannot be parsed is still an error, not a document). It is built
 from the same collected answers as the text, so the two always agree. It only
 reads; it captures, launches and writes nothing.
 
@@ -77,11 +78,11 @@ reads; it captures, launches and writes nothing.
 | --- | --- |
 | `schema` | `1`. Bumped only when an existing field changes meaning or is removed. |
 | `layout` | `path`, `exists`, and `saved` (the layout's timestamp, or `null`). |
-| `live` | Every live session: `path`, `pid`, `agent`. A shared directory appears once per session. |
+| `live` | Every session discovered: `path`, `pid`, `agent`. A shared directory appears once per session (the text's `live sessions` line counts directories). Without `psutil`, or for a process whose directory cannot be read, a session is not discovered, so absence here is not proof. |
 | `shared` | Directories holding more than one session: `path`, `agents`. |
 | `monitors` | `saved` and `current` monitor devices. |
 | `readiness`, `terminal` | `ok` and `detail`. `ok` is `false` exactly when the text prints a warning; an undeterminable Terminal version is `true`, with the detail saying so. |
-| `tabs` | Every saved tab in layout order: `window` (`w1`...), `title`, `path`, `agent`, and `state`: `running`, `launch`, or `missing` (its directory is gone, so `up` skips it). |
+| `tabs` | Every saved tab in layout order: `window` (`w1`...), `title`, `path`, `agent`, and `state`: `running`, `launch`, or `missing` (no live session, and its directory is not there, so `up` skips it). |
 | `not_in_layout` | Live sessions no saved tab accounts for, one entry per session: `path`, `agent`. |
 | `would_launch` | How many tabs `up` would launch: those in state `launch`. |
 

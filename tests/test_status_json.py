@@ -30,8 +30,8 @@ GAMMA = r"C:\repos\gamma"
 @pytest.fixture
 def desktop(tmp_path, monkeypatch):
     """Saved: app as Claude and Codex in w1; beta as Codex and a deleted repo
-    in w2. Live: both of app's, and two Codex sessions in gamma that no tab
-    claims."""
+    in w2. Live: both of app's, a Claude session in beta - the wrong agent for
+    beta's tab - and two Codex sessions in gamma that no tab claims."""
     path = tmp_path / "default.json"
     save(make_layout([
         make_window([0, 0, 800, 600], [Tab(cwd=APP, title="app", agent="claude"),
@@ -42,6 +42,7 @@ def desktop(tmp_path, monkeypatch):
     monkeypatch.setattr(main_mod, "layout_path", lambda name: path)
     monkeypatch.setattr(main_mod.discover_mod, "census", lambda: discover_mod.Census({
         norm(APP): [(11, "claude"), (12, "codex")],
+        norm(BETA): [(15, "claude")],
         norm(GAMMA): [(13, "codex"), (14, "codex")],
     }))
     monkeypatch.setattr(main_mod.os.path, "isdir", lambda p: p != GONE)
@@ -72,6 +73,7 @@ def test_each_live_session_has_its_own_agent_and_pid(desktop, capsys):
     assert doc["live"] == [
         {"path": norm(APP), "pid": 11, "agent": "claude"},
         {"path": norm(APP), "pid": 12, "agent": "codex"},
+        {"path": norm(BETA), "pid": 15, "agent": "claude"},
         {"path": norm(GAMMA), "pid": 13, "agent": "codex"},
         {"path": norm(GAMMA), "pid": 14, "agent": "codex"},
     ]
@@ -80,8 +82,8 @@ def test_each_live_session_has_its_own_agent_and_pid(desktop, capsys):
 
 
 def test_each_saved_tab_is_judged_by_its_own_agent(desktop, capsys):
-    """app's Codex tab is running because app's Codex session is - not because
-    its Claude one is."""
+    """beta's Codex tab would launch although beta has a live session: it is a
+    Claude one, which is reported as unsaved instead."""
     _rc, doc = _doc(capsys)
 
     assert [(t["window"], t["path"], t["agent"], t["state"]) for t in doc["tabs"]] == [
@@ -90,6 +92,20 @@ def test_each_saved_tab_is_judged_by_its_own_agent(desktop, capsys):
         ("w2", BETA, "codex", "launch"),
         ("w2", GONE, "claude", "missing"),
     ]
+    assert {"path": norm(BETA), "agent": "claude"} in doc["not_in_layout"]
+
+
+def test_a_running_session_is_running_even_where_its_directory_is_gone(
+        desktop, capsys, monkeypatch):
+    """Claimed before the directory is checked, as deploy.plan_deploy does: a
+    session that is live is not one `up` would skip as missing."""
+    monkeypatch.setattr(main_mod.os.path, "isdir", lambda p: False)
+
+    _rc, doc = _doc(capsys)
+
+    assert [t["state"] for t in doc["tabs"]] == ["running", "running",
+                                                  "missing", "missing"]
+    assert doc["would_launch"] == 0
 
 
 def test_a_tab_whose_directory_is_gone_is_not_counted_as_a_launch(desktop, capsys):
@@ -109,8 +125,10 @@ def test_every_unsaved_session_is_counted_not_every_directory(desktop, capsys):
     _rc, doc = _doc(capsys)
     _rc, text = _run(capsys, as_json=False)
 
-    assert doc["not_in_layout"] == [{"path": norm(GAMMA), "agent": "codex"}] * 2
-    assert "[drift] 2 live session(s) are not in the layout" in text
+    gamma = [o for o in doc["not_in_layout"] if o["path"] == norm(GAMMA)]
+    assert gamma == [{"path": norm(GAMMA), "agent": "codex"}] * 2
+    assert "[drift] 3 live session(s) are not in the layout" in text
+    assert text.count(f"    {norm(GAMMA)} (codex)\n") == 2
 
 
 def test_the_json_and_the_text_give_the_same_answers(desktop, capsys):
@@ -118,6 +136,8 @@ def test_the_json_and_the_text_give_the_same_answers(desktop, capsys):
     json_rc, doc = _doc(capsys)
 
     assert text_rc == json_rc == 0
+    # The text's count is per directory, and says so by listing directories.
+    assert f"live sessions : {len({s['path'] for s in doc['live']})}" in text
     assert f"`up` would launch {doc['would_launch']} session(s)." in text
     assert (f"[drift] {len(doc['not_in_layout'])} live session(s) are not "
             "in the layout") in text
@@ -149,9 +169,9 @@ def test_no_layout_is_still_one_json_document_and_a_failure(tmp_path, monkeypatc
     assert "tabs" not in doc and "would_launch" not in doc
 
 
-def test_status_walks_the_process_table_once(desktop, capsys, monkeypatch):
-    """It used to walk it twice: once for the live sessions, again to count
-    them per agent."""
+def test_status_asks_for_one_census_and_no_other_walk(desktop, capsys, monkeypatch):
+    """It used to walk the process table twice: once for the live sessions,
+    again to count them per agent."""
     walks = []
     census = main_mod.discover_mod.census
     monkeypatch.setattr(main_mod.discover_mod, "census",
