@@ -120,3 +120,37 @@ def test_list_tab_items_still_propagates_a_real_failure(monkeypatch):
         assert False, "expected the exception to propagate"
     except RuntimeError as exc:
         assert "UIA genuinely unavailable" in str(exc)
+
+
+def test_the_walk_initializes_com_on_its_own_thread(monkeypatch):
+    """#51: uiautomation imported on one thread and first used on another
+    raised "CoInitialize has not been called" - 9 failed captures in a month.
+    The walk runs on a new thread every call, so it initializes that one."""
+    import sys
+    import threading
+    import types
+
+    calls = []
+
+    def note(what):
+        calls.append((what, threading.get_ident()))
+
+    class _Initializer:
+        def __enter__(self):
+            note("init")
+
+        def __exit__(self, *exc):
+            note("release")
+
+    fake = types.SimpleNamespace(UIAutomationInitializerInThread=_Initializer,
+                                 ControlFromHandle=lambda hwnd: note("use"))
+    monkeypatch.setitem(sys.modules, "uiautomation", fake)
+
+    try:
+        tabs_mod.list_tab_items(123, timeout=2)
+    except tabs_mod.UIAUnavailable:
+        pass  # the fake has no control for it; only the order matters here
+
+    assert [what for what, _t in calls] == ["init", "use", "release"]
+    assert len({t for _w, t in calls}) == 1
+    assert calls[0][1] != threading.get_ident()

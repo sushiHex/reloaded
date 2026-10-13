@@ -14,3 +14,9 @@ venv/
 # editor state
 .vscode/
 .idea/
+
+# uiautomation writes its error log to the working directory
+@AutomationLog.txt
+
+# agent worktrees
+.claude/worktrees/
