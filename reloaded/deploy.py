@@ -61,11 +61,12 @@ CHILD_SESSION_CLEAR = "$env:CLAUDE_CODE_CHILD_SESSION=$null"
 # already ended, left sitting at a bare shell prompt. Now those tabs close
 # themselves and the window shrinks to just the holdout.
 #
-# Gated on elapsed time rather than $LASTEXITCODE because what `claude` returns
-# on /exit is not something this package verifies; guessing wrong would either
-# strand dead tabs or swallow startup errors. Elapsed time separates the two
-# cases directly. Verified: an explicit `exit` inside -Command terminates the
-# shell even under -NoExit.
+# Gated on elapsed time rather than $LASTEXITCODE because the exit code does
+# not separate the two cases: /exit returns 0 (measured, 2.1.296), but so does
+# a startup that ends at once by declining the folder-trust question, and every
+# kind and version would have to be measured to lean on it. Elapsed time
+# separates them directly. Verified: an explicit `exit` inside -Command
+# terminates the shell even under -NoExit.
 STARTUP_GRACE_SECONDS = 10
 CLAUDE_STARTED_AT = "$rlStart=Get-Date"
 CLOSE_TAB_IF_STARTED = (

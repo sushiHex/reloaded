@@ -48,7 +48,8 @@ class Agent:
     resume_tokens: tuple
     # Where this kind keeps its session records.
     #
-    # Nothing reads this yet, and it is not the interface that should. A Codex
+    # Claude Code's are read, by discovery and by `conversations_dir`. Codex's
+    # are not, and they are not the interface that should be. A Codex
     # rollout's first line records how a thread was CREATED, not what hosts it
     # now - a terminal can resume a thread `codex exec` or the desktop app
     # started, and that line is never rewritten - so no field in this directory
