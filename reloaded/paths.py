@@ -5,6 +5,7 @@ import datetime
 import hashlib
 import os
 import pathlib
+import uuid
 
 
 def norm(p: str) -> str:
@@ -86,6 +87,31 @@ def relaunch_script_path(cwd: str) -> pathlib.Path:
     d = state_dir() / "relaunch"
     d.mkdir(parents=True, exist_ok=True)
     return d / f"{_digest(cwd)}.ps1"
+
+
+def _attempts_dir() -> pathlib.Path:
+    d = state_dir() / "attempts"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def relaunch_attempt(cwd: str, dispatched: float) -> pathlib.Path:
+    """A new record of one `/relaunch`, for the next one in `cwd` to read
+    (relaunch.report_earlier).
+
+    Named `<digest>.<dispatched, ms>.<token>.attempt`: found by directory,
+    dated by its name rather than by contents someone could half-write, and
+    never shared by two attempts, however close together.
+    """
+    return _attempts_dir() / (f"{_digest(cwd)}.{int(dispatched * 1000)}."
+                              f"{uuid.uuid4().hex}.attempt")
+
+
+def relaunch_attempts(cwd: str) -> list[pathlib.Path]:
+    """Every record of a `/relaunch` in `cwd`, oldest first: unread ones, and
+    ones a reader claimed (renamed) and never finished with."""
+    return sorted(_attempts_dir().glob(f"{_digest(cwd)}.*"),
+                  key=lambda p: p.name.split(".")[1])
 
 
 def restart_marker(cwd: str) -> pathlib.Path:

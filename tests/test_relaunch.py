@@ -406,7 +406,7 @@ def test_the_helper_is_started_through_an_intermediate(popen, tmp_path):
 
     assert len(popen) == 1
     assert "_start_helper(" in popen[0][0][-1]
-    relaunch_mod._start_helper(20, 1.0, 10, 1.0, "claude", "claude", "m")
+    relaunch_mod._start_helper(None, 20, 1.0, 10, 1.0, "claude", "claude", "m")
     assert "bring_back(" in popen[1][0][-1]
 
 

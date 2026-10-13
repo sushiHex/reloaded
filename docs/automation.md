@@ -99,6 +99,7 @@ automation, so a later sign-in can restore the saved layout again.
 | `~/.reloaded/reloaded.log` | Unattended deployment output, readiness results, crash reports, and every change a capture made to the layout. |
 | `~/.reloaded/restart/` | Short-lived restart markers. |
 | `~/.reloaded/relaunch/` | Launcher scripts used to upgrade hand-started tabs. |
+| `~/.reloaded/attempts/` | One record per `restart --self`, read by the next one in that directory. |
 
 In Windows, `~` denotes your user profile directory. To inspect the log in
 PowerShell:

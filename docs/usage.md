@@ -181,7 +181,9 @@ A Reloaded tab replays its captured command, so what comes back is whatever
 that command resumes — `--continue`, by default, the directory's latest
 conversation.
 
-The helper records what it did in `~/.reloaded/reloaded.log`. `--self` cannot
+The helper records what it did in `~/.reloaded/reloaded.log`. If a restart
+did not bring its session back, or its helper stopped without saying, the next
+`--self` in that directory says so before it starts. `--self` cannot
 take repository names. The quit keys have been verified live for Claude Code
 only; Codex's are its double Ctrl+C, written the same way, and a session that
 ignores them falls back to being ended by pid.
