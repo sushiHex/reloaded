@@ -343,8 +343,7 @@ def running() -> Counter:
     even when its Claude one is too, and that two Claude sessions there are
     two. From the plain process sweep, not `sessions()`: liveness must not
     depend on finding a session's window."""
-    return Counter((cwd, kind) for cwd, kinds in _census()[1].items()
-                   for kind in kinds)
+    return census().running()
 
 
 def claim_running(running: Counter, live: dict[str, int], cwd: str,
@@ -365,47 +364,51 @@ def claim_running(running: Counter, live: dict[str, int], cwd: str,
     return key[0] in live
 
 
-def _sessions() -> tuple[dict[str, tuple], dict[str, list[str]]]:
-    """(cwd -> (pid, kind), cwd -> kinds) for every live agent session.
+class Census(NamedTuple):
+    """Every live agent session from one process walk: normalized cwd ->
+    [(pid, kind), ...] in pid order.
 
-    The second half names what the first collapsed: a directory hosting more
-    than one agent. Built in the same walk, because a separate one would
-    double the process sweeps every capture pays for.
+    The directory-keyed answers are views of it, so a caller that wants
+    several - `status` wants all three - pays one walk rather than one each.
 
-    Keyed by cwd, so two sessions in the same directory collapse to whichever
-    psutil reports last. Capture does not use this to decide what is saved -
-    `sessions()` places every session by its tab's shell - but teardown still
-    does, and can type into one session while waiting on the other's pid, then
-    report a timeout for a session that did quit, or success for one that did
-    not. teardown.plan_down warns when it sees the matching symptom - two tabs
-    resolving to one cwd - rather than leaving the ambiguity silent.
+    `live` keeps one session per directory, the last reported, and `crowded`
+    names the directories where that dropped one. Capture does not use `live`
+    to decide what is saved - `sessions()` places every session by its tab's
+    shell - but teardown still does, and can type into one session while
+    waiting on the other's pid, then report a timeout for a session that did
+    quit, or success for one that did not. teardown.plan_down warns when it
+    sees the matching symptom - two tabs resolving to one cwd - rather than
+    leaving the ambiguity silent.
     """
-    out, seen = _census()
-    crowded = {cwd: sorted(k) for cwd, k in seen.items() if len(k) > 1}
-    return out, crowded
+    found: dict[str, list[tuple[int, str]]]
+
+    def live(self) -> dict[str, int]:
+        return {cwd: s[-1][0] for cwd, s in self.found.items()}
+
+    def crowded(self) -> dict[str, list[str]]:
+        return {cwd: sorted(k for _p, k in s)
+                for cwd, s in self.found.items() if len(s) > 1}
+
+    def running(self) -> Counter:
+        return Counter((cwd, k) for cwd, s in self.found.items() for _p, k in s)
 
 
-def _census() -> tuple[dict[str, tuple], dict[str, list[str]]]:
-    """The walk under `_sessions` and `running`: (cwd -> (pid, kind), cwd ->
-    every kind there, one entry per session)."""
+def census() -> Census:
+    """The walk under every directory-keyed answer below."""
     from . import win32
 
-    out: dict[str, tuple] = {}
-    seen: dict[str, list[str]] = {}
+    found: dict[str, list[tuple[int, str]]] = {}
     for pid, kind, cwd in _agent_processes(win32.process_table()):
-        out[norm(cwd)] = (pid, kind)
-        seen.setdefault(norm(cwd), []).append(kind)
-    return out, seen
+        found.setdefault(norm(cwd), []).append((pid, kind))
+    return Census(found)
 
 
 def sweep() -> tuple[dict[str, int], dict[str, list[str]]]:
-    """Live sessions by cwd, and the directories that collapsed, in one walk.
-
-    The reason `_sessions` computes both: a caller that wants them separately
-    pays two process sweeps for one question.
-    """
-    sessions, crowded = _sessions()
-    return {cwd: pid for cwd, (pid, _k) in sessions.items()}, crowded
+    """Live sessions by cwd, and the directories that collapsed, in one walk:
+    a caller that wants them separately pays two process sweeps for one
+    question."""
+    c = census()
+    return c.live(), c.crowded()
 
 
 def live_sessions() -> dict[str, int]:
@@ -418,12 +421,12 @@ def live_sessions() -> dict[str, int]:
     call sites depend on dict[str, int], and which kind a session is travels
     beside it in live_agents() rather than through here.
     """
-    return {cwd: pid for cwd, (pid, _kind) in _sessions()[0].items()}
+    return census().live()
 
 
 def live_agents() -> dict[str, str]:
     """Map normalized cwd -> agent kind, alongside live_sessions()."""
-    return {cwd: kind for cwd, (_pid, kind) in _sessions()[0].items()}
+    return {cwd: s[-1][1] for cwd, s in census().found.items()}
 
 
 _SAFE_EXE = re.compile(r"[A-Za-z0-9._+-]+")
