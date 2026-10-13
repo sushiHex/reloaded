@@ -16,7 +16,7 @@ python -m reloaded status              # inspect saved vs. live sessions
 python -m reloaded up --dry-run        # preview a deployment without opening tabs
 ```
 
-No formatter or linter is configured. CI (`.github/workflows/ci.yml`) is `windows-latest` + Python 3.12 only.
+No formatter or linter is configured. CI (`.github/workflows/ci.yml`) is `windows-latest` with Python 3.9 (the floor) and 3.14.
 
 ## Hard constraints
 

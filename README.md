@@ -170,7 +170,7 @@ python -m pip install -e ".[dev]"
 python -m pytest -v
 ```
 
-CI runs on Windows with Python 3.12. Tests mock desktop operations and guard
+CI runs on Windows with Python 3.9 and 3.14. Tests mock desktop operations and guard
 against sending real keystrokes, changing windows, or launching live agents.
 Preserve those guards when adding tests.
 

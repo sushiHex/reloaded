@@ -8,7 +8,7 @@
 
 ## Build, Test, and Development Commands
 
-Develop on Windows with Python 3.9+; CI uses Python 3.12. Live operation requires Windows Terminal, the relevant agent CLI on PATH, and PowerShell (7 preferred; 5.1 supported).
+Develop on Windows with Python 3.9+; CI tests Python 3.9 and 3.14. Live operation requires Windows Terminal, the relevant agent CLI on PATH, and PowerShell (7 preferred; 5.1 supported).
 
 - `python -m pip install -e ".[dev]"`: install editable source and pytest.
 - `python -m pip wheel . --no-deps -w dist`: build a wheel using the configured setuptools backend.
