@@ -699,6 +699,11 @@ RELAUNCH_WAIT_SECONDS = 20.0
 # nothing cheaper to poll - so the tick is kept coarse instead. Nobody
 # restarting a session needs the answer a quarter-second sooner.
 RELAUNCH_POLL_SECONDS = 1.0
+# How long a relaunched pid has to stay the session at its directory before it
+# counts. A relaunch can start and die at once: Claude Code's `--continue`
+# with nothing to continue exits 1 about two seconds in (measured, 2.1.296),
+# and the tab's fallback starts another (deploy.nothing_to_resume).
+RELAUNCH_SETTLE_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -820,14 +825,26 @@ def _wait_for_session(cwd: str, *, not_pid: int | None = None) -> int | None:
     got reported as restarted. That was not a narrow reaping race: it held for
     as long as the old process stayed alive, which for a timed-out exit is
     indefinitely.
+
+    Nor is the first new pid: it counts once it has stayed the session there
+    for RELAUNCH_SETTLE_SECONDS. Taken at once, a relaunch that died seconds
+    later was reported as restarted, under the pid of the attempt that died
+    rather than of the session that replaced it (#69). The pid returned is
+    the one still there.
     """
     key = norm(cwd)
-    deadline = time.time() + RELAUNCH_WAIT_SECONDS
+    deadline = time.time() + RELAUNCH_WAIT_SECONDS + RELAUNCH_SETTLE_SECONDS
+    seen, since = None, 0.0
     while True:
         pid = discover_mod.live_sessions().get(key)
-        if pid is not None and pid != not_pid:
-            return pid
-        if time.time() >= deadline:
+        now = time.time()
+        if pid in (None, not_pid):
+            seen = None
+        elif pid != seen:
+            seen, since = pid, now
+        if seen is not None and now - since >= RELAUNCH_SETTLE_SECONDS:
+            return seen
+        if now >= deadline:
             return None
         time.sleep(RELAUNCH_POLL_SECONDS)
 

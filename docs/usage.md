@@ -178,8 +178,9 @@ instead of previewing a run that would stop, and exits non-zero to say so —
 the only dry run in the CLI that does, because it is the only one that can
 preview a refusal.
 
-A named restart verifies a different process ID; seeing the original process
-still running does not count as a restart. Read timeout and placement warnings
+A named restart verifies a different process ID that stays for five seconds;
+seeing the original process still running does not count as a restart, and
+neither does a relaunch that dies at once. Read timeout and placement warnings
 even if a tab remains visible.
 
 Avoid overlapping restart commands for the same repository, or mixing a full
