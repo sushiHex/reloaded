@@ -18,11 +18,13 @@ from conftest import MONITORS, make_layout, make_window
 
 import reloaded.capture as capture_mod
 import reloaded.discover as discover_mod
+import reloaded.win32 as win32_mod
 from reloaded.capture import build_layout
 from reloaded.deploy import plan_deploy
 from reloaded.discover import Session
 from reloaded.layout import Tab
 from reloaded.paths import norm
+from reloaded.win32 import Proc
 
 # Bound at import, before the autouse fixture swaps in its empty answer.
 real_sessions = discover_mod.sessions
@@ -251,29 +253,30 @@ def test_a_pinned_codex_tab_survives_beside_a_running_claude_one():
 def test_each_session_is_placed_through_its_tabs_shell(monkeypatch):
     """Agent -> its shell -> the window that shell's tab is in. A session
     outside any tab has no window."""
-    procs = [
-        types.SimpleNamespace(pid=1, name="claude.exe", cwd=RETRO, line=[10, 5]),
-        types.SimpleNamespace(pid=2, name="codex.exe", cwd=RETRO, line=[20, 5]),
-        types.SimpleNamespace(pid=3, name="codex.exe", cwd=META, line=[7]),
-    ]
-
-    class _Proc:
-        def __init__(self, p):
-            self._p = p
-            self.info = {"pid": p.pid, "name": p.name, "create_time": float(p.pid)}
-
-        def cwd(self):
-            return self._p.cwd
-
-        def parents(self):
-            return [types.SimpleNamespace(pid=pid) for pid in self._p.line]
-
-    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(
-        process_iter=lambda attrs: [_Proc(p) for p in procs]))
-    monkeypatch.setattr(discover_mod, "_hosted_elsewhere", lambda proc, images: False)
-    import reloaded.win32 as win32_mod
-    monkeypatch.setattr(win32_mod, "tab_shells", lambda: {10: 100, 20: 100})
+    # Each agent's shell, then the terminal both shells run under.
+    _machine(monkeypatch, {1: Proc(10, "claude.exe", 3.0), 2: Proc(20, "codex.exe", 3.0),
+                           3: Proc(7, "codex.exe", 3.0), 10: Proc(5, "pwsh.exe", 2.0),
+                           20: Proc(5, "pwsh.exe", 2.0), 7: Proc(0, "pwsh.exe", 2.0),
+                           5: Proc(0, "WindowsTerminal.exe", 1.0)},
+             cwds={1: RETRO, 2: RETRO, 3: META}, shells={10: 100, 20: 100})
 
     found = {(s.pid, s.hwnd) for s in real_sessions()}
 
     assert found == {(1, 100), (2, 100), (3, None)}
+
+
+def test_a_tab_shell_far_up_the_line_still_places_its_session(monkeypatch):
+    """The host search stops at eight ancestors; finding the tab does not."""
+    line = {1: Proc(101, "claude.exe", 0.0)}
+    line.update({101 + hop: Proc(102 + hop, "cmd.exe", -1.0 - hop) for hop in range(12)})
+    _machine(monkeypatch, line, cwds={1: RETRO}, shells={112: 100})
+
+    assert [(s.pid, s.hwnd) for s in real_sessions()] == [(1, 100)]
+
+
+def _machine(monkeypatch, table, *, cwds, shells):
+    monkeypatch.setattr(win32_mod, "process_table", lambda: table)
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(
+        Process=lambda pid: types.SimpleNamespace(
+            cwd=lambda: cwds[pid], create_time=lambda: table[pid].created)))
+    monkeypatch.setattr(win32_mod, "tab_shells", lambda: shells)

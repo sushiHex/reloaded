@@ -147,7 +147,7 @@ def test_crowding_elsewhere_is_not_this_restarts_problem(desktop):
 
 def test_the_check_costs_no_extra_walk_of_the_process_table(desktop):
     """`sweep()` exists because asking these two questions separately pays two
-    `process_iter` walks."""
+    process sweeps."""
     main_mod.cmd_restart_one(_args(), [ALONE])
 
     assert desktop["swept"] == 1

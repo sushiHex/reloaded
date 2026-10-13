@@ -160,6 +160,88 @@ def tab_shells() -> dict[int, int]:
     return found
 
 
+class Proc(NamedTuple):
+    """One process as the kernel's process list records it. `created` is in
+    epoch seconds, the same clock as psutil's create_time()."""
+    ppid: int
+    name: str
+    created: float
+
+
+class _UNICODE_STRING(ctypes.Structure):
+    _fields_ = [("Length", wintypes.USHORT), ("MaximumLength", wintypes.USHORT),
+                ("Buffer", ctypes.c_void_p)]
+
+
+class _SYSTEM_PROCESS_INFORMATION(ctypes.Structure):
+    """The leading fields of winternl.h's struct, which is all that is read."""
+    _fields_ = [
+        ("NextEntryOffset", wintypes.ULONG),
+        ("NumberOfThreads", wintypes.ULONG),
+        ("_reserved", ctypes.c_byte * 24),
+        ("CreateTime", ctypes.c_longlong),
+        ("UserTime", ctypes.c_longlong),
+        ("KernelTime", ctypes.c_longlong),
+        ("ImageName", _UNICODE_STRING),
+        ("BasePriority", ctypes.c_long),
+        ("UniqueProcessId", ctypes.c_void_p),
+        ("InheritedFromUniqueProcessId", ctypes.c_void_p),
+    ]
+
+
+_ntdll = ctypes.WinDLL("ntdll")
+_ntdll.NtQuerySystemInformation.restype = ctypes.c_long
+_ntdll.NtQuerySystemInformation.argtypes = [
+    wintypes.ULONG, ctypes.c_void_p, wintypes.ULONG, ctypes.POINTER(wintypes.ULONG)]
+_SYSTEM_PROCESS_INFORMATION_CLASS = 5
+_STATUS_INFO_LENGTH_MISMATCH = ctypes.c_long(0xC0000004).value
+# Either answer means "a bigger buffer", as psutil also reads them.
+_TOO_SMALL = (_STATUS_INFO_LENGTH_MISMATCH, ctypes.c_long(0xC0000023).value)
+_MAX_TABLE_BYTES = 1 << 28  # far past any real machine; a bound, not a budget
+_FILETIME_EPOCH = 116444736000000000  # 1601-01-01 to 1970-01-01, in 100ns
+
+
+def process_table() -> dict[int, Proc]:
+    """Every process on the machine: pid -> (parent pid, image name, created).
+
+    One kernel snapshot. psutil answers `ppid()` with a snapshot of the whole
+    machine per call, so walking a parent chain through it cost one per hop:
+    126 of them, 3.3s of a 4.5s `status`. This is that same list, read once,
+    with the creation times that tell a live parent from a reused pid.
+    """
+    size = 1 << 21
+    while True:
+        buf = ctypes.create_string_buffer(size)
+        needed = wintypes.ULONG()
+        status = _ntdll.NtQuerySystemInformation(
+            _SYSTEM_PROCESS_INFORMATION_CLASS, buf, size, ctypes.byref(needed))
+        if status not in _TOO_SMALL or size >= _MAX_TABLE_BYTES:
+            break
+        # Processes start between the two calls, so ask for room to spare.
+        size = min(max(size * 2, needed.value + (1 << 16)), _MAX_TABLE_BYTES)
+    if status < 0:
+        raise OSError(f"NtQuerySystemInformation failed: 0x{status & 0xFFFFFFFF:08X}")
+
+    table: dict[int, Proc] = {}
+    base, offset = ctypes.addressof(buf), 0
+    end = base + min(needed.value, size)  # what was written, not what was allocated
+    malformed = OSError("NtQuerySystemInformation returned a malformed process list")
+    while True:
+        if base + offset + ctypes.sizeof(_SYSTEM_PROCESS_INFORMATION) > end:
+            raise malformed
+        info = _SYSTEM_PROCESS_INFORMATION.from_address(base + offset)
+        image = info.ImageName
+        if image.Buffer and not base <= image.Buffer <= end - image.Length:
+            raise malformed
+        name = ctypes.wstring_at(image.Buffer, image.Length // 2) if image.Buffer else ""
+        table[info.UniqueProcessId or 0] = Proc(
+            info.InheritedFromUniqueProcessId or 0, name,
+            (info.CreateTime - _FILETIME_EPOCH) / 1e7)
+        if not info.NextEntryOffset:
+            return table
+        offset += info.NextEntryOffset
+
+
 def _dpi_for_monitor(hmon) -> int:
     if _shcore is None:
         return 96

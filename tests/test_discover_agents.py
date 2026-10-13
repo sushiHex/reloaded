@@ -21,56 +21,50 @@ Claude session.
 from __future__ import annotations
 
 import sys
+import types
 
 import reloaded.discover as discover_mod
+import reloaded.win32 as win32_mod
 from reloaded.paths import norm
+from reloaded.win32 import Proc
 
 REPOS = r"C:\Users\k\repos"
 
 
-class _Proc:
-    """One process, with a real ancestry rather than a ppid to look up.
+class _Proc(types.SimpleNamespace):
+    """One process and its ancestry, named outward: the immediate parent
+    first. A tab's agent has its shell there and nothing above it that
+    matters."""
 
-    `ancestors` is named outward from the process: the immediate parent first.
-    A tab's agent has its shell there and nothing above it that matters.
-    """
+    def __init__(self, pid, name, cwd, ancestors=("pwsh.exe",)):
+        super().__init__(pid=pid, name=name, cwd=cwd, ancestors=ancestors)
 
-    def __init__(self, pid, name, cwd, ancestors=("pwsh.exe",),
-                 parent_raises=None):
-        self.pid = pid
-        self.info = {"pid": pid, "name": name, "ppid": 900 + pid}
-        self._cwd = cwd
-        self._ancestors = list(ancestors)
-        self._parent_raises = parent_raises
 
-    def cwd(self):
-        if self._cwd is None:
+def _stub(monkeypatch, procs, table=None):
+    """The machine's process table, built from each process's ancestry: every
+    ancestor is older than the one below it, as a real parent is."""
+    table = dict(table or {})
+    for p in procs:
+        line = [p.pid] + [p.pid * 100 + hop for hop in range(1, len(p.ancestors) + 1)]
+        names = [p.name, *p.ancestors]
+        for hop, pid in enumerate(line):
+            parent = line[hop + 1] if hop + 1 < len(line) else 0
+            table[pid] = Proc(parent, names[hop], float(-hop))
+    cwds = {p.pid: p.cwd for p in procs}
+
+    def cwd(pid):
+        if cwds.get(pid) is None:
             raise PermissionError("denied")
-        return self._cwd
+        return cwds[pid]
 
-    def name(self):
-        return self.info["name"]
-
-    def parent(self):
-        if self._parent_raises:
-            raise self._parent_raises
-        if not self._ancestors:
-            return None
-        return _Proc(self.pid + 1000, self._ancestors[0], None,
-                     ancestors=self._ancestors[1:])
+    monkeypatch.setattr(win32_mod, "process_table", lambda: table)
+    _psutil(monkeypatch, cwd, lambda pid: table[pid].created)
 
 
-def _stub(monkeypatch, procs):
-    class _Fake:
-        @staticmethod
-        def process_iter(fields=None):
-            return list(procs)
-
-        @staticmethod
-        def Process(pid):
-            raise LookupError(pid)
-
-    monkeypatch.setitem(sys.modules, "psutil", _Fake)
+def _psutil(monkeypatch, cwd, started):
+    monkeypatch.setitem(sys.modules, "psutil", types.SimpleNamespace(
+        Process=lambda pid: types.SimpleNamespace(
+            cwd=lambda: cwd(pid), create_time=lambda: started(pid))))
 
 
 def test_a_claude_session_is_found(monkeypatch):
@@ -185,19 +179,53 @@ def test_the_walk_is_bounded(monkeypatch):
     assert discover_mod.live_sessions() == {norm(REPOS + r"\zeta"): 7}
 
 
+def test_an_agent_past_the_search_depth_is_not_a_host(monkeypatch):
+    """Eight ancestors is the reach. The observed nesting is three."""
+    within = tuple(["pwsh.exe"] * 7 + ["claude.exe"])
+    beyond = tuple(["pwsh.exe"] * 8 + ["claude.exe"])
+    _stub(monkeypatch, [_Proc(7, "codex.exe", REPOS + r"\zeta", ancestors=within),
+                        _Proc(8, "codex.exe", REPOS + r"\eta", ancestors=beyond)])
+
+    assert discover_mod.live_sessions() == {norm(REPOS + r"\eta"): 8}
+
+
 # ── failures that must not drop a real session ───────────────────────────
 
 
-def test_an_unreadable_parent_does_not_drop_the_session(monkeypatch):
-    """The common cause is a permissions error, and dropping a real session
-    over one is the worse failure — the same trade the desktop-host check has
-    always made."""
-    _stub(monkeypatch, [
-        _Proc(8, "codex.exe", REPOS + r"\eta",
-              parent_raises=PermissionError("denied")),
-    ])
+def test_a_reused_parent_pid_does_not_drop_the_session(monkeypatch):
+    """Its recorded parent exited, and Windows gave that pid to a Claude
+    session started later. Believing the table would make a real tab look
+    nested and drop it; a parent younger than its child is not its parent."""
+    _stub(monkeypatch, [_Proc(8, "codex.exe", REPOS + r"\eta", ancestors=())],
+          table={0: Proc(0, "claude.exe", 5.0)})
 
     assert discover_mod.live_sessions() == {norm(REPOS + r"\eta"): 8}
+
+
+def test_a_parent_as_old_as_its_child_is_still_its_parent(monkeypatch):
+    """The other side of that rule, which is psutil's: equal is a parent."""
+    _stub(monkeypatch, [_Proc(8, "codex.exe", REPOS + r"\eta", ancestors=())],
+          table={0: Proc(0, "claude.exe", 0.0)})
+
+    assert discover_mod.live_sessions() == {}
+
+
+def test_a_pid_loop_ends_the_walk(monkeypatch):
+    _stub(monkeypatch, [], table={
+        8: Proc(9, "codex.exe", 0.0), 9: Proc(8, "pwsh.exe", 0.0)})
+    _psutil(monkeypatch, lambda pid: REPOS + r"\eta", lambda pid: 0.0)
+
+    assert discover_mod.live_sessions() == {norm(REPOS + r"\eta"): 8}
+
+
+def test_a_session_pid_reused_since_the_snapshot_is_not_read(monkeypatch):
+    """The table named a Codex session at that pid; the process there now
+    started later and is something else. Its cwd would be filed under the
+    old session's kind."""
+    _stub(monkeypatch, [_Proc(8, "codex.exe", REPOS + r"\eta")])
+    _psutil(monkeypatch, lambda pid: REPOS + r"\eta", lambda pid: 5.0)
+
+    assert discover_mod.live_sessions() == {}
 
 
 def test_a_process_with_no_parent_at_all_is_kept(monkeypatch):
