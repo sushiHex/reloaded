@@ -124,11 +124,39 @@ deploy only reports a tab as failed once its own staggered turn has passed.
 A run ending within the ten-second startup grace leaves its shell visible so
 an error can be read; a longer completed run closes its tab.
 
+A Claude command Reloaded launches always resumes something
+(`agents.resuming`): a bare `--resume`, which opens a picker, becomes
+`--continue`, and `--continue` is added where nothing resumes. An opening
+prompt is dropped, since a resumed conversation would receive it again.
+Commands are read one argument at a time, the way Claude Code's parser reads
+them (`agents._roles`, measured on 2.1.296): an option with a required value
+takes the next argument even when it starts with `-`; an optional value
+(`[value]`) is taken only when the argument does not start with `-`.
+
+Where `--continue` finds no conversation, Claude exits 1. That is at once, or,
+in a directory not yet trusted, once its folder-trust question is answered.
+The tab then runs the same command without the resume
+(`deploy.nothing_to_resume`), but only when Claude's folder for that directory
+holds no `*.jsonl` (`agents.conversations_dir`). The folder is the path with
+every character but a letter or digit replaced by `-`, under `projects` in
+`CLAUDE_CONFIG_DIR` or `~/.claude`. A name over 200 characters is cut and
+hashed by Claude, so it gets no fallback rather than a guess. A quick exit 1
+where a conversation exists is left on screen: a new conversation there would
+become the latest, the one every later restart resumes. Codex's
+`resume --last` starts a new session by itself where there is none.
+
 Teardown selects the intended tab and verifies foreground focus before sending
 input. Claude receives `/exit` and Enter separately; Codex receives separated
 Ctrl+C presses. A prompt, review, or side conversation may consume a key instead
 of quitting. Teardown retries once and checks process exit rather than treating
-sent keystrokes as success.
+sent keystrokes as success. A send that typed no key is reported as one of
+three things:
+
+- the session had already gone;
+- it ended before the quit keys were typed, because the Escape sent first to
+  clear an overlay can answer a prompt (Claude's folder-trust dialog reads it
+  as "No, exit");
+- it lost focus first, with the session still running.
 
 Only windows whose original tabs were all recognized targets and whose sessions
 exited qualify for closure. Closing a window is verified afterward. Ordinary
@@ -144,6 +172,10 @@ second; requests go to the first wherever the loop has one. Markers expire
 after 120 seconds and are consumed once. If deletion fails, the loop stops
 instead of repeatedly launching against an unconsumed marker.
 
+A named restart counts a session as back once a new pid has stayed at its
+directory for five seconds, and reports that pid. The first new pid can be a
+resume that fails about two seconds in, replaced by the fallback above.
+
 The restart coordinator leaves timed-out markers in place because a slow
 session may still exit within the valid interval. The launcher handles expiry;
 subsequent named restarts sweep stale markers, re-checking each one's age just
@@ -152,7 +184,9 @@ re-arming it in the instant between the two.
 
 For hand-started sessions, Reloaded types a short command invoking a generated
 PowerShell script into the waiting shell. Keeping the full launcher in a file
-avoids SendKeys metacharacters and dropped long input. The script ends the host
+avoids SendKeys metacharacters and dropped long input. The file carries a
+byte-order mark, because Windows PowerShell 5.1 reads a script without one in
+the ANSI code page. The script ends the host
 shell after a successful run so the adopted tab follows normal launcher behavior.
 
 Self restart (`relaunch.py`) does not use the teardown path at all. Aimed at

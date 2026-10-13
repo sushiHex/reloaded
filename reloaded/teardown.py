@@ -171,7 +171,9 @@ def _send_exit(hwnd: int, item, *, dismiss_overlay: bool = True, before_send=Non
     Returns a `Sent`. `reached` False means the tab could not be confirmed and
     nothing was typed, so the caller must not assume the session was asked to
     quit. `keys` is how many of the quit keys actually went out, and zero is a
-    real answer: the target had already gone by the time its turn came.
+    real answer - with `alive`, whether the target was still running once its
+    tab was reached, to tell one that had already gone from one that ended,
+    or lost focus, before its first key.
 
     `quit_keys` defaults to Claude Code's, which is what every caller meant
     before a second agent kind existed. See tabs.send_quit_keystrokes for
