@@ -72,6 +72,24 @@ CLOSE_TAB_IF_STARTED = (
     f"if (((Get-Date)-$rlStart).TotalSeconds -gt {STARTUP_GRACE_SECONDS}) {{ exit }}"
 )
 
+def nothing_to_resume(folder: str) -> str:
+    """The test, in the tab, that a resume of the latest conversation failed
+    for want of one (agents.fresh): it exited 1, inside the grace, and
+    `folder` (agents.conversations_dir) holds no conversation.
+
+    All three, because no fewer is that failure. A session quit at once by
+    /exit returns 0 (measured, 2.1.296). One that ends in an error after it
+    was worked in is past the grace. And a quick exit 1 where a conversation
+    exists is a resume that failed some other way: a new conversation there
+    would become the latest, the one every later restart continues. The
+    folder is looked at on every pass, since a restart can come before the
+    first conversation exists or after.
+    """
+    return (f"$LASTEXITCODE -eq 1 -and "
+            f"((Get-Date)-$rlStart).TotalSeconds -lt {STARTUP_GRACE_SECONDS} -and "
+            f"-not (Get-ChildItem -LiteralPath '{pwsh.escape(folder)}' -Filter *.jsonl "
+            f"-ErrorAction SilentlyContinue)")
+
 # How long a restart marker stays good for. `restart` writes one, then has at
 # most teardown.EXIT_TIMEOUT_SECONDS to get the session to end, so anything
 # beyond a couple of minutes means the restart never reached its tab - the
@@ -183,6 +201,11 @@ def launcher_command(cwd: str, delay: int, size_bytes: int,
 
     invocation = (agents_mod.resuming(agent, command)
                   or agents_mod.for_kind(agent).launch)
+    fresh = agents_mod.fresh(agent, invocation)
+    folder = agents_mod.conversations_dir(agent, cwd)
+    if fresh and folder:
+        invocation += (f"; if ({nothing_to_resume(folder)}) "
+                       f"{{ $rlStart=Get-Date; {fresh} }}")
     name = tab_title(cwd)
     parts = [CHILD_SESSION_CLEAR, RESUME_SUPPRESSOR]
 

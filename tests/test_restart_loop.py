@@ -66,6 +66,10 @@ def run_launcher(monkeypatch, tmp_path):
     """
     marker = tmp_path / "restart.marker"
     monkeypatch.setattr(deploy_mod, "restart_marker", lambda cwd: marker)
+    # Where the loop looks for this directory's conversations: none, unless a
+    # test files one.
+    monkeypatch.setattr(deploy_mod.agents_mod, "conversations_dir",
+                        lambda kind, cwd: str(tmp_path / "conversations"))
 
     tally = tmp_path / "runs.txt"
     stub = tmp_path / "claude.cmd"
@@ -245,3 +249,57 @@ def test_a_stale_marker_is_discarded_rather_than_obeyed(run_launcher):
     runs, marker_left, proc = run_launcher(marker_body="restart", marker_age_seconds=age)
     assert runs == 1, proc.stderr
     assert not marker_left, "a stale marker must still be cleaned up"
+
+
+def _claude_without_a_conversation(tmp_path):
+    """A stub `claude` in a directory with no conversation yet. `--continue`
+    exits 1 there, as the real one does (measured, 2.1.296), until a run
+    without it has started one. Returns its command lines, one per run.
+
+    It always exits explicitly, as an executable does: a script that does not
+    leaves `$LASTEXITCODE` at whatever ran before it."""
+    tally = tmp_path / "runs.txt"
+    started = tmp_path / "started"
+    (tmp_path / "claude.cmd").unlink()
+    (tmp_path / "claude.ps1").write_text(
+        f"Add-Content -LiteralPath '{tally}' ($args -join ' ')\n"
+        f"if ($args -notcontains '--continue') {{ New-Item -Force '{started}' | Out-Null }}\n"
+        f"elseif (-not (Test-Path '{started}')) {{ exit 1 }}\n"
+        "exit 0\n", encoding="utf-8")
+    return lambda: tally.read_text(encoding="utf-8").splitlines()
+
+
+def test_a_directory_with_no_conversation_starts_one(run_launcher, tmp_path):
+    """#59: a repo first opened through Reloaded never started - its tab sat
+    at "No conversation found to continue". It starts a new one instead."""
+    lines = _claude_without_a_conversation(tmp_path)
+
+    _runs, _left, proc = run_launcher()
+
+    assert lines() == ["--dangerously-skip-permissions --continue",
+                       "--dangerously-skip-permissions"], proc.stderr
+
+
+def test_where_a_conversation_exists_a_failed_resume_is_left_on_screen(run_launcher,
+                                                                      tmp_path):
+    """A quick exit 1 there is a resume that failed some other way. A new
+    conversation would become the latest, the one every restart continues."""
+    lines = _claude_without_a_conversation(tmp_path)
+    (tmp_path / "conversations").mkdir()
+    (tmp_path / "conversations" / "0673eda5.jsonl").write_text("{}\n", encoding="utf-8")
+
+    _runs, _left, proc = run_launcher()
+
+    assert lines() == ["--dangerously-skip-permissions --continue"], proc.stderr
+
+
+def test_a_restart_after_that_resumes_what_was_started(run_launcher, tmp_path):
+    """Decided in the tab on every pass, not once at launch: a tab launched
+    without `--continue` would come back empty from every restart after."""
+    lines = _claude_without_a_conversation(tmp_path)
+
+    _runs, _left, proc = run_launcher(marker_body="restart")
+
+    assert lines() == ["--dangerously-skip-permissions --continue",
+                       "--dangerously-skip-permissions",
+                       "--dangerously-skip-permissions --continue"], proc.stderr
