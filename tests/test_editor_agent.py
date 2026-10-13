@@ -40,7 +40,7 @@ def _run(monkeypatch, tmp_path, *commands) -> layout_mod.Layout:
                                   [Tab(cwd=r"C:\repos\other", title="other")])])
     typed = iter(list(commands) + ["q", "y"])
     monkeypatch.setattr("builtins.input", lambda prompt="": next(typed))
-    editor_mod.run(lo, tmp_path / "default.json", r"C:\repos")
+    editor_mod.run(lo, tmp_path / "default.json", r"C:\repos", layout_mod.save)
     return lo
 
 

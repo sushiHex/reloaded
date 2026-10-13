@@ -129,7 +129,9 @@ def _drop_empty_windows(lo: Layout) -> None:
     lo.windows = [w for w in lo.windows if w.tabs]
 
 
-def run(lo: Layout, layout_file, repos_root: str) -> int:
+def run(lo: Layout, layout_file, repos_root: str, save) -> int:
+    """Edit `lo` interactively. `save(lo, path)` writes it on `s`: required, so
+    that no caller can skip the record every other writer keeps."""
     dirty = False
     while True:
         _render(lo)
@@ -156,7 +158,7 @@ def run(lo: Layout, layout_file, repos_root: str) -> int:
             return 1
 
         if cmd == "s":
-            layout_mod.save(lo, layout_file)
+            save(lo, layout_file)
             print(f"saved -> {layout_file}")
             return 0
 

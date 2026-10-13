@@ -126,7 +126,7 @@ def test_a_loss_is_printed_as_well_as_recorded(capture, capsys):
     capture["run"]()
 
     out = capsys.readouterr().out
-    assert "dropped 1 repo(s)" in out
+    assert "dropped 1 tab(s)" in out
     assert r"c:\repos\beta" in out
 
 
@@ -210,3 +210,116 @@ def test_the_record_does_not_wait_for_an_unattended_run(capture):
     written = capture["run"](unattended=False)
 
     assert "beta" in written
+
+
+# ── per tab, not per directory (#20) ─────────────────────────────────────
+
+
+def _tabs(*tabs):
+    """Tabs given as (repo, agent, command)."""
+    return make_layout([make_window(
+        [0, 0, 800, 600],
+        [Tab(cwd=rf"C:\repos\{r}", title=r, agent=a, command=c) for r, a, c in tabs],
+    )])
+
+
+def _lines(written):
+    return [line for line in written.splitlines() if "[reloaded] layout" in line]
+
+
+def test_losing_one_of_two_tabs_in_a_directory_is_recorded(capture):
+    """The loss the directory-level record could not see: `retro` still had a
+    tab, so nothing had changed - and its Codex session was never restored."""
+    capture["live"] = _tabs(("retro", "claude", ""), ("retro", "codex", ""))
+    capture["run"]()
+    capture["live"] = _tabs(("retro", "claude", ""))
+
+    [line] = _lines(capture["run"]())[1:]
+
+    assert r"lost 1 (codex c:\repos\retro)" in line
+
+
+def test_a_tab_changing_kind_is_a_loss_and_a_gain(capture):
+    capture["live"] = _tabs(("app", "claude", ""))
+    capture["run"]()
+    capture["live"] = _tabs(("app", "codex", ""))
+
+    [line] = _lines(capture["run"]())[1:]
+
+    assert r"lost 1 (claude c:\repos\app)" in line
+    assert r"gained 1 (codex c:\repos\app)" in line
+
+
+def test_a_changed_command_is_recorded_once(capture):
+    """Including one that went empty: an unreadable process means the tab now
+    comes back with its kind's default flags rather than its own."""
+    capture["live"] = _tabs(("app", "claude", "claude --continue"))
+    capture["run"]()
+    capture["live"] = _tabs(("app", "claude", ""))
+
+    written = capture["run"]()
+    again = capture["run"]()
+
+    [line] = _lines(written)[1:]
+    assert (r"changed the command of 1 (claude c:\repos\app: "
+            "`claude --continue` -> (default))") in line
+    assert again == written, "an unchanged save recorded something"
+
+
+def test_a_command_flapping_back_is_recorded_each_way():
+    """Each save changes what that tab comes back as, so each is a line."""
+    a = _tabs(("app", "claude", "claude --continue"))
+    b = _tabs(("app", "claude", ""))
+    tc = main_mod.layout_mod.tab_changes
+
+    assert tc(a, b)[2] == [((r"c:\repos\app", "claude"), "claude --continue", "")]
+    assert tc(b, a)[2] == [((r"c:\repos\app", "claude"), "", "claude --continue")]
+
+
+def test_a_tab_lost_beside_a_changed_one_says_both():
+    """Two tabs of one kind in one directory, one gone and the other now
+    resuming something else: a per-key count would have said only "lost 1"."""
+    before = _tabs(("app", "claude", "claude --resume a"),
+                   ("app", "claude", "claude --resume b"))
+    after = _tabs(("app", "claude", "claude --resume c"))
+
+    lost, gained, changed = main_mod.layout_mod.tab_changes(before, after)
+
+    assert lost == [(r"c:\repos\app", "claude")]
+    assert gained == []
+    assert len(changed) == 1 and changed[0][2] == "claude --resume c"
+
+
+def test_a_malformed_saved_command_cannot_fail_the_record():
+    """`from_dict` keeps whatever the file held. Compared after the save has
+    already happened, a non-string there must not raise."""
+    before = _tabs(("app", "claude", "claude"), ("app", "claude", "x"),
+                   ("app", "claude", "y"))
+    before.windows[0].tabs[0].command = 1
+    before.windows[0].tabs[1].cwd = 1
+    before.windows[0].tabs[2].agent = ["codex"]
+
+    main_mod.layout_mod.tab_changes(before, _tabs(("app", "claude", "claude")))
+
+
+def test_the_line_names_the_layout_and_its_writer(capture):
+    [line] = _lines(capture["run"]())
+
+    assert line.split("  ", 1)[1].startswith("[reloaded] layout default gained 2 (")
+    assert line.endswith("[capture]")
+
+
+def test_an_editor_save_is_recorded(monkeypatch, tmp_path):
+    """It is the one writer that went around the record, so a tab deleted by
+    hand left no trace."""
+    log, path = tmp_path / "reloaded.log", tmp_path / "default.json"
+    monkeypatch.setattr(main_mod, "log_path", lambda: log)
+    monkeypatch.setattr(main_mod, "layout_path", lambda name: path)
+    main_mod.layout_mod.save(_layout("app", "beta"), path)
+    typed = iter(["d 1.2", "s"])
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(typed))
+
+    main_mod.cmd_edit(_args())
+
+    [line] = _lines(log.read_text(encoding="utf-8"))
+    assert r"layout default lost 1 (claude c:\repos\beta) [editor]" in line

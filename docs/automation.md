@@ -120,11 +120,14 @@ PowerShell:
 Get-Content -LiteralPath "$env:USERPROFILE\.reloaded\reloaded.log" -Tail 80
 ```
 
-Periodic capture records every change it makes to the layout — repositories
-gained or lost, with full paths, and any refusal to overwrite — whether or not
-the run was attended. It writes nothing when the set of repositories is
-unchanged, so the log stays short enough to skim: a capture every five minutes
-that said "same as last time" would bury the one line that matters.
+Every write of a layout — periodic capture, `restart`, and the editor's `s` —
+records what it changed: tabs gained or lost, each as its agent kind and full
+path, and tabs that now launch with a different command. Each line names the
+layout and, in brackets, what wrote it. Captures also record any refusal to
+overwrite. It is recorded whether or not the run was attended, and nothing is
+written when no tab changed, so the log stays short enough to skim: a capture
+every five minutes that said "same as last time" would bury the one line that
+matters.
 
 Refusals follow the same rule. A capture that cannot read any tab while
 sessions are running, or cannot reach Windows Terminal's tabs at all, is
@@ -138,8 +141,9 @@ Past 1 MB the log is moved to `reloaded.log.1`, replacing any previous one, and
 a new log is started.
 
 ```
-2026-09-18 01:01:54  [reloaded] layout gained 1 (c:\users\kfaim\repos\kakeibo)
-2026-09-18 04:36:22  [reloaded] layout lost 2 (c:\users\kfaim\repos\meta, c:\users\kfaim\repos\retro)
+2026-09-18 01:01:54  [reloaded] layout default gained 1 (claude c:\users\kfaim\repos\kakeibo) [capture]
+2026-09-18 04:36:22  [reloaded] layout default lost 2 (claude c:\users\kfaim\repos\meta, codex c:\users\kfaim\repos\retro) [capture]
+2026-09-18 09:12:40  [reloaded] layout default changed the command of 1 (claude c:\users\kfaim\repos\app: `claude --continue` -> (default)) [capture]
 ```
 
 Geometry and window grouping change on almost every capture and are not

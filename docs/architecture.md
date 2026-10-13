@@ -64,9 +64,11 @@ insets account for Terminal's invisible resize borders, and changed monitor
 layouts trigger re-anchoring and DPI scaling. A launch must be associated with
 its new window before geometry can be applied; failures are reported.
 
-A capture records what it changed about the layout — repositories gained or
-lost, and refusals — in `~/.reloaded/reloaded.log`, and says nothing when the
-repository set is unchanged. Recorded regardless of whether the run was
+Every layout writer — capture, `restart`, and the editor — records what it
+changed in `~/.reloaded/reloaded.log` through one function: tabs gained or
+lost, compared per tab as (directory, agent kind) so one of two tabs in a
+directory going is a loss, and tabs whose command changed. Captures also record
+refusals. Nothing is written when no tab changed. Recorded regardless of whether the run was
 attended, unlike deploy output, because it describes the user's saved state
 rather than the run; a loss is printed as well, since the capture summary shows
 what remains and never what went. The reconcile task rewrites the layout every
