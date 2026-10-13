@@ -19,7 +19,6 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
-import math
 import os
 from typing import Callable
 
@@ -50,13 +49,13 @@ def _load(layout: str) -> dict | None:
         raw = json.loads(_path(layout).read_text(encoding="utf-8"))
         state = {"message": str(raw["message"]), "since": float(raw["since"]),
                  "said": float(raw["said"]), "count": int(raw["count"])}
+        # Both are rendered later; one that cannot be (NaN, 1e300) is garbage.
+        _when(state["since"]), _when(state["said"])
+        return state
     except (OSError, ValueError, TypeError, KeyError, OverflowError):
-        state = None
-    if state is None or not all(map(math.isfinite, (state["since"], state["said"]))):
         # Unreadable reads as nothing said: the cost is one repeated line,
         # where trusting garbage could suppress a real one.
         return None
-    return state
 
 
 def _store(layout: str, state: dict) -> None:
@@ -90,7 +89,10 @@ def note(layout: str, message: str, record: Callable[[str], bool], *,
     """
     now = datetime.datetime.now().timestamp() if now is None else now
     state = _load(layout)
-    if state is None or state["message"] != message:
+    # A `said` in the future - a clock set back, or a damaged file - would
+    # keep `now - said` negative and the refusal silent for as long as it
+    # lasted. Read as nothing said.
+    if state is None or state["message"] != message or state["said"] > now:
         if record(message):
             _store(layout, {"message": message, "since": now, "said": now,
                             "count": 1})

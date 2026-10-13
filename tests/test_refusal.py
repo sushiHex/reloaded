@@ -129,6 +129,9 @@ def test_a_line_that_did_not_land_is_not_counted_as_said():
     '{"message": "refused: beta", "since": 0, "said": NaN, "count": 1}',
     '{"message": "refused: beta", "since": NaN, "said": 0, "count": 1}',
     '{"message": "refused: beta", "since": 0, "said": 0, "count": Infinity}',
+    # Finite, but past anything a clock can say (found by review).
+    '{"message": "refused: beta", "since": 1e300, "said": 0, "count": 1}',
+    '{"message": "refused: beta", "since": 0, "said": 1e300, "count": 1}',
 ])
 def test_an_unreadable_record_repeats_rather_than_suppresses(log, garbage):
     """A NaN `said` compares false against every interval, so trusting it
@@ -140,6 +143,16 @@ def test_an_unreadable_record_repeats_rather_than_suppresses(log, garbage):
     refusal_mod.saved("default", log)
 
     assert log.lines[:2] == ["refused: beta", "refused: beta"]
+
+
+def test_a_said_time_in_the_future_does_not_silence_it(log):
+    """A clock set back after a refusal: `now - said` stays negative, and the
+    refusal would be silent until the clock caught up."""
+    refusal_mod.note("default", "refused: beta", log, now=T0)
+
+    refusal_mod.note("default", "refused: beta", log, now=T0 - 24 * HOUR)
+
+    assert log.lines == ["refused: beta", "refused: beta"]
 
 
 @pytest.mark.parametrize("name", [r"..\layouts\default", r"C:\temp\work"])
