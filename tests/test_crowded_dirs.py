@@ -101,3 +101,17 @@ def test_status_says_nothing_when_no_directory_is_shared(monkeypatch, tmp_path, 
                                               repos_root=r"C:\repos"))
 
     assert "share" not in capsys.readouterr().out
+
+
+def test_status_without_a_layout_starts_no_terminal_query(monkeypatch, tmp_path):
+    """Found by review: started and never read, the ~1.7s PowerShell query
+    still held the exiting process until it finished."""
+    monkeypatch.setattr(main_mod, "layout_path", lambda name: tmp_path / "none.json")
+    monkeypatch.setattr(main_mod.discover_mod, "sweep", lambda: ({}, {}))
+    asked = []
+    monkeypatch.setattr(main_mod.readiness_mod, "check_wt_version",
+                        lambda: asked.append(1) or (True, ""))
+
+    assert main_mod.cmd_status(types.SimpleNamespace(
+        layout="default", repos_root=r"C:\repos")) == 1
+    assert asked == []

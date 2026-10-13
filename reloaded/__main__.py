@@ -1321,9 +1321,13 @@ def cmd_status(args) -> int:
 
     path = layout_path(args.layout)
     # A PowerShell package query, ~1.7s: started now, it runs during the sweep.
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    wt_check = pool.submit(readiness_mod.check_wt_version)
-    pool.shutdown(wait=False)
+    # Only with a layout to report on - without one, `status` returns before
+    # reading it, and the exiting process would still wait for the query.
+    has_layout = path.exists()
+    if has_layout:
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        wt_check = pool.submit(readiness_mod.check_wt_version)
+        pool.shutdown(wait=False)
     live, crowded = discover_mod.sweep()
 
     print(f"live sessions : {len(live)}")
@@ -1344,7 +1348,7 @@ def cmd_status(args) -> int:
               "may leave one")
         print("       running: quitting is aimed by directory, not by session.")
 
-    if not path.exists():
+    if not has_layout:
         print(f"\nno layout saved at {path} — run `reloaded capture`")
         return 1
 
