@@ -580,6 +580,11 @@ def test_another_sessions_id_is_not_used(desk, monkeypatch):
      ["claude", "--add-dir", "a", "b", "--verbose", "--resume", "id"]),
     # An option newer than the table keeps its value rather than lose it.
     (["claude", "--brand-new", "x"], ["claude", "--brand-new", "x", "--resume", "id"]),
+    # A required value is the next argument whatever it looks like (#68).
+    (["claude", "--append-system-prompt", "-c"],
+     ["claude", "--append-system-prompt", "-c", "--resume", "id"]),
+    # An optional one is not taken when it looks like an option.
+    (["claude", "--debug", "-r", "old"], ["claude", "--debug", "--resume", "id"]),
     # Unreadable argv: the default launch, still aimed at this conversation.
     ([], ["claude", "--dangerously-skip-permissions", "--resume", "id"]),
 ])

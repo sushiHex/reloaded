@@ -60,11 +60,13 @@ class Agent:
     # kind whose sessions can be named. Empty for one that cannot, which is
     # left resuming however it already does. See `resume_exactly`.
     resume_by_id: tuple = ()
-    # Options that take no value, and options that take every value after
-    # them. `resume_exactly` needs them to tell an opening prompt from an
-    # option's value; any option in neither is read as taking one.
+    # Options that take no value, that take every value after them, and that
+    # take one only if it does not look like an option. Any other option takes
+    # the next argument whatever it looks like. See `_roles`, which tells an
+    # opening prompt from an option's value by them.
     bare_flags: tuple = ()
     variadic_flags: tuple = ()
+    optional_flags: tuple = ()
     # What resumes the directory's latest conversation, standing in for a
     # `resume_by_id` flag given no id - which opens a picker. See
     # `resuming`, and `fresh` for a directory with none.
@@ -100,13 +102,14 @@ CLAUDE = Agent(
     sessions_dir=os.path.join(os.path.expanduser("~"), ".claude", "projects"),
     repairs_transcripts=True,
     resume_by_id=("--resume", "-r"),
-    # From `claude --help`, 2.1.280: every option with no <value> or [value],
-    # and every one whose value is <values...>. A flag added later reads as
-    # taking one value, which at worst keeps a prompt - never drops a value.
+    # From `claude --help`, 2.1.296: every option with no <value> or [value],
+    # every one whose value is <values...>, and every one whose value is
+    # [value]. A flag added later reads as taking the next argument, which at
+    # worst keeps a prompt or hides a resume flag - never drops a value.
     bare_flags=(
         "--allow-dangerously-skip-permissions", "--ax-screen-reader",
         "--background", "--bare", "--bg", "--brief", "--chrome", "--continue",
-        "--dangerously-skip-permissions", "--disable-slash-commands",
+        "--dangerously-skip-permissions", "--desktop", "--disable-slash-commands",
         "--exclude-dynamic-system-prompt-sections", "--fork-session",
         "--forward-subagent-text", "--help", "--ide", "--include-hook-events",
         "--include-partial-messages", "--no-chrome", "--no-session-persistence",
@@ -117,6 +120,10 @@ CLAUDE = Agent(
         "--add-dir", "--allowed-tools", "--allowedTools", "--betas",
         "--disallowed-tools", "--disallowedTools", "--file", "--mcp-config",
         "--tools"),
+    optional_flags=(
+        "--cloud", "--debug", "--from-pr", "--prompt-suggestions",
+        "--remote-control", "--resume", "--teleport", "--worktree",
+        "-d", "-r", "-w"),
     resume_latest="--continue",
 )
 
@@ -195,27 +202,10 @@ def resume_exactly(kind, argv: list, session_id: str | None) -> list:
     if not session_id or not agent.resume_by_id:
         return list(argv)
     argv = list(argv) or agent.launch.split()
-    if "--" in argv[1:]:
-        argv = argv[:argv.index("--", 1)]
-    # What the last option still accepts: nothing, one value, every value, or
-    # the conversation a dropped resume flag named.
-    kept, takes = [argv[0]], "none"
-    for arg in argv[1:]:
-        if arg.startswith("-"):
-            flag, has_value = arg.split("=", 1)[0], "=" in arg
-            if flag in agent.resume_tokens:
-                takes = ("named" if flag in agent.resume_by_id and not has_value
-                         else "none")
-                continue
-            kept.append(arg)
-            takes = ("none" if has_value or flag in agent.bare_flags
-                     else "every" if flag in agent.variadic_flags else "one")
-        elif takes in ("one", "every"):
-            kept.append(arg)
-            takes = "every" if takes == "every" else "none"
-        else:
-            takes = "none"  # a named conversation, or the opening prompt
-    return kept + [agent.resume_by_id[0], session_id]
+    # A resume option goes with the conversation it named.
+    kept = [arg for arg, (role, option) in zip(argv[1:], _roles(agent, argv[1:]))
+            if role != "word" and option not in agent.resume_tokens]
+    return [argv[0]] + kept + [agent.resume_by_id[0], session_id]
 
 
 def resuming(kind, command: str) -> str:
@@ -249,34 +239,21 @@ def resuming(kind, command: str) -> str:
     # quotes a whole `--system-prompt=has spaces` argument, and read raw that
     # option looked like prompt text and was dropped. The raw form is what is
     # rejoined, so the result is still the same valid PowerShell.
-    tokens = [(text, value) for _s, _e, text, _q, value in _ps_tokens(command)]
-    values = [value for _text, value in tokens]
-    if "--" in values[1:]:
-        tokens = tokens[:values.index("--", 1)]  # the opening prompt follows
-    kept, takes, resumes_any = [tokens[0][0]], "none", False
-    for i, (arg, value) in enumerate(tokens[1:], 1):
-        if value.startswith("-"):
-            flag, has_value = value.split("=", 1)[0], "=" in value
-            # `--fork-session` only qualifies a resume; alone it resumes nothing.
-            resumes_any = resumes_any or (flag in agent.resume_tokens
-                                          and flag != "--fork-session")
-            following = tokens[i + 1][1] if i + 1 < len(tokens) else None
-            if (flag in agent.resume_by_id and not has_value
-                    and (following is None or following.startswith("-"))):
-                kept.append(agent.resume_latest)  # bare: the picker
-                takes = "none"
-                continue
-            kept.append(arg)
-            if has_value or flag in agent.bare_flags or (
-                    flag in agent.resume_tokens and flag not in agent.resume_by_id):
-                takes = "none"
-            else:
-                takes = "every" if flag in agent.variadic_flags else "one"
-        elif takes in ("one", "every"):
-            kept.append(arg)
-            takes = "every" if takes == "every" else "none"
-        else:
-            takes = "none"  # the opening prompt: resuming would send it again
+    tokens = _ps_tokens(command)
+    roles = _roles(agent, [value for *_x, value in tokens[1:]])
+    kept, resumes_any = [tokens[0][2]], False
+    for i, ((_s, _e, text, _q, value), (role, option)) in enumerate(zip(tokens[1:], roles)):
+        if role == "word":
+            continue  # the opening prompt: resuming would send it again
+        if (role == "option" and option in agent.resume_by_id and "=" not in value
+                and roles[i + 1:i + 2] != [("value", option)]):
+            kept.append(agent.resume_latest)  # bare: the picker
+            resumes_any = True
+            continue
+        kept.append(text)
+        # `--fork-session` only qualifies a resume; alone it resumes nothing.
+        resumes_any = resumes_any or (role == "option" and option in agent.resume_tokens
+                                      and option != "--fork-session")
     if not resumes_any:
         kept.append(agent.resume_latest)
     return " ".join(kept)
@@ -300,16 +277,49 @@ def fresh(kind, invocation: str) -> str:
     if not agent.resume_latest:
         return ""
     tokens = _ps_tokens(invocation)
-    flags = [value.split("=", 1)[0] for _s, _e, _t, _q, value in tokens[1:]]
-    resumes = set(flags) & set(agent.resume_tokens)
+    roles = _roles(agent, [value for *_x, value in tokens[1:]])
+    resumes = {option for role, option in roles
+               if role == "option" and option in agent.resume_tokens}
     # `--fork-session` only qualifies a resume; alone it resumes nothing.
     if resumes & set(agent.resume_by_id) or not resumes - {"--fork-session"}:
         return ""
     # What is left takes no id: the latest conversation, its short form, and
     # the qualifier.
-    return " ".join([tokens[0][2]] + [text for (_s, _e, text, _q, _v), flag
-                                      in zip(tokens[1:], flags)
-                                      if flag not in agent.resume_tokens])
+    return " ".join([tokens[0][2]] + [text for (_s, _e, text, _q, _v), (role, option)
+                                      in zip(tokens[1:], roles)
+                                      if not (role == "option"
+                                              and option in agent.resume_tokens)])
+
+
+def _roles(agent: Agent, values: list) -> list:
+    """What each argument after the program is, up to a `--`: ("option",
+    its name), ("value", the option it belongs to), or ("word", "") - an
+    opening prompt, which no option claims.
+
+    Read as Claude Code's parser reads them, measured on 2.1.296. An option
+    with a required value takes the next argument whatever it looks like:
+    `--model --version` set the model to "--version". One with an optional
+    value (`optional_flags`) takes it only if it does not look like an
+    option: `--debug --version` printed the version. A variadic one takes
+    each argument up to the next option. Judged by look alone, a value spelled
+    like a resume flag - `--append-system-prompt -c` - was taken for one (#68).
+    """
+    roles, option, takes = [], "", "none"
+    for value in values:
+        if takes == "one" or (takes in ("maybe", "every") and not value.startswith("-")):
+            roles.append(("value", option))
+            takes = "every" if takes == "every" else "none"
+        elif value == "--":
+            break
+        elif value.startswith("-"):
+            option = value.split("=", 1)[0]
+            roles.append(("option", option))
+            takes = ("none" if "=" in value or option in agent.bare_flags
+                     else "every" if option in agent.variadic_flags
+                     else "maybe" if option in agent.optional_flags else "one")
+        else:
+            roles.append(("word", ""))
+    return roles
 
 
 # Claude Code's name for a directory's folder of conversations, from its

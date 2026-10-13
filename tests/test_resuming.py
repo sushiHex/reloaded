@@ -46,6 +46,15 @@ SKIP = "claude --dangerously-skip-permissions"
     ("claude --continue -- --resume --verbose", "claude --continue"),
     ("claude 'it''s --resume' --resume", "claude --continue"),
     ('claude "a --resume" -r', "claude --continue"),
+    # #68: a required value is the next argument, whatever it looks like -
+    # measured, `--model --version` set the model to "--version".
+    ("claude --append-system-prompt -c", "claude --append-system-prompt -c --continue"),
+    ("claude --append-system-prompt '-c'",
+     "claude --append-system-prompt '-c' --continue"),
+    # An optional one is not taken when it looks like an option - measured,
+    # `--debug --version` printed the version.
+    ("claude --debug --resume", "claude --debug --continue"),
+    ("claude --debug api 'fix it'", "claude --debug api --continue"),
 ])
 def test_a_launched_claude_command_always_resumes_something(command, expected):
     assert agents_mod.resuming("claude", command) == expected
@@ -87,6 +96,8 @@ def test_the_launcher_never_starts_an_empty_conversation():
     # Nothing resumed, nothing to fall back from.
     (SKIP, ""),
     ("claude --fork-session", ""),
+    # #68: a value spelled like a resume flag is a value, and stays one.
+    ("claude --append-system-prompt -c --continue", "claude --append-system-prompt -c"),
 ])
 def test_a_claude_resume_of_the_latest_falls_back_to_a_new_conversation(
         invocation, expected):
