@@ -59,6 +59,12 @@ def _list_tab_items_uia(hwnd: int) -> list[tuple[str, object]]:
     except ImportError as exc:  # pragma: no cover - environment dependent
         raise UIAUnavailable("uiautomation is not installed") from exc
 
+    # This runs on list_tab_items' worker, a new thread every call. comtypes
+    # initializes COM only on the thread that first imports it, and the
+    # client uiautomation creates on first use cannot be created on any
+    # other: "CoInitialize has not been called" (measured; #51). Once
+    # created, it serves every thread.
+    auto.InitializeUIAutomationInCurrentThread()
     root = auto.ControlFromHandle(hwnd)
     if root is None:
         raise UIAUnavailable(f"no UIA control for hwnd 0x{hwnd:X}")
