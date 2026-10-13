@@ -10,6 +10,8 @@ forgot each had a harmless-looking default.
 """
 from __future__ import annotations
 
+import shutil
+import subprocess
 import sys
 import types
 
@@ -105,3 +107,29 @@ def test_a_tab_that_cannot_be_confirmed_is_never_typed_into(monkeypatch, typed):
 
     assert main_mod._type_relaunch(_session()) is False
     assert not any(k == "type" for k, _v in events)
+
+
+WINDOWS_POWERSHELL = shutil.which("powershell")
+
+
+@pytest.mark.skipif(WINDOWS_POWERSHELL is None, reason="no Windows PowerShell 5.1")
+def test_windows_powershell_reads_the_script_as_written(typed, tmp_path):
+    """It is run as a file, and Windows PowerShell 5.1 - the fallback shell -
+    reads a file with no byte-order mark in the ANSI code page: measured,
+    `café` came back `cafÃ©`. Everything non-ASCII in the script went the
+    same way - the tab's banner here, and with it a captured command's
+    arguments and every marker path under a home directory with an accent.
+    Parsed rather than run, by 5.1 itself, which writes what it read back as
+    UTF-8, so no console re-encoding intervenes."""
+    _events, script = typed
+    main_mod._type_relaunch(_session(cwd=r"C:\repos\café"))
+    read = tmp_path / "read.txt"
+
+    subprocess.run(
+        [WINDOWS_POWERSHELL, "-NoProfile", "-Command",
+         f"[System.Management.Automation.Language.Parser]::ParseFile('{script}', "
+         f"[ref]$null, [ref]$null).Extent.Text | "
+         f"Set-Content -LiteralPath '{read}' -Encoding UTF8"],
+        check=True, timeout=60)
+
+    assert "[reloaded] café" in read.read_text(encoding="utf-8-sig")
