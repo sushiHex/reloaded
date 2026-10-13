@@ -74,19 +74,22 @@ CLOSE_TAB_IF_STARTED = (
 
 def nothing_to_resume(folder: str) -> str:
     """The test, in the tab, that a resume of the latest conversation failed
-    for want of one (agents.fresh): it exited 1, inside the grace, and
-    `folder` (agents.conversations_dir) holds no conversation.
+    for want of one (agents.fresh): it exited 1, and `folder`
+    (agents.conversations_dir) holds no conversation.
 
-    All three, because no fewer is that failure. A session quit at once by
-    /exit returns 0 (measured, 2.1.296). One that ends in an error after it
-    was worked in is past the grace. And a quick exit 1 where a conversation
-    exists is a resume that failed some other way: a new conversation there
-    would become the latest, the one every later restart continues. The
-    folder is looked at on every pass, since a restart can come before the
-    first conversation exists or after.
+    Both, because neither alone is that failure. /exit returns 0, and so does
+    declining Claude Code's folder-trust dialog (measured, 2.1.296). An exit 1
+    where a conversation exists is a resume that failed some other way: a new
+    conversation there would become the latest, the one every later restart
+    continues. The folder is looked at on every pass, since a restart can come
+    before the first conversation exists or after.
+
+    Not bounded by the startup grace. In a directory not yet trusted, Claude
+    asks first and looks for a conversation only once answered - measured,
+    exit 1 at 35s - which is how a brand-new repo first opens. A session that
+    was worked in has a conversation to show for it.
     """
     return (f"$LASTEXITCODE -eq 1 -and "
-            f"((Get-Date)-$rlStart).TotalSeconds -lt {STARTUP_GRACE_SECONDS} -and "
             f"-not (Get-ChildItem -LiteralPath '{pwsh.escape(folder)}' -Filter *.jsonl "
             f"-ErrorAction SilentlyContinue)")
 

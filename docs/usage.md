@@ -124,7 +124,8 @@ before exiting. Restoring a directory and tab is not a guarantee of restoring
 a particular conversation; Reloaded does not store a separate conversation ID.
 
 A Claude Code directory with no conversation yet gives `--continue` nothing to
-resume, and Claude exits at once. A Reloaded tab then starts a new
+resume, and Claude exits: at once, or, in a directory not yet trusted, once
+its folder-trust question is answered. A Reloaded tab then starts a new
 conversation, but only when Claude's folder for that directory holds no saved
 conversation. Where one exists, the error stays on screen instead: a new
 conversation would become the latest, the one later restarts resume.
