@@ -10,10 +10,19 @@ its window. Run it from PowerShell. Git Bash rewrites `/exit` into
 `C:/Program Files/Git/exit` before Python sees it; `keys` refuses that, but
 any other command would pass it on to the agent as a prompt.
 
+**A run takes the desktop.** `up` opens windows that take keyboard focus, and
+so does `keys`. On 2026-10-15 four focus grabs landed while the desktop's user
+was typing, and their keystrokes went into the smoke tabs. That is what put
+stray text into a Codex composer, and most likely what switched a tab attached
+to Codex's shared daemon onto the user's live thread (#87). Run only when
+whoever uses this desktop has stepped away. Writing into a console's input
+(`relaunch._write_input`) and reading a tab through UI Automation (`screen`)
+need no focus.
+
 ## A run
 
 ```powershell
-python tools/smoke.py setup alpha:claude beta:codex a/twin:claude b/twin:codex
+python tools/smoke.py setup --fake alpha:claude beta:codex a/twin:claude b/twin:codex
 python -m reloaded --layout smoke up
 python tools/smoke.py wait 4
 python tools/smoke.py screen alpha              # the tab's last lines
@@ -32,6 +41,9 @@ agents recorded for the fixtures (`~/.claude.json`, Codex's `config.toml`)
 are the agents' own files, so `teardown` names them and leaves them alone.
 
 ## Fake agents
+
+`setup` takes `--fake` or `--real` first; real agents cost model turns and
+hold real conversations, so they are never the default.
 
 `setup --fake alpha:claude beta:codex ...` runs `tools/fake_agent.cs` in each
 tab in place of its agent. `setup` compiles it with the C# compiler Windows
