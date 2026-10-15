@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import os
+from collections import Counter
 
 from . import agents, discover, tabs, win32
 from .layout import LAYOUT_VERSION, Layout, Monitor, Tab, Window
@@ -41,6 +42,7 @@ def build_layout(
     now_iso: str,
     kinds: dict[str, str] | None = None,
     sessions: list | None = None,
+    previous: Layout | None = None,
 ) -> Layout:
     """One tab per live session, in the window its tab is in.
 
@@ -50,6 +52,7 @@ def build_layout(
     logon, three such directories each came back with one tab. Titles now only
     order a window's tabs. Without `sessions`, each live directory is one
     session of the kind `kinds` names, placed by title alone, as before.
+    `previous` orders what the titles cannot (keep_saved_order).
     """
     pool = sorted(sessions if sessions is not None else [
         discover.Session(pid, cwd, (kinds or {}).get(cwd, agents.DEFAULT_KIND), 0.0, None)
@@ -83,6 +86,7 @@ def build_layout(
                           and s.hwnd in (None, hwnd)), None)
             if match is not None:
                 add(match, cwd, title, low)
+        keep_saved_order(tab_objs, previous)
         # In this window by its shell, under a title that names no repo.
         for s in pool:
             if s.pid not in taken and hwnd is not None and s.hwnd == hwnd:
@@ -105,6 +109,41 @@ def build_layout(
         monitors=list(monitors),
         windows=windows,
     )
+
+
+def keep_saved_order(tabs: list[Tab], previous: Layout | None) -> None:
+    """Put a directory's same-titled tabs in the kind order the saved layout
+    has for them, in place.
+
+    Two tabs with one title cannot be told apart, so build_layout fills them
+    in the order their agents started - and a capture every five minutes
+    wrote that guess over the layout, undoing any correction made in the
+    editor (#77). The saved order is no better evidence of where each tab is
+    now, but it is the one a person can set and see kept. It is followed only
+    where the saved window holding this directory has exactly these kinds;
+    anywhere else start order stands.
+    """
+    def held(ts) -> Counter:
+        return Counter((norm(t.cwd), t.agent) for t in ts)
+
+    groups: dict[tuple[str, str], list[int]] = {}
+    for i, t in enumerate(tabs):
+        groups.setdefault((t.title, norm(t.cwd)), []).append(i)
+    mixed = [(cwd, places) for (_title, cwd), places in groups.items()
+             if len({tabs[i].agent for i in places}) > 1]
+    if not mixed or previous is None or not previous.windows:
+        return
+    # The saved window most like this one: windows are saved by position,
+    # which shifts, so it is found by what it holds.
+    here = held(tabs)
+    window = max(previous.windows, key=lambda w: sum((here & held(w.tabs)).values()))
+    for cwd, places in mixed:
+        found = [tabs[i] for i in places]
+        saved = [t.agent for t in window.tabs if norm(t.cwd) == cwd]
+        if Counter(saved) != Counter(t.agent for t in found):
+            continue
+        for i, kind in zip(places, saved):
+            tabs[i] = found.pop(next(j for j, t in enumerate(found) if t.agent == kind))
 
 
 def merge_pinned(fresh: Layout, previous: Layout | None) -> Layout:
@@ -214,5 +253,5 @@ def capture_live(
 
     now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     fresh = build_layout(windows_data, monitors, title_map, live, repos_root,
-                         now_iso, sessions=found)
+                         now_iso, sessions=found, previous=previous)
     return merge_pinned(fresh, previous)

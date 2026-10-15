@@ -18,6 +18,8 @@ Develop on Windows with Python 3.9+; CI tests Python 3.9 and 3.14. Live operatio
 - `python -m reloaded up --dry-run`: preview deployment.
 - `python -m reloaded edit`: open the interactive layout editor.
 
+Once `install-tasks` has run from a checkout, its scheduled capture and logon restore import that checkout directly, so the checked-out branch runs live every five minutes. Develop in a `git worktree` and keep that checkout on `master`.
+
 ## Coding Style & Naming Conventions
 
 Use four-space indentation, snake_case functions/modules, PascalCase classes, and UPPER_CASE constants. Follow surrounding type hints, dataclasses, and module docstrings; keep Python 3.9 compatibility. No formatter or linter is configured. Centralize agent differences in `agents.py` and normalize Windows path comparisons through `paths.norm`. Read agent command lines only through `agents._roles`, which follows Claude Code's own parser; refresh its flag tables from `claude --help` when Claude's options change. Find a directory's Claude conversations only through `agents.conversations_dir`, which honors `CLAUDE_CONFIG_DIR`: the new-conversation fallback treats an empty folder as "no conversation".

@@ -23,6 +23,7 @@ No formatter or linter is configured. CI (`.github/workflows/ci.yml`) is `window
 
 - **Windows-only, not by preference.** `win32.py` calls `ctypes.WinDLL("user32")` at import time; `ctypes.WinDLL` does not exist on other platforms. The test suite runs without a live desktop or real Windows Terminal, but only on Windows.
 - **Python 3.9 floor.** Every module opens with `from __future__ import annotations`, which is what makes `list[int]` / `str | None` legal on 3.9. Keep that import when adding a module.
+- **The checkout is live** once `install-tasks` has run from it: the scheduled tasks put this directory on `sys.path`, so the five-minute capture and the logon restore run whatever branch is checked out. Develop in a `git worktree` and keep this checkout on `master`.
 - Runtime dependencies are `psutil` (process identity) and `uiautomation` (Windows Terminal tab strip). A missing `psutil` degrades to 0 live sessions; a missing `uiautomation` raises `tabs.UIAUnavailable`.
 
 ## The blast door (`tests/conftest.py`)

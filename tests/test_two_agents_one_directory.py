@@ -8,6 +8,7 @@ title can tell them apart; each session is placed by its tab's shell instead.
 """
 from __future__ import annotations
 
+import os
 import sys
 import types
 from collections import Counter
@@ -145,6 +146,59 @@ def test_titles_keep_their_order_when_one_repo_appears_twice():
 
     assert [(t.title, t.agent) for t in lo.windows[0].tabs] == [
         ("retro", "claude"), ("meta", "claude"), ("retro", "codex")]
+
+
+HERMES = REPOS + r"\hermes-realtime"
+FORGE = REPOS + r"\constructicon"
+
+
+def _layout(*kinds_at):
+    return make_layout([make_window([0, 0, 800, 600], [
+        Tab(cwd=cwd, title=os.path.basename(cwd), agent=kind) for cwd, kind in kinds_at])])
+
+
+def test_a_directorys_tabs_keep_the_kind_order_the_layout_has():
+    """The #77 window: the restore's stagger made each directory's Codex or
+    Claude agent the older one, so start order put every pair back the way
+    the restore had launched it, over the order the user had saved."""
+    started = [(RETRO, "codex"), (RETRO, "claude"), (HERMES, "claude"),
+               (FORGE, "claude"), (HERMES, "codex"), (FORGE, "codex")]
+    sessions = [Session(pid, cwd, kind, float(pid), 100)
+                for pid, (cwd, kind) in enumerate(started, 1)]
+    wanted = [(RETRO, "codex"), (HERMES, "codex"), (FORGE, "codex"),
+              (RETRO, "claude"), (HERMES, "claude"), (FORGE, "claude")]
+    titles = ["retro", "hermes-realtime", "constructicon"] * 2
+    live = {norm(s.cwd): s.pid for s in sessions}
+
+    lo = build_layout([_window(100, titles)], MONITORS, {}, live, REPOS, "t",
+                      sessions=sessions, previous=_layout(*wanted))
+
+    assert [(t.cwd, t.agent) for t in lo.windows[0].tabs] == wanted
+    # Each tab is its session's, command and all, not only its kind.
+    assert lo.windows[0].tabs[3].command == "command-of-2"
+
+
+def test_with_no_saved_order_a_directorys_tabs_are_in_start_order():
+    sessions = [Session(1, RETRO, "codex", 10.0, 100),
+                Session(2, RETRO, "claude", 20.0, 100)]
+
+    lo = _capture([_window(100, ["retro", "retro"])], sessions)
+
+    assert [t.agent for t in lo.windows[0].tabs] == ["codex", "claude"]
+
+
+def test_a_saved_order_for_other_kinds_is_not_followed():
+    """Two Claude tabs saved where a Claude and a Codex now run: the layout
+    says nothing about which of these is where."""
+    sessions = [Session(1, RETRO, "codex", 10.0, 100),
+                Session(2, RETRO, "claude", 20.0, 100)]
+    live = {norm(RETRO): 2}
+
+    lo = build_layout([_window(100, ["retro", "retro"])], MONITORS, {}, live, REPOS,
+                      "t", sessions=sessions,
+                      previous=_layout((RETRO, "claude"), (RETRO, "claude")))
+
+    assert [t.agent for t in lo.windows[0].tabs] == ["codex", "claude"]
 
 
 def _saved(tmp_path, *tabs):
