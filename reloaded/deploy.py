@@ -254,7 +254,8 @@ def relaunch_script(cwd: str, size_bytes: int,
     ) + "\n"
 
 
-def new_tab_args(cwd: str, command: str) -> list[str]:
+def new_tab_args(cwd: str, command: str,
+                 agent: str = agents_mod.DEFAULT_KIND) -> list[str]:
     """The `new-tab` fragment of a wt command line, with escaping applied.
 
     Every wt argv in the package is assembled from this, so escaping is a
@@ -279,10 +280,13 @@ def new_tab_args(cwd: str, command: str) -> list[str]:
     machine this was measured on, every recorded title was already its repo's
     directory name, so nothing changed visually - but a person who renames
     sessions loses that, and the fix is to drop this one flag.
+
+    The title also ends in the kind's invisible mark (agents.tab_label), which
+    is how capture tells a directory's Claude tab from its Codex one.
     """
     return [
         "new-tab",
-        "--title", _wt_escape(tab_title(cwd)),
+        "--title", _wt_escape(agents_mod.tab_label(agent, cwd)),
         "--suppressApplicationTitle",
         "-d", _wt_escape(cwd),
         shell_executable(), "-NoExit", "-Command", _wt_escape(command),
@@ -293,7 +297,7 @@ def wt_argv_single_tab(cwd: str, size_bytes: int = 0,
                        agent: str = agents_mod.DEFAULT_KIND, command: str = "") -> list[str]:
     """Open one repo as a tab in the current window (`-w 0`)."""
     return ["wt", "-w", "0"] + new_tab_args(
-        cwd, launcher_command(cwd, 0, size_bytes, agent, command))
+        cwd, launcher_command(cwd, 0, size_bytes, agent, command), agent)
 
 
 def wt_argvs(name: str, rect: list[int], tabs: list[Tab], delays: list[int],
@@ -316,7 +320,7 @@ def wt_argvs(name: str, rect: list[int], tabs: list[Tab], delays: list[int],
     def tab_args(i: int) -> list[str]:
         tab = tabs[i]
         return new_tab_args(tab.cwd, launcher_command(
-            tab.cwd, delays[i], sizes[i], tab.agent, tab.command))
+            tab.cwd, delays[i], sizes[i], tab.agent, tab.command), tab.agent)
 
     x, y = rect[0], rect[1]
     # `--pos=x,y` rather than `--pos x,y`: a monitor left of the primary yields
@@ -490,7 +494,7 @@ def launch_window(argv: list[str], tabs: list[Tab], timeout: float = 20.0, settl
         # mid-loop over the rest of the plan.
         return None
 
-    wanted_names = {tab_title(t.cwd) for t in tabs}
+    wanted_names = {agents_mod.tab_label(t.agent, t.cwd) for t in tabs}
     deadline = time.time() + timeout
     while time.time() < deadline:
         time.sleep(0.25)

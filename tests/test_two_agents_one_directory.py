@@ -17,6 +17,7 @@ import pytest
 
 from conftest import MONITORS, make_layout, make_window
 
+import reloaded.agents as agents
 import reloaded.capture as capture_mod
 import reloaded.discover as discover_mod
 import reloaded.win32 as win32_mod
@@ -272,6 +273,106 @@ def test_a_saved_order_for_other_kinds_is_not_followed():
                       previous=_layout((RETRO, "claude"), (RETRO, "claude")))
 
     assert [t.agent for t in lo.windows[0].tabs] == ["codex", "claude"]
+
+
+def _marked(kind, cwd=RETRO):
+    return agents.tab_label(kind, cwd)
+
+
+def test_a_tabs_mark_says_which_session_it_holds():
+    """Older Codex, but the strip says Claude comes first."""
+    sessions = [Session(1, RETRO, "codex", 10.0, 100),
+                Session(2, RETRO, "claude", 20.0, 100)]
+
+    lo = _capture([_window(100, [_marked("claude"), _marked("codex")])], sessions)
+
+    assert [(t.title, t.agent) for t in lo.windows[0].tabs] == [
+        ("retro", "claude"), ("retro", "codex")]
+
+
+def test_a_marked_title_takes_its_session_before_an_unmarked_one_can():
+    """An unmarked tab first in the strip would otherwise take the older
+    session - the Codex one its marked neighbour names."""
+    sessions = [Session(1, RETRO, "codex", 10.0, 100),
+                Session(2, RETRO, "claude", 20.0, 100)]
+
+    lo = _capture([_window(100, ["retro", _marked("codex")])], sessions)
+
+    assert [t.agent for t in lo.windows[0].tabs] == ["claude", "codex"]
+
+
+def test_a_marked_title_never_takes_the_other_kinds_session():
+    sessions = [Session(1, RETRO, "claude", 10.0, 100)]
+
+    lo = _capture([_window(100, [_marked("codex"), "meta"])], sessions)
+
+    # Still saved - its shell places it - but not as the tab the mark named.
+    assert [(t.agent, t.low_confidence) for t in lo.windows[0].tabs] == [("claude", False)]
+
+
+def test_a_saved_order_never_moves_a_marked_tab():
+    sessions = [Session(1, RETRO, "codex", 10.0, 100),
+                Session(2, RETRO, "claude", 20.0, 100)]
+    live = {norm(RETRO): 2}
+
+    lo = build_layout([_window(100, [_marked("codex"), _marked("claude")])], MONITORS,
+                      {}, live, REPOS, "t", sessions=sessions,
+                      previous=_layout((RETRO, "claude"), (RETRO, "codex")))
+
+    assert [t.agent for t in lo.windows[0].tabs] == ["codex", "claude"]
+
+
+def test_a_mark_names_its_kind_and_no_mark_names_none():
+    assert agents.title_kind(_marked("codex")) == ("retro", "codex")
+    assert agents.title_kind(_marked("claude")) == ("retro", "claude")
+    assert agents.title_kind("retro") == ("retro", None)
+    assert capture_mod.resolve_tab(_marked("codex"), {}, {norm(RETRO): 1}, REPOS) == (
+        os.path.join(REPOS, "retro"), True)
+
+
+def test_every_launched_tab_is_titled_with_its_own_kinds_mark():
+    """Through both launchers, and for the window's first tab and the rest."""
+    import reloaded.deploy as deploy_mod
+
+    def titles(argv):
+        return [argv[i + 1] for i, a in enumerate(argv) if a == "--title"]
+
+    window, rest = deploy_mod.wt_argvs(
+        "w", [0, 0, 800, 600], [Tab(cwd=RETRO, title="retro", agent="codex"),
+                                Tab(cwd=RETRO, title="retro", agent="claude"),
+                                Tab(cwd=META, title="meta", agent="codex")],
+        [0, 4, 8], [0, 0, 0])
+    one = deploy_mod.wt_argv_single_tab(RETRO, agent="codex")
+
+    assert titles(window) + titles(rest) == [
+        "retro⁠", "retro​", "meta⁠"]
+    assert titles(one) == ["retro⁠"]
+
+
+def test_a_recorded_title_ending_in_a_mark_resolves_as_recorded():
+    """A custom title could end in the mark's character; it is tried as it
+    stands before the mark comes off."""
+    other = REPOS + r"\other"
+    live = {norm(RETRO): 1, norm(other): 2}
+    title_map = {"report​": RETRO, "report": other}
+
+    assert capture_mod.resolve_tab("report​", title_map, live, REPOS) == (RETRO, False)
+
+
+def test_a_title_that_is_only_a_mark_names_nothing():
+    """Stripped to "", it would join to repos_root itself."""
+    assert capture_mod.resolve_tab("⁠", {}, {norm(REPOS): 1}, REPOS) is None
+
+
+def test_a_marked_title_in_a_later_window_still_comes_first():
+    """Sessions whose window is unknown can answer titles in any window; an
+    unmarked title earlier must not take the one a later mark names."""
+    sessions = [Session(1, RETRO, "codex", 10.0, None),
+                Session(2, RETRO, "claude", 20.0, None)]
+
+    lo = _capture([_window(100, ["retro"]), _window(200, [_marked("codex")])], sessions)
+
+    assert [[t.agent for t in w.tabs] for w in lo.windows] == [["claude"], ["codex"]]
 
 
 def _saved(tmp_path, *tabs):

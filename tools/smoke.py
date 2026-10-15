@@ -97,12 +97,13 @@ def wait(want: str = "1", timeout: str = "60") -> None:
 
 def _tab(repo: str):
     """The window and tab item holding smoke repo `repo` (a path under the
-    root, or a name). Refused where its title is not unique in its window."""
+    root, or a name). Refused where its title, kind mark and all, is not
+    unique in its window."""
     cwd = norm(str(ROOT / pathlib.Path(repo)))
     session = next((s for s in _sessions() if norm(s.cwd) == cwd), None)
     if session is None or not session.hwnd:
         sys.exit(f"no live smoke session in a tab at {cwd}")
-    title = tab_title(session.cwd)
+    title = agents.tab_label(session.kind, session.cwd)
     items = [i for t, i in tabs.list_tab_items(session.hwnd) if t == title]
     if len(items) != 1:
         sys.exit(f"{len(items)} tabs titled {title!r} in that window; cannot aim")

@@ -170,7 +170,7 @@ def test_wt_argv_places_the_window_and_orders_tabs():
     assert argv.count(";") == 1
     first = argv.index("new-tab")
     assert argv[first + 1:first + 4] == [
-        "--title", "demo-app", "--suppressApplicationTitle"]
+        "--title", "demo-app​", "--suppressApplicationTitle"]
     assert argv[first + 4] == "-d"
     assert argv[first + 5] == r"C:\repos\demo-app"
     # Second tab's directory comes after the separator, preserving order.
@@ -186,8 +186,9 @@ def test_wt_argv_golden_string_for_a_single_tab():
         "new-tab",
         # Named at launch. A tab reloaded did not name shows the running
         # program - `claude` - which matches no repo and no recorded title, so
-        # the tab it just opened is one it cannot find again.
-        "--title", "demo-app", "--suppressApplicationTitle",
+        # the tab it just opened is one it cannot find again. The invisible
+        # mark ending the title says which kind it holds.
+        "--title", "demo-app​", "--suppressApplicationTitle",
         "-d", r"C:\repos\demo-app", "pwsh",
     ]
     assert argv[11:13] == ["-NoExit", "-Command"]

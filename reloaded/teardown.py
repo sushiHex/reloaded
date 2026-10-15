@@ -158,7 +158,8 @@ def plan_down(
                     "session is left running, close the duplicate tab.")
                 continue
             seen_cwds.add(norm(cwd))
-            targets.append(Target(title, cwd, live[norm(cwd)], item))
+            # Named without its kind mark: the title is only ever printed.
+            targets.append(Target(agents.title_kind(title)[0], cwd, live[norm(cwd)], item))
         if targets:
             plans.append(WindowPlan(hwnd=hwnd, total_tabs=len(items), targets=targets))
     return plans

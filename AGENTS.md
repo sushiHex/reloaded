@@ -22,7 +22,7 @@ Once `install-tasks` has run from a checkout, the five-minute capture task and t
 
 ## Coding Style & Naming Conventions
 
-Use four-space indentation, snake_case functions/modules, PascalCase classes, and UPPER_CASE constants. Follow surrounding type hints, dataclasses, and module docstrings; keep Python 3.9 compatibility. No formatter or linter is configured. Centralize agent differences in `agents.py` and normalize Windows path comparisons through `paths.norm`. Read agent command lines only through `agents._roles`, which follows Claude Code's own parser; refresh its flag tables from `claude --help` when Claude's options change. Find a directory's Claude conversations only through `agents.conversations_dir`, which honors `CLAUDE_CONFIG_DIR`: the new-conversation fallback treats an empty folder as "no conversation".
+Use four-space indentation, snake_case functions/modules, PascalCase classes, and UPPER_CASE constants. Follow surrounding type hints, dataclasses, and module docstrings; keep Python 3.9 compatibility. No formatter or linter is configured. Centralize agent differences in `agents.py` and normalize Windows path comparisons through `paths.norm`. Read agent command lines only through `agents._roles`, which follows Claude Code's own parser; refresh its flag tables from `claude --help` when Claude's options change. Title tabs with `agents.tab_label`, whose invisible kind mark is the only thing telling a directory's Claude tab from its Codex one; read titles from the tab strip through `agents.title_kind`. Find a directory's Claude conversations only through `agents.conversations_dir`, which honors `CLAUDE_CONFIG_DIR`: the new-conversation fallback treats an empty folder as "no conversation".
 
 ## Testing Guidelines
 
