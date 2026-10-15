@@ -84,8 +84,10 @@ its new window before geometry can be applied; failures are reported.
 Every layout writer — capture, `restart`, and the editor — records what it
 changed in `~/.reloaded/reloaded.log` through one function: tabs gained or
 lost, compared per tab as (directory, agent kind) so one of two tabs in a
-directory going is a loss, and tabs whose command changed. Captures also record
-refusals. Nothing is written when no tab changed. Recorded regardless of whether the run was
+directory going is a loss, tabs whose command changed, and windows whose tabs
+now run in another order (`layout.reordered`, each window matched to its saved
+one by content, comparing only the tabs both hold). Captures also record
+refusals. Nothing is written when none of that changed. Recorded regardless of whether the run was
 attended, unlike deploy output, because it describes the user's saved state
 rather than the run; a loss is printed as well, since the capture summary shows
 what remains and never what went. The reconcile task rewrites the layout every

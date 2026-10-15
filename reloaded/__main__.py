@@ -151,8 +151,10 @@ def _report_layout_change(before, after, layout: str, writer: str) -> None:
     """Record what this save did to the saved layout, and say so if it took
     something away.
 
-    Recorded whenever a tab is gained or lost, or launches differently;
-    printed only for losses. A gain is already visible in the summary below it
+    Recorded whenever a tab is gained or lost, or launches differently, or a
+    window's tabs change order - a restore that comes back in the wrong order
+    otherwise leaves no trace of which order was saved (#80); printed only
+    for losses. A gain is already visible in the summary below it
     and needs no warning. A loss is the surprising half, and the console said
     nothing about it at all - a user watching three repos vanish saw
     "Captured 4 window(s)" and nothing else.
@@ -168,7 +170,8 @@ def _report_layout_change(before, after, layout: str, writer: str) -> None:
     one of two tabs in a directory going, and two checkouts can share a name.
     """
     lost, gained, changed = layout_mod.tab_changes(before, after)
-    if not (lost or gained or changed):
+    moved = layout_mod.reordered(before, after)
+    if not (lost or gained or changed or moved):
         return
 
     def tabs(keys):
@@ -186,6 +189,10 @@ def _report_layout_change(before, after, layout: str, writer: str) -> None:
         parts.append(f"changed the command of {len(changed)} (" + "; ".join(
             f"{kind} {cwd}: {launch(a)} -> {launch(b)}"
             for (cwd, kind), a, b in changed) + ")")
+    if moved:
+        parts.append(f"reordered {len(moved)} window(s) (" + "; ".join(
+            ", ".join(f"{kind} {os.path.basename(cwd)}" for cwd, kind in keys)
+            for keys in moved) + ")")
     _record(f"[reloaded] layout {layout} {' and '.join(parts)} [{writer}]")
 
     if lost:
