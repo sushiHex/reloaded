@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import os
+from collections import Counter, deque
 
 from . import agents, discover, tabs, win32
 from .layout import LAYOUT_VERSION, Layout, Monitor, Tab, Window
@@ -41,6 +42,7 @@ def build_layout(
     now_iso: str,
     kinds: dict[str, str] | None = None,
     sessions: list | None = None,
+    previous: Layout | None = None,
 ) -> Layout:
     """One tab per live session, in the window its tab is in.
 
@@ -50,6 +52,7 @@ def build_layout(
     logon, three such directories each came back with one tab. Titles now only
     order a window's tabs. Without `sessions`, each live directory is one
     session of the kind `kinds` names, placed by title alone, as before.
+    `previous` orders what the titles cannot (keep_saved_order).
     """
     pool = sorted(sessions if sessions is not None else [
         discover.Session(pid, cwd, (kinds or {}).get(cwd, agents.DEFAULT_KIND), 0.0, None)
@@ -83,10 +86,12 @@ def build_layout(
                           and s.hwnd in (None, hwnd)), None)
             if match is not None:
                 add(match, cwd, title, low)
+        by_title = set(range(len(tab_objs)))
         # In this window by its shell, under a title that names no repo.
         for s in pool:
             if s.pid not in taken and hwnd is not None and s.hwnd == hwnd:
                 add(s, s.cwd, tab_title(s.cwd), False)
+        keep_saved_order(tab_objs, previous, by_title)
         if not tab_objs:
             continue
         windows.append(
@@ -105,6 +110,50 @@ def build_layout(
         monitors=list(monitors),
         windows=windows,
     )
+
+
+def keep_saved_order(tabs: list[Tab], previous: Layout | None,
+                     movable: set[int]) -> None:
+    """Put a window's same-titled tabs of one directory - those at `movable`,
+    the places a title gave them - in the kind order the saved layout has for
+    them, in place.
+
+    Two tabs with one title cannot be told apart, so build_layout fills them
+    in the order their agents started - and a capture every five minutes
+    wrote that guess over the layout, undoing any correction made in the
+    editor (#77). The saved order is no better evidence of where each tab is
+    now, but it is the one a person can set and see kept. It is followed only
+    from the one saved window most like this one, and only where that window
+    holds the same title and directory with exactly these kinds; anywhere else
+    start order stands.
+    """
+    def held(ts) -> Counter:
+        return Counter((norm(t.cwd), t.agent) for t in ts)
+
+    groups: dict[tuple[str, str], list[int]] = {}
+    for i in sorted(movable):
+        groups.setdefault((tabs[i].title, norm(tabs[i].cwd)), []).append(i)
+    mixed = {key: places for key, places in groups.items()
+             if len({tabs[i].agent for i in places}) > 1}
+    if not mixed or previous is None:
+        return
+    # Windows are saved by position, which shifts, so the saved one is found
+    # by what it holds - and not at all where two hold this much of it.
+    here = held(tabs)
+    scored = sorted(((sum((here & held(w.tabs)).values()), i)
+                     for i, w in enumerate(previous.windows)), reverse=True)
+    if not scored or scored[0][0] == 0 or (len(scored) > 1 and scored[1][0] == scored[0][0]):
+        return
+    window = previous.windows[scored[0][1]]
+    for (title, cwd), places in mixed.items():
+        saved = [t.agent for t in window.tabs if t.title == title and norm(t.cwd) == cwd]
+        queues: dict[str, deque] = {}
+        for i in places:
+            queues.setdefault(tabs[i].agent, deque()).append(tabs[i])
+        if Counter(saved) != Counter({k: len(q) for k, q in queues.items()}):
+            continue
+        for i, kind in zip(places, saved):
+            tabs[i] = queues[kind].popleft()
 
 
 def merge_pinned(fresh: Layout, previous: Layout | None) -> Layout:
@@ -196,6 +245,13 @@ def capture_live(
 
     windows_data: list[dict] = []
     for hwnd in win32.list_wt_windows():
+        items = tabs.list_tab_items(hwnd)
+        if not items:
+            # A tab read that timed out: no window has no tabs. Its sessions
+            # would still be found by their shells, in start order, and saved
+            # over the order they had (#77). Left out, they are missing, and
+            # the save that would lose them is refused (_capture_shrinkage).
+            continue
         rect, state, device, dpi = win32.get_geometry(hwnd)
         windows_data.append(
             {
@@ -208,11 +264,11 @@ def capture_live(
                 # frame, not a system constant derivable from dpi. clamp_rect
                 # needs it to leave a flush-snapped window alone.
                 "inset": win32.frame_inset(hwnd),
-                "titles": tabs.tab_titles(hwnd),
+                "titles": [title for title, _item in items if title],
             }
         )
 
     now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     fresh = build_layout(windows_data, monitors, title_map, live, repos_root,
-                         now_iso, sessions=found)
+                         now_iso, sessions=found, previous=previous)
     return merge_pinned(fresh, previous)

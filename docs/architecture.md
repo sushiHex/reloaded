@@ -25,8 +25,16 @@ the same title, so no title can tell them apart; each session is placed by its
 own process instead. Every Windows Terminal tab's console has a hidden
 `PseudoConsoleWindow` belonging to the tab's shell and owned by the Terminal
 window hosting it (`win32.tab_shells`), and an agent runs under its tab's shell.
-Titles now only order a window's tabs. A restore then skips a tab only when that
-directory and agent kind are both already running.
+Titles now only order a window's tabs. Where they cannot - a directory's two
+same-titled tabs - the tabs keep the kind order the saved layout already has
+for them, taken from the one saved window that holds the most of what this one
+does. They fall back to the order their agents started where that window holds
+other kinds there, or where two saved windows match equally. A swap of two such
+tabs is therefore not recorded, but a correction made in `reloaded edit` is
+kept (#77). A window whose tab strip could not be read is left out of the
+capture rather than filled in by shell, which would put its tabs in start
+order; its sessions are then missing, and the save is refused. A restore then
+skips a tab only when that directory and agent kind are both already running.
 
 The rest of the tool is still keyed by normalized working directory: live
 discovery for restarts, and teardown's aim. `status` notes any
