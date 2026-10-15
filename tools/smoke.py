@@ -5,8 +5,8 @@ collects `tests/` only. Run it from PowerShell, not Git Bash, which rewrites
 an argument like `/exit` into `C:/Program Files/Git/exit` before Python sees
 it; `keys` refuses one that arrives that way.
 
-    python tools/smoke.py setup alpha:claude beta:codex a/twin:claude b/twin:codex
-    python tools/smoke.py setup --fake alpha:claude beta:codex   # or: no real agent
+    python tools/smoke.py setup --fake alpha:claude beta:codex a/twin:claude b/twin:codex
+    python tools/smoke.py setup --real alpha:claude beta:codex   # real agents
     python -m reloaded --layout smoke up
     python tools/smoke.py wait 4
     python tools/smoke.py screen alpha
@@ -74,8 +74,13 @@ def setup(*specs: str) -> None:
     With `--fake` first, each tab runs tools/fake_agent.cs in place of its
     agent. Refused while a backup exists: by then the default layout may hold
     smoke tabs, and backing that up would lose the clean copy."""
-    fake = bool(specs) and specs[0] == "--fake"
-    specs = specs[fake:]
+    # Real agents cost model turns, and a real Codex on the shared daemon
+    # ended up showing the maintainer's live thread (#87), so they are asked
+    # for by name, never the default.
+    if not specs or specs[0] not in ("--fake", "--real"):
+        sys.exit("say `--fake` (no real agent) or `--real` first")
+    fake = specs[0] == "--fake"
+    specs = specs[1:]
     if BACKUP.exists():
         sys.exit(f"{BACKUP} exists: `teardown` the last run first")
     fakes = _build_fakes() if fake else None
@@ -105,6 +110,8 @@ def setup(*specs: str) -> None:
         "windows": [{"monitor": monitor.device, "rect": [200, 200, 1400, 1000],
                      "state": "normal", "dpi": monitor.dpi, "tabs": tabs_}],
     }, indent=2), encoding="utf-8")
+    print("`up` opens a window that takes keyboard focus: whoever uses this "
+          "desktop should step away first, or their typing lands in the tabs.")
 
 
 def _sessions() -> list:

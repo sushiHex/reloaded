@@ -86,6 +86,7 @@ reads; it captures, launches and writes nothing.
 | `layout` | `path`, `exists`, and `saved` (the layout's timestamp, or `null`). |
 | `live` | Every session discovered: `path`, `pid`, `agent`. A shared directory appears once per session (the text's `live sessions` line counts directories). Without `psutil`, or for a process whose directory cannot be read, a session is not discovered, so absence here is not proof. |
 | `shared` | Directories holding more than one session: `path`, `agents`. |
+| `shared_server` | Sessions on their agent's shared background server, which Reloaded's next launch of them moves to a server of their own (Codex without `--no-daemon`): `path`, `agent`. A session whose command line cannot be read is not listed. |
 | `monitors` | `saved` and `current` monitor devices. |
 | `readiness`, `terminal` | `ok` and `detail`. `ok` is `false` exactly when the text prints a warning; an undeterminable Terminal version is `true`, with the detail saying so. |
 | `tabs` | Every saved tab in layout order: `window` (`w1`...), `title`, `path`, `agent`, and `state`: `running`, `launch`, or `missing` (no live session, and its directory is not there, so `up` skips it). |

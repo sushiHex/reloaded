@@ -160,6 +160,9 @@ def tab_flags(t: Tab) -> str:
     ]
     if t.agent and t.agent != DEFAULT_KIND:
         flags.insert(0, t.agent)
+    # Which conversation the launch resumes by name, where capture knew it.
+    if t.session_id:
+        flags.append(f"thread {t.session_id[:8]}")
     return f"  [{', '.join(flags)}]" if flags else ""
 
 

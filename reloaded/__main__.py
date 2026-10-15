@@ -1485,6 +1485,9 @@ class _Status:
     states: list = field(default_factory=list)
     # (cwd, kind) of every live session no saved tab claimed, one per session.
     orphans: list = field(default_factory=list)
+    # (cwd, kind) of every live session not on a server of its own - which
+    # reloaded's next launch of it would change (agents.own_server).
+    shared_server: list = field(default_factory=list)
 
     @property
     def would_launch(self) -> int:
@@ -1516,6 +1519,7 @@ def _collect_status(args) -> _Status:
         pool.shutdown(wait=False)
     # One walk for every live-session answer below.
     s = _Status(path, discover_mod.census())
+    s.shared_server = _on_shared_server(s.census)
     if not has_layout:
         return s
 
@@ -1551,6 +1555,22 @@ def _collect_status(args) -> _Status:
     return s
 
 
+def _on_shared_server(census) -> list:
+    """(cwd, kind) of each live session whose command lacks its kind's
+    own-server flag: a Codex attached to the shared daemon, where `--self`
+    cannot find it and ending its tab does not end its work. An unreadable
+    command line says nothing either way and is left out."""
+    out = []
+    for cwd in sorted(census.found):
+        for pid, kind in census.found[cwd]:
+            if not agents_mod.for_kind(kind).own_server_flag:
+                continue
+            command = discover_mod.session_command(pid)
+            if command and agents_mod.own_server(kind, command) != command:
+                out.append((cwd, kind))
+    return out
+
+
 def _status_json(s: _Status) -> dict:
     """The schema documented in docs/usage.md. Live paths are normalized
     (paths.norm); saved ones are as the layout records them."""
@@ -1564,6 +1584,7 @@ def _status_json(s: _Status) -> dict:
                  for cwd in sorted(found) for pid, kind in found[cwd]],
         "shared": [{"path": cwd, "agents": kinds}
                    for cwd, kinds in sorted(s.census.crowded().items())],
+        "shared_server": [{"path": cwd, "agent": kind} for cwd, kind in s.shared_server],
     }
     if s.layout is None:
         return doc
@@ -1602,6 +1623,16 @@ def _print_status(s: _Status) -> None:
         print("       lacks one). `restart` refuses this directory, and `down` "
               "may leave one")
         print("       running: quitting is aimed by directory, not by session.")
+
+    if s.shared_server:
+        print(f"\n[note] {len(s.shared_server)} session(s) run on their agent's shared "
+              "background server:")
+        for cwd, kind in s.shared_server:
+            print(f"    {cwd} ({kind})")
+        print("       `restart --self` cannot find them, and ending their tab does "
+              "not end their work.")
+        print("       The next time reloaded launches them, they get a server of "
+              "their own.")
 
     lo = s.layout
     if lo is None:
