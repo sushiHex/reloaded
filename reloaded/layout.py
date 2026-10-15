@@ -170,8 +170,8 @@ def tab_changes(before: Layout | None, after: Layout):
     directories cannot show it. `lost` and `gained` hold one key per tab.
     `changed` holds (key, command before, command after) for a tab that is
     still there but now launches differently - a command that went empty
-    because its process could not be read included. Geometry, order and
-    window grouping change constantly and are none of these.
+    because its process could not be read included. Geometry and window
+    grouping change constantly and are none of these; order is `reordered`'s.
     """
     # str() throughout: from_dict keeps whatever the file held, and this runs
     # after the save has replaced it, where raising would abort the writer.
@@ -191,6 +191,61 @@ def tab_changes(before: Layout | None, after: Layout):
             lost.remove(old)
             gained.remove(new)
     return [t[:2] for t in lost], [t[:2] for t in gained], changed
+
+
+def session_key(t: Tab) -> tuple[str, str]:
+    """A tab's session as (normalized cwd, kind). str() for the same reason as
+    in tab_changes: a loaded layout holds whatever the file held."""
+    return norm(str(t.cwd)), str(t.agent or DEFAULT_KIND)
+
+
+def matching_window(tabs: list[Tab], windows: list[Window]) -> Window | None:
+    """The one window of `windows` holding the most of `tabs`' sessions.
+
+    Windows are saved in z-order, which shifts, so a window is found again by
+    what it holds - and not at all where none holds any of it, or two hold
+    equally much.
+    """
+    here = Counter(session_key(t) for t in tabs)
+    scored = sorted(((sum((here & Counter(session_key(t) for t in w.tabs)).values()), i)
+                     for i, w in enumerate(windows)), reverse=True)
+    if not scored or scored[0][0] == 0 or (len(scored) > 1 and scored[1][0] == scored[0][0]):
+        return None
+    return windows[scored[0][1]]
+
+
+def reordered(before: Layout | None, after: Layout) -> list[list[tuple[str, str]]]:
+    """The new tab order, as session keys, of each window of `after` whose
+    tabs run in a different order than in its window of `before` (#80).
+
+    A window is reordered when the tabs both windows hold cannot all keep
+    their order - when their longest common subsequence is shorter than what
+    they share. So a tab gained, lost or moved to another window is not also
+    a reorder, nor is closing one of two alike, nor the order of the windows
+    themselves. Tabs are told apart by command too, so two conversations of
+    one kind in one directory trading places is one.
+    """
+    def keys(ts):
+        return [session_key(t) + (str(t.command or ""),) for t in ts]
+
+    def in_order(a, b) -> int:
+        row = [0] * (len(b) + 1)
+        for x in a:
+            diagonal = 0
+            for j, y in enumerate(b, 1):
+                diagonal, row[j] = row[j], (diagonal + 1 if x == y
+                                            else max(row[j], row[j - 1]))
+        return row[-1]
+
+    moved = []
+    for w in after.windows:
+        old = matching_window(w.tabs, before.windows) if before is not None else None
+        if old is None:
+            continue
+        now, was = keys(w.tabs), keys(old.tabs)
+        if in_order(now, was) < sum((Counter(now) & Counter(was)).values()):
+            moved.append([k[:2] for k in now])
+    return moved
 
 
 def save(lo: Layout, path) -> None:
