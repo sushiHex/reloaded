@@ -174,8 +174,9 @@ def test_a_directorys_tabs_keep_the_kind_order_the_layout_has():
                       sessions=sessions, previous=_layout(*wanted))
 
     assert [(t.cwd, t.agent) for t in lo.windows[0].tabs] == wanted
-    # Each tab is its session's, command and all, not only its kind.
-    assert lo.windows[0].tabs[3].command == "command-of-2"
+    # A moved tab is its session's, command and all, not only its kind:
+    # Codex hermes-realtime started fifth.
+    assert lo.windows[0].tabs[1].command == "command-of-5"
 
 
 def test_with_no_saved_order_a_directorys_tabs_are_in_start_order():
@@ -185,6 +186,78 @@ def test_with_no_saved_order_a_directorys_tabs_are_in_start_order():
     lo = _capture([_window(100, ["retro", "retro"])], sessions)
 
     assert [t.agent for t in lo.windows[0].tabs] == ["codex", "claude"]
+
+
+def test_two_saved_windows_equally_like_this_one_lend_it_no_order():
+    """Both hold the pair, in opposite orders: either could be this window."""
+    sessions = [Session(1, RETRO, "codex", 10.0, 100),
+                Session(2, RETRO, "claude", 20.0, 100)]
+    live = {norm(RETRO): 2}
+    previous = make_layout([
+        make_window([0, 0, 800, 600], [Tab(cwd=RETRO, title="retro", agent="claude"),
+                                       Tab(cwd=RETRO, title="retro", agent="codex")]),
+        make_window([0, 0, 800, 600], [Tab(cwd=RETRO, title="retro", agent="codex"),
+                                       Tab(cwd=RETRO, title="retro", agent="claude")])])
+
+    lo = build_layout([_window(100, ["retro", "retro"])], MONITORS, {}, live, REPOS,
+                      "t", sessions=sessions, previous=previous)
+
+    assert [t.agent for t in lo.windows[0].tabs] == ["codex", "claude"]
+
+
+def test_a_shell_placed_session_helps_find_the_saved_window():
+    """Its title names no repo, but what it is still says which saved window
+    this one was: only the second holds meta beside the retro pair."""
+    sessions = [Session(1, RETRO, "codex", 10.0, 100),
+                Session(2, RETRO, "claude", 20.0, 100),
+                Session(3, META, "claude", 30.0, 100)]
+    live = {norm(RETRO): 2, norm(META): 3}
+    previous = make_layout([
+        make_window([0, 0, 800, 600], [Tab(cwd=RETRO, title="retro", agent="codex"),
+                                       Tab(cwd=RETRO, title="retro", agent="claude")]),
+        make_window([0, 0, 800, 600], [Tab(cwd=RETRO, title="retro", agent="claude"),
+                                       Tab(cwd=RETRO, title="retro", agent="codex"),
+                                       Tab(cwd=META, title="meta", agent="claude")])])
+
+    lo = build_layout([_window(100, ["retro", "retro", "renamed"])], MONITORS, {}, live,
+                      REPOS, "t", sessions=sessions, previous=previous)
+
+    assert [t.agent for t in lo.windows[0].tabs] == ["claude", "codex", "claude"]
+
+
+def test_a_window_whose_tab_read_timed_out_is_left_out(monkeypatch):
+    """Its sessions would come back by shell, in start order, and be saved
+    over the order they had; missing instead, the save is refused."""
+    import reloaded.tabs as tabs_mod
+    monkeypatch.setattr(win32_mod, "list_monitors", lambda: MONITORS)
+    monkeypatch.setattr(win32_mod, "list_wt_windows", lambda: [100, 200])
+    monkeypatch.setattr(win32_mod, "get_geometry",
+                        lambda hwnd: ([0, 0, 800, 600], "normal", r"\\.\DISPLAY1", 96))
+    monkeypatch.setattr(win32_mod, "frame_inset", lambda hwnd: [0, 0, 0, 0])
+    monkeypatch.setattr(tabs_mod, "list_tab_items",
+                        lambda hwnd: [("meta", object())] if hwnd == 200 else [])
+    monkeypatch.setattr(discover_mod, "sessions", lambda: [
+        Session(1, RETRO, "codex", 10.0, 100), Session(2, RETRO, "claude", 20.0, 100),
+        Session(3, META, "claude", 30.0, 200)])
+
+    lo = capture_mod.capture_live(REPOS, None, live={norm(RETRO): 2, norm(META): 3},
+                                  title_map={})
+
+    assert [[t.cwd for t in w.tabs] for w in lo.windows] == [[META]]
+
+
+def test_capture_live_hands_the_saved_layout_to_build_layout(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(win32_mod, "list_monitors", lambda: MONITORS)
+    monkeypatch.setattr(win32_mod, "list_wt_windows", lambda: [])
+    monkeypatch.setattr(discover_mod, "sessions", lambda: [])
+    monkeypatch.setattr(capture_mod, "build_layout",
+                        lambda *a, **k: seen.update(k) or make_layout([]))
+    previous = _layout((RETRO, "claude"))
+
+    capture_mod.capture_live(REPOS, previous, live={}, title_map={})
+
+    assert seen["previous"] is previous
 
 
 def test_a_saved_order_for_other_kinds_is_not_followed():

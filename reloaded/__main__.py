@@ -320,7 +320,7 @@ def _capture_shrinkage(fresh, path, live) -> str:
 
     Only total loss was guarded before, but partial loss is the common case and
     the damaging one: `tabs.list_tab_items` degrades a per-window UIA timeout to
-    an empty list, `build_layout` drops that window entirely, and the 5-minute
+    an empty list, `capture_live` leaves that window out entirely, and the 5-minute
     reconcile writes the result over a layout that was correct. Nothing says so
     on screen - that warning goes to a stderr with no destination under pythonw.
 

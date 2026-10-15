@@ -18,7 +18,7 @@ Develop on Windows with Python 3.9+; CI tests Python 3.9 and 3.14. Live operatio
 - `python -m reloaded up --dry-run`: preview deployment.
 - `python -m reloaded edit`: open the interactive layout editor.
 
-Once `install-tasks` has run from a checkout, its scheduled capture and logon restore import that checkout directly, so the checked-out branch runs live every five minutes. Develop in a `git worktree` and keep that checkout on `master`.
+Once `install-tasks` has run from a checkout, the five-minute capture task and the logon launcher import that checkout's files directly, uncommitted edits included, until reinstalled from elsewhere. Develop in a `git worktree` and keep that checkout on `master`.
 
 ## Coding Style & Naming Conventions
 
