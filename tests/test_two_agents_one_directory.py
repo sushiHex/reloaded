@@ -375,6 +375,67 @@ def test_a_marked_title_in_a_later_window_still_comes_first():
     assert [[t.agent for t in w.tabs] for w in lo.windows] == [["claude"], ["codex"]]
 
 
+def test_a_title_takes_its_own_windows_session_before_one_from_anywhere():
+    """The marked Codex title in the second window took the older session,
+    whose window is unknown, leaving its own window's session to no title -
+    and the first window's title with nothing it could take (Codex review)."""
+    sessions = [Session(1, RETRO, "codex", 10.0, None),
+                Session(2, RETRO, "codex", 20.0, 200)]
+
+    lo = _capture([_window(100, ["retro"]), _window(200, [_marked("codex")])], sessions)
+
+    assert [[t.agent for t in w.tabs] for w in lo.windows] == [["codex"], ["codex"]]
+
+
+# ── a tab opened by hand (#77, 2026-10-14) ───────────────────────────────
+
+
+def test_a_hand_opened_tab_keeps_its_place():
+    """The window as measured: the three Codex tabs reopened by hand show
+    Codex's own titles, which name no repo, and went to the end in start
+    order - Claude, Claude, Claude, then Codex constructicon, retro, hermes."""
+    at = {"claude constructicon": 1, "claude hermes": 2, "codex constructicon": 3,
+          "claude retro": 4, "codex retro": 5, "codex hermes": 6}
+    where = {"retro": RETRO, "hermes": HERMES, "constructicon": FORGE}
+    sessions = [Session(pid, where[name.split()[1]], name.split()[0], float(pid), 100)
+                for name, pid in at.items()]
+    titles = ["retro | retro", "hermes-realtime | hermes-realtime",
+              "constructicon | constructicon", "retro", "hermes-realtime", "constructicon"]
+
+    lo = _capture([_window(100, titles)], sessions)
+
+    assert [(t.title, t.agent) for t in lo.windows[0].tabs] == [
+        ("retro", "codex"), ("hermes-realtime", "codex"), ("constructicon", "codex"),
+        ("retro", "claude"), ("hermes-realtime", "claude"), ("constructicon", "claude")]
+
+
+def test_a_title_naming_two_left_over_directories_places_neither():
+    sessions = [Session(1, RETRO, "claude", 10.0, 100), Session(2, META, "claude", 20.0, 100)]
+
+    lo = _capture([_window(100, ["meta vs retro", "x"])], sessions)
+
+    assert [t.cwd for t in lo.windows[0].tabs] == [RETRO, META]
+
+
+def test_a_longer_name_does_not_name_a_shorter_one():
+    hermes = REPOS + r"\hermes"
+    sessions = [Session(1, hermes, "codex", 10.0, 100), Session(2, META, "claude", 20.0, 100)]
+
+    lo = _capture([_window(100, ["hermes-realtime | x", "meta"])], sessions)
+
+    assert [t.cwd for t in lo.windows[0].tabs] == [META, hermes]
+
+
+def test_only_a_session_known_to_be_in_the_window_is_named():
+    """One whose window is unknown could be in any, so a word in a title is
+    no evidence of where it is."""
+    sessions = [Session(1, META, "claude", 10.0, 100), Session(2, RETRO, "codex", 20.0, None)]
+
+    lo = _capture([_window(100, ["retro | retro", "meta"])], sessions)
+
+    assert [t.cwd for t in lo.windows[0].tabs] == [META]
+
+
 def _saved(tmp_path, *tabs):
     from reloaded.layout import save
     path = tmp_path / "layout.json"
