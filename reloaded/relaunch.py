@@ -265,16 +265,32 @@ def _resume_command(session, kind: str) -> str:
         argv = session.cmdline()
     except Exception:
         argv = []
-    session_id = None
-    if os.environ.get("CLAUDE_PID") == str(session.pid):
-        session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
-    argv = agents_mod.resume_exactly(kind, argv, session_id)
+    argv = agents_mod.resume_exactly(kind, argv, _session_id(session, kind))
     # Without the session's id that leaves its argv as it was - possibly a
     # bare `--resume`, no resume at all, or an opening prompt - so it goes
     # through the same rewrite as every launch. A named `--resume <id>` is
     # left as it is.
-    return agents_mod.resuming(kind, discover_mod._format_command(argv)
-                               or agents_mod.for_kind(kind).launch)
+    return agents_mod.own_server(kind, agents_mod.resuming(
+        kind, discover_mod._format_command(argv) or agents_mod.for_kind(kind).launch))
+
+
+def _session_id(session, kind: str) -> str | None:
+    """The conversation `session` holds, from what it hands the commands it
+    runs - or None, which leaves the restart resuming as its command does.
+
+    An inherited variable could be an outer session's, so the id is taken
+    only with a second source saying it is this one's: the pid the kind
+    hands with it (Claude Code), or, for a kind that hands none (Codex), the
+    session's own process holding that conversation's file open
+    (discover.held_threads).
+    """
+    agent = agents_mod.for_kind(kind)
+    claimed = os.environ.get(agent.session_id_env) if agent.session_id_env else None
+    if not claimed:
+        return None
+    if agent.session_pid_env:
+        return claimed if os.environ.get(agent.session_pid_env) == str(session.pid) else None
+    return claimed if claimed in discover_mod.held_threads(session.pid) else None
 
 
 def _launch_command(session) -> str:
@@ -496,7 +512,7 @@ def _bring_back(session_pid, session_created, shell_pid, shell_created, kind,
         return "cancelled", (f"pid {session_pid}: the restart was called off "
                              "- left running")
     try:
-        send_keys(session_pid, agents_mod.for_kind(kind).quit_keys)
+        send_keys(session_pid, agents_mod.for_kind(kind).quit_keys, session_created)
     except OSError as exc:
         _note(f"could not write the quit keys to pid {session_pid}: {exc}")
 
@@ -653,12 +669,19 @@ def type_into_console(shell_pid: int, text: str) -> None:
     _write_input(shell_pid, _key_records(text) + _key_records("{Enter}"))
 
 
-def send_keys(pid: int, keys) -> None:
+def send_keys(pid: int, keys, created: float | None = None) -> None:
     """Write an agent's quit keys (`agents.Agent.quit_keys`) into `pid`'s
-    console input, one at a time - see KEY_PAUSE_SECONDS."""
+    console input, one at a time - see KEY_PAUSE_SECONDS.
+
+    Given its `created` time, it stops once `pid` is no longer that process:
+    an idle Codex quits on the first of its two Ctrl+C (measured, 0.162.1),
+    and attaching to a console that has gone fails, which read as a quit
+    that did not work."""
     for i, key in enumerate(keys):
         if i:
             time.sleep(KEY_PAUSE_SECONDS)
+            if created is not None and not _alive(pid, created):
+                return
         _write_input(pid, _key_records(key))
 
 

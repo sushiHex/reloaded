@@ -27,7 +27,7 @@ def test_a_claude_tab_is_unchanged():
 def test_a_codex_tab_uses_the_codex_default():
     cmd = launcher_command(CWD, 0, 0, agent="codex")
 
-    assert "codex resume --last --dangerously-bypass-approvals-and-sandbox" in cmd
+    assert "codex resume --no-daemon --last --dangerously-bypass-approvals-and-sandbox" in cmd
     assert "claude --dangerously-skip-permissions" not in cmd
 
 
@@ -36,7 +36,7 @@ def test_a_captured_command_wins_over_the_default():
     cmd = launcher_command(CWD, 0, 0, agent="codex",
                            command="codex --profile fast")
 
-    assert "codex --profile fast" in cmd
+    assert "codex --no-daemon --profile fast" in cmd
     assert "resume --last" not in cmd
 
 

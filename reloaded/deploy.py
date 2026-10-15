@@ -203,8 +203,8 @@ def launcher_command(cwd: str, delay: int, size_bytes: int,
     are properties of the shell and apply to every tab.
     """
 
-    invocation = (agents_mod.resuming(agent, command)
-                  or agents_mod.for_kind(agent).launch)
+    invocation = agents_mod.own_server(agent, agents_mod.resuming(agent, command)
+                                       or agents_mod.for_kind(agent).launch)
     fresh = agents_mod.fresh(agent, invocation)
     folder = agents_mod.conversations_dir(agent, cwd)
     if fresh and folder:

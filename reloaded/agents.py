@@ -50,7 +50,9 @@ class Agent:
     # Where this kind keeps its session records.
     #
     # Claude Code's are read, by discovery and by `conversations_dir`. Codex's
-    # are not, and they are not the interface that should be. A Codex
+    # are not indexed, and they are not the interface that should be - only
+    # the first line of a rollout a session holds open is read, to learn
+    # which thread it is writing (discover.held_threads). A Codex
     # rollout's first line records how a thread was CREATED, not what hosts it
     # now - a terminal can resume a thread `codex exec` or the desktop app
     # started, and that line is never rewritten - so no field in this directory
@@ -62,6 +64,14 @@ class Agent:
     # kind whose sessions can be named. Empty for one that cannot, which is
     # left resuming however it already does. See `resume_exactly`.
     resume_by_id: tuple = ()
+    # For a kind that names its conversation with a subcommand instead -
+    # `codex resume <id>` - that subcommand. See `resume_exactly`.
+    resume_subcommand: str = ""
+    # The variable a session hands the commands it runs naming its
+    # conversation, and the one naming its own pid, where it hands one.
+    # See relaunch._session_id.
+    session_id_env: str = ""
+    session_pid_env: str = ""
     # Options that take no value, that take every value after them, and that
     # take one only if it does not look like an option. Any other option takes
     # the next argument whatever it looks like. See `_roles`, which tells an
@@ -85,8 +95,13 @@ class Agent:
     title_mark: str = ""
     # Subcommands that run a background server rather than a session. Such a
     # process has this kind's image name and a directory of its own, and is
-    # nobody's tab: discovery skips one whose first argument is listed.
+    # nobody's tab: discovery skips one whose subcommand is listed.
     services: tuple = ()
+    # The flag that gives a session a server of its own instead of a shared
+    # one, which reloaded adds to every launch of this kind. See `own_server`.
+    own_server_flag: str = ""
+    # Options a launch cannot take together with `own_server_flag`.
+    shared_server_options: tuple = ()
 
 
 def _codex_home() -> str:
@@ -149,6 +164,8 @@ CLAUDE = Agent(
         "--remote-control", "--resume", "--teleport", "--worktree",
         "-d", "-r", "-w"),
     resume_latest="--continue",
+    session_id_env="CLAUDE_CODE_SESSION_ID",
+    session_pid_env="CLAUDE_PID",
     title_mark="​",  # ZERO WIDTH SPACE
 )
 
@@ -171,7 +188,24 @@ CODEX = Agent(
     # If that is also eaten, it times out and says so. Nothing is forced.
     quit_keys=("{Ctrl}c", "{Ctrl}c"),
     quit_label="Ctrl+C",
-    resume_tokens=("resume",),
+    # `--last` and `--all` choose which conversation `resume` takes, so they
+    # go with it when `resume_exactly` names one.
+    resume_tokens=("resume", "--last", "--all", "--include-non-interactive"),
+    resume_subcommand="resume",
+    # The root session's id, measured in a tool call's environment (0.162.1)
+    # and equal to its thread id there. A subagent's own thread is
+    # CODEX_THREAD_ID; restarting the tab means its root. No pid comes with
+    # it (exec_env.rs, rust-v0.162.1).
+    session_id_env="CODEX_SESSION_ID",
+    # From `codex --help` and `codex resume --help`, 0.162.1: the options
+    # with no <value>, and the one whose value is <FILE>.... Every other
+    # option takes one value.
+    bare_flags=(
+        "--all", "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox",
+        "--dangerously-bypass-hook-trust", "--help", "--include-non-interactive",
+        "--last", "--no-alt-screen", "--no-daemon", "--oss", "--search",
+        "--strict-config", "--version", "--worktree", "-V", "-h"),
+    variadic_flags=("--image", "-i"),
     sessions_dir=os.path.join(_codex_home(), "sessions"),
     title_mark="⁠",  # WORD JOINER
     # 0.162.1 keeps a managed daemon running with no parent at all, in
@@ -180,6 +214,15 @@ CODEX = Agent(
     # pid-update-loop`. Counted as sessions, they were two Codex tabs no
     # capture could find (measured 2026-10-15).
     services=("app-server",),
+    # Attached to that daemon, a tab is not where its session runs (measured,
+    # 0.162.1): its tool calls and MCP servers are the daemon's children, so
+    # `restart --self` cannot find its tab; its process holds none of its
+    # thread's files; and ending it leaves its turn running in the daemon,
+    # so a teardown that sees it exit has stopped nothing. With
+    # `--no-daemon` all three are the tab's own again, and subagents still
+    # work. `--remote` is refused alongside it (tui startup_orchestration.rs).
+    own_server_flag="--no-daemon",
+    shared_server_options=("--remote",),
 )
 
 AGENTS = {a.kind: a for a in (CLAUDE, CODEX)}
@@ -228,15 +271,21 @@ def resume_exactly(kind, argv: list, session_id: str | None) -> list:
     With no `argv` - it could not be read - the kind's default launch is
     rewritten instead, so a known id is not lost to it.
 
+    Codex names its conversation with a subcommand: `codex resume <id>`,
+    the id straight after it, where no option can take it for a value. Its
+    `resume` is a bare word to `_roles`, and goes with the prompt.
+
     Unchanged for a kind whose sessions cannot be named, or with no id.
     """
     agent = for_kind(kind)
-    if not session_id or not agent.resume_by_id:
+    if not session_id or not (agent.resume_by_id or agent.resume_subcommand):
         return list(argv)
     argv = list(argv) or agent.launch.split()
     # A resume option goes with the conversation it named.
     kept = [arg for arg, (role, option) in zip(argv[1:], _roles(agent, argv[1:]))
             if role != "word" and option not in agent.resume_tokens]
+    if agent.resume_subcommand:
+        return [argv[0], agent.resume_subcommand, session_id] + kept
     return [argv[0]] + kept + [agent.resume_by_id[0], session_id]
 
 
@@ -321,6 +370,46 @@ def fresh(kind, invocation: str) -> str:
                                       in zip(tokens[1:], roles)
                                       if not (role == "option"
                                               and option in agent.resume_tokens)])
+
+
+def own_server(kind, command: str) -> str:
+    """`command` with the kind's `own_server_flag`, as reloaded launches it.
+
+    A policy, stated here rather than inferred, and the one rewrite of a
+    captured Codex command: what reloaded's teardown, restart and `--self`
+    rely on - a tab's process is its session, and its ending ends the work -
+    holds only for a Codex with a server of its own (see the field). A tab a
+    user opened on the shared daemon comes back on its own server the next
+    time reloaded launches it; the conversation is the same one.
+
+    Placed right after the program, or after a `resume` subcommand - before
+    any `--` or prompt, where it is still read as an option. Left out where
+    the command is already on its own server, or names a remote one.
+    """
+    agent = for_kind(kind)
+    flag = agent.own_server_flag
+    if not flag or not command:
+        return command
+    tokens = _ps_tokens(command)
+    values = [value for *_x, value in tokens[1:]]
+    roles = _roles(agent, values)
+    options = {option for role, option in roles if role == "option"}
+    if flag in options or options & set(agent.shared_server_options):
+        return command
+    at = 1
+    if roles and roles[0] == ("word", "") and values[0] == agent.resume_subcommand:
+        at = 2
+    texts = [text for _s, _e, text, _q, _v in tokens]
+    return " ".join(texts[:at] + [flag] + texts[at:])
+
+
+def subcommand(kind, argv: list) -> str:
+    """The subcommand `argv` runs, "" for none: its first argument that is
+    no option and no option's value - `codex -c x=1 app-server` runs
+    app-server."""
+    words = [value for value, (role, _o) in zip(argv[1:], _roles(for_kind(kind), argv[1:]))
+             if role == "word"]
+    return words[0].lower() if words else ""
 
 
 def _roles(agent: Agent, values: list) -> list:

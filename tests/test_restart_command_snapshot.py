@@ -150,4 +150,4 @@ def test_the_bypass_flag_is_not_added_to_a_session_that_lacked_it(world):
     assert s.agent == "codex", "the relaunch was aimed at the wrong CLI"
     script = deploy_mod.relaunch_script(s.cwd, s.size_bytes, s.agent, s.command)
     assert "--dangerously-bypass-approvals-and-sandbox" not in script
-    assert SAFE in script
+    assert "codex resume --no-daemon --last" in script

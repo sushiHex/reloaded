@@ -130,6 +130,18 @@ conversation, but only when Claude's folder for that directory holds no saved
 conversation. Where one exists, the error stays on screen instead: a new
 conversation would become the latest, the one later restarts resume.
 
+Every Codex tab Reloaded launches runs on a server of its own: `--no-daemon`
+is added after the program, or after `resume`, unless the command already has
+it or names a `--remote` server. This is the one change Reloaded makes to a
+captured Codex command, and it applies to tabs first opened by hand on Codex's
+shared background server too, the next time Reloaded launches them. The
+conversation is the same; only where it runs changes. On the shared server
+(Codex 0.162.1, measured), a tab is not where its session runs: its commands
+and MCP servers belong to the server, `restart --self` cannot find its tab,
+and ending the tab leaves its turn running, so a teardown that sees it exit
+has stopped nothing. Such tabs are not listed live in `codex agents` or the
+desktop app; their conversations are in history as usual.
+
 Reloaded fixes the titles of tabs it launches to repository directory names so
 it can find them again. A renamed conversation may therefore keep showing the
 repository name in the tab strip. Codex directory-trust prompts require a user
@@ -215,9 +227,15 @@ with its MCP servers. How it comes back depends on the tab:
   its shell's console input, which needs no focus. For Claude Code, which
   hands its session id to the commands it runs, that command ends in
   `--resume <session id>`, so the same conversation returns even when the
-  session was started with a bare `--resume` or with none. Codex gets its
-  original command line back. A hand tab under any other shell is refused
-  before anything is ended.
+  session was started with a bare `--resume` or with none. Codex hands its
+  commands its session id too (`CODEX_SESSION_ID`), and its command comes
+  back as `codex resume <id>` when the session's own process holds that
+  thread's file open, which only a Codex on its own server does; otherwise it
+  gets its original command line back. A hand tab under any other shell is
+  refused before anything is ended.
+
+A Codex tab on the shared background server is refused: its commands run in
+the server, so nothing ties them to a tab.
 
 A Reloaded tab replays its captured command, so what comes back is whatever
 that command resumes — `--continue`, by default, the directory's latest
@@ -228,9 +246,11 @@ helper could not do its part, or stopped without saying, the next `--self` in
 that directory says so before it starts. Its part ends at handing the session
 to the tab's loop or writing the command into the shell; whether that command
 then starts is not checked. `--self` cannot
-take repository names. The quit keys have been verified live for Claude Code
-only; Codex's are its double Ctrl+C, written the same way, and a session that
-ignores them falls back to being ended by pid.
+take repository names. Codex's quit keys are two Ctrl+C, written the same way
+(measured, 0.162.1, on its own server): an idle Codex quits on the first, and
+the second is sent only if it is still running; a busy one has its turn interrupted by the first and
+quits on the second. A session that ignores them falls back to being ended by
+pid.
 
 As a Claude Code user command, `~/.claude/commands/relaunch.md`:
 
@@ -252,3 +272,26 @@ asked anything, and takes `/exit` while that line is still running, so a
 successful `/relaunch` quits without a model request — which, over a large
 conversation, is the expensive part. The prompt below it is read only if the
 restart was refused, or the session did not quit while the command waited.
+
+Codex has no command that runs anything before the model is asked, so its
+`$relaunch` is a skill, and costs one model turn. As
+`~/.codex/skills/relaunch/SKILL.md`:
+
+```markdown
+---
+name: relaunch
+description: Restart this Codex session in place with reloaded, keeping its conversation. Only when the user invokes $relaunch.
+---
+
+Run `reloaded restart --self` once with your shell tool, then reply with its
+output in one line and nothing else. Do not run anything else and do not
+retry: if it says the session is restarting, this session quits on its own.
+```
+
+and `~/.codex/skills/relaunch/agents/openai.yaml`, so that only the user can
+start it, never the model on its own:
+
+```yaml
+policy:
+  allow_implicit_invocation: false
+```
