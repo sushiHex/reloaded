@@ -31,6 +31,24 @@ then puts the backup back byte for byte. It also deletes the fixtures, the
 agents recorded for the fixtures (`~/.claude.json`, Codex's `config.toml`)
 are the agents' own files, so `teardown` names them and leaves them alone.
 
+## Fake agents
+
+`setup --fake alpha:claude beta:codex ...` runs `tools/fake_agent.cs` in each
+tab in place of its agent. `setup` compiles it with the C# compiler Windows
+already carries, as `claude.exe` and `codex.exe` under `~/reloaded-smoke/.fakes`.
+Discovery knows an agent by its image name, so the fakes are found, placed and
+quit like real ones, but they cost nothing and hold no conversation. A fake
+prints its kind, pid, directory and arguments. It quits on `/exit` (Claude
+Code) or on two Ctrl+C within five seconds (either kind), the keys `agents.py`
+sends. Like a hand-opened Codex tab, it titles its tab `<dir> | <dir>` behind a
+spinner, which shows only where the tab does not suppress application titles.
+
+The fake's full path is the tab's command, and the tab's own loop replays that
+command. So `up`, a named `restart`, `down` and capture all keep running the
+fake. `restart --self` and the full `restart` launch the command they read off
+the process, which names the program alone (`claude`), and so start the real
+agent. Use real agents for those.
+
 ## What a run has to know
 
 - **A fresh fixture is untrusted.** Claude Code shows its folder-trust dialog
