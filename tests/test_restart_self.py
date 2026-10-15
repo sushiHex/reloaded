@@ -172,6 +172,21 @@ def test_a_shared_server_is_nobodys_session(monkeypatch, capsys):
     assert "shared background server" in capsys.readouterr().out
 
 
+def test_an_agent_it_cannot_read_ends_the_walk(monkeypatch):
+    """A Codex whose command line is unreadable might be a server. Walked
+    past, the walk reached the Claude session outside it, and --self would
+    have ended that one."""
+    class _Unreadable(_Proc):
+        def cmdline(self):
+            raise PermissionError("denied")
+
+    outer = _Proc(1, "claude.exe")
+    inner = _Unreadable(111, "codex.exe", parent=_Proc(5, "pwsh.exe", parent=outer))
+    _chain(monkeypatch, _Proc(222, "pwsh.exe", parent=inner))
+
+    assert discover_mod.owning_session() is None
+
+
 def test_a_tab_with_its_own_server_is_found_through_it(monkeypatch):
     """`--no-daemon`: its tool calls are its own children again (measured)."""
     agent = _Proc(111, "codex.exe", argv=["codex.exe", "--no-daemon"])

@@ -42,6 +42,22 @@ def test_a_codex_launch_gets_a_server_of_its_own(command, expected):
     assert agents_mod.own_server("codex", command) == expected
 
 
+@pytest.mark.parametrize("command,expected", [
+    # Booleans the help does not list: read as taking a value, `--yolo`
+    # swallowed `resume`, and hid the `--remote` after `--not-so-yolo`.
+    ("codex --yolo resume --last", "codex --yolo resume --no-daemon --last"),
+    ("codex --not-so-yolo --remote ws://h:1 resume --last",
+     "codex --not-so-yolo --remote ws://h:1 resume --last"),
+    ("codex --remote=ws://h:1", "codex --remote=ws://h:1"),
+    ("codex fork --last", "codex fork --no-daemon --last"),
+    # Not a session: `codex agents` refuses the flag (`codex agents --help`).
+    ("codex agents", "codex agents"),
+    ("codex exec 'do it'", "codex exec 'do it'"),
+])
+def test_only_a_session_in_the_tab_is_given_its_own_server(command, expected):
+    assert agents_mod.own_server("codex", command) == expected
+
+
 def test_claude_has_no_such_flag():
     assert agents_mod.own_server("claude", "claude --continue") == "claude --continue"
 
@@ -131,6 +147,16 @@ def test_an_id_its_process_does_not_hold_is_not_taken(monkeypatch):
 
     assert relaunch_mod._resume_command(_Session(ARGV), "codex") == (
         "codex resume --no-daemon --last --dangerously-bypass-approvals-and-sandbox")
+
+
+def test_an_unconfirmed_id_with_nothing_to_resume_is_refused(monkeypatch):
+    """Started as plain `codex`: without the id, the restart would end this
+    conversation and open an empty one."""
+    monkeypatch.setenv("CODEX_SESSION_ID", "T1")
+    monkeypatch.setattr(discover_mod, "held_threads", lambda pid, kind: [])
+
+    with pytest.raises(relaunch_mod.Unconfirmed):
+        relaunch_mod._resume_command(_Session(["codex.exe", "--yolo"]), "codex")
 
 
 def test_claude_still_needs_its_own_pid_beside_the_id(monkeypatch):

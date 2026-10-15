@@ -106,6 +106,10 @@ class Agent:
     own_server_flag: str = ""
     # Options a launch cannot take together with `own_server_flag`.
     shared_server_options: tuple = ()
+    # The subcommands the CLI has, and those of them that run a session in
+    # the tab - which a first bare word that is neither is not: a prompt.
+    subcommands: tuple = ()
+    session_subcommands: tuple = ()
 
 
 def _codex_home() -> str:
@@ -206,13 +210,23 @@ CODEX = Agent(
     held_record_prefix="rollout-",
     # From `codex --help` and `codex resume --help`, 0.162.1: the options
     # with no <value>, and the one whose value is <FILE>.... Every other
-    # option takes one value.
+    # option takes one value. `--yolo` and `--not-so-yolo` are booleans the
+    # help does not list (`codex --yolo --version` runs; `--full-auto` is
+    # refused).
     bare_flags=(
         "--all", "--approve-for-me", "--dangerously-bypass-approvals-and-sandbox",
         "--dangerously-bypass-hook-trust", "--help", "--include-non-interactive",
-        "--last", "--no-alt-screen", "--no-daemon", "--oss", "--search",
-        "--strict-config", "--version", "--worktree", "-V", "-h"),
+        "--last", "--no-alt-screen", "--no-daemon", "--not-so-yolo", "--oss",
+        "--search", "--strict-config", "--version", "--worktree", "--yolo", "-V", "-h"),
     variadic_flags=("--image", "-i"),
+    # `codex --help`, 0.162.1. Of these only `resume` and `fork` run a
+    # session in the terminal, and take `--no-daemon` (their --help).
+    subcommands=(
+        "agents", "app", "app-server", "apply", "archive", "cloud", "completion",
+        "debug", "delete", "doctor", "exec", "exec-server", "features", "fork",
+        "help", "login", "logout", "mcp", "migrate-rollouts", "plugin", "queue",
+        "remote-control", "resume", "review", "sandbox", "unarchive", "update"),
+    session_subcommands=("fork", "resume"),
     sessions_dir=os.path.join(_codex_home(), "sessions"),
     title_mark="⁠",  # WORD JOINER
     # 0.162.1 keeps a managed daemon running with no parent at all, in
@@ -415,9 +429,12 @@ def own_server(kind, command: str) -> str:
     user opened on the shared daemon comes back on its own server the next
     time reloaded launches it; the conversation is the same one.
 
-    Placed right after the program, or after a `resume` subcommand - before
-    any `--` or prompt, where it is still read as an option. Left out where
-    the command is already on its own server, or names a remote one.
+    Placed right after the program, or after a session subcommand (`resume`,
+    `fork`) - before any `--` or prompt, where it is still read as an
+    option. Left out where the command is already on its own server, names a
+    remote one (looked for in every argument before `--`, so that a flag
+    misread as taking a value cannot hide it), or runs a subcommand that is
+    no session (`codex agents` refuses the flag).
     """
     agent = for_kind(kind)
     flag = agent.own_server_flag
@@ -425,13 +442,16 @@ def own_server(kind, command: str) -> str:
         return command
     tokens = _ps_tokens(command)
     values = [value for *_x, value in tokens[1:]]
-    roles = _roles(agent, values)
-    options = {option for role, option in roles if role == "option"}
-    if flag in options or options & set(agent.shared_server_options):
+    before_end = values[:values.index("--")] if "--" in values else values
+    named = {value.split("=", 1)[0] for value in before_end}
+    if flag in named or named & set(agent.shared_server_options):
         return command
-    at = 1
-    if roles and roles[0] == ("word", "") and values[0] == agent.resume_subcommand:
-        at = 2
+    roles = _roles(agent, values)
+    first = next((i for i, (role, _o) in enumerate(roles) if role == "word"), None)
+    word = values[first].lower() if first is not None else ""
+    if word in agent.subcommands and word not in agent.session_subcommands:
+        return command
+    at = first + 2 if word in agent.session_subcommands else 1
     texts = [text for _s, _e, text, _q, _v in tokens]
     return " ".join(texts[:at] + [flag] + texts[at:])
 

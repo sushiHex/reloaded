@@ -103,6 +103,7 @@ def desk(monkeypatch, tmp_path):
                         lambda pid, created, seconds: waited.append(pid) or True)
     monkeypatch.delenv("CLAUDE_PID", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.delenv("CODEX_SESSION_ID", raising=False)
     return types.SimpleNamespace(shell=shell, session=session, bash=bash, me=me,
                                  mcp=mcp, mcp_child=mcp_child, helper=helper,
                                  helper_child=helper_child, marker=marker, own_marker=own_marker,
@@ -192,6 +193,21 @@ def test_an_old_loop_that_would_replay_no_conversation_is_stopped(desk, launched
     _run(desk)
 
     assert desk.stale == [True]
+
+
+@pytest.mark.parametrize("launched,stale", [
+    # Found by review: `resuming` leaves a Codex command alone, so a plain
+    # `codex` replay - an empty thread - was never judged stale.
+    (["codex", "--no-daemon"], True),
+    (["codex", "resume", "--last"], False),
+])
+def test_an_old_codex_loop_is_judged_by_whether_it_resumes(desk, launched, stale):
+    desk.shell._cmdline = OLD_LOOP
+    desk.session._cmdline = launched
+
+    relaunch_mod.relaunch(desk.session.pid, CWD, "codex", say=lambda *_: None)
+
+    assert desk.stale == [stale]
 
 
 def test_an_old_loop_replaying_a_conversation_is_not_killed_loading_it(desk, monkeypatch):

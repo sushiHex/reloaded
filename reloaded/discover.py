@@ -154,14 +154,16 @@ def owning_session(pid: int | None = None, depth: int = 12) -> tuple | None:
             kind = by_process.get((proc.name() or "").lower())
         except Exception:
             return None
+        if kind is None:
+            continue
         # A kind's background server runs commands for every session attached
         # to it - Codex 0.162.1's shared daemon runs each tab's tool calls
-        # (measured) - so it is nobody's session, and the walk goes on past
-        # it. It has no parent, so that ends in None. One whose command line
-    # cannot be read is not taken for a session either: --self ends what it
-    # finds.
-        if kind is None or _serving(proc, kind, unreadable=True):
-            continue
+        # (measured) - so it is nobody's session, and nothing above it is
+        # this process's either: the walk ends. So does one whose command
+        # line cannot be read - walking past it could reach an outer
+        # session, and --self ends what it finds.
+        if _serving(proc, kind, unreadable=True):
+            return None
         try:
             cwd = proc.cwd()
         except Exception:
