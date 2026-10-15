@@ -21,14 +21,20 @@ def resolve_tab(
     Returns (cwd, low_confidence), or None when the tab is not a live Claude
     session. Requiring a live session is what enforces "Claude tabs only" —
     plain shells and dashboards resolve to nothing and are dropped. A title's
-    kind mark (agents.title_kind) is not part of the name it resolves by.
+    kind mark (agents.title_kind) is not part of the name it resolves by - but
+    a recorded title is tried as it stands first, since a custom title could
+    end in the same character, and one that is nothing but a mark names
+    nothing.
     """
-    title = agents.title_kind(title)[0]
-    candidate = title_map.get(title)
-    if candidate and norm(candidate) in live:
-        return candidate, False
+    bare = agents.title_kind(title)[0]
+    if not bare:
+        return None
+    for name in dict.fromkeys((title, bare)):
+        candidate = title_map.get(name)
+        if candidate and norm(candidate) in live:
+            return candidate, False
 
-    guess = os.path.join(repos_root, title)
+    guess = os.path.join(repos_root, bare)
     if norm(guess) in live:
         return guess, True
 
@@ -62,8 +68,35 @@ def build_layout(
     # Once each, across the whole layout: two titles can resolve to one
     # session, and a duplicate would launch it twice against one transcript.
     taken: set[int] = set()
-    windows: list[Window] = []
+    # Each window's titles that name a live repo: (bare title, kind or None,
+    # cwd, low_confidence).
+    placed: list[list[tuple]] = []
     for wd in windows_data:
+        placed.append([])
+        for title in wd.get("titles", []):
+            resolved = resolve_tab(title, title_map, live, repos_root)
+            if resolved is not None:
+                placed[-1].append(agents.title_kind(title) + resolved)
+    # One session per title, so a window titled `retro, meta, retro` keeps
+    # that order. A session whose window is known belongs to that window only.
+    # A title whose mark names its kind takes a session of that kind or none,
+    # and before any unmarked title in any window can take one: a session
+    # whose window is unknown can answer titles in several.
+    matches: dict[tuple[int, int], object] = {}
+    for marked in (True, False):
+        for w, wd in enumerate(windows_data):
+            for i, (_bare, kind, cwd, _low) in enumerate(placed[w]):
+                if (kind is not None) != marked:
+                    continue
+                match = next((s for s in pool if s.pid not in taken
+                              and norm(s.cwd) == norm(cwd)
+                              and s.hwnd in (None, wd.get("hwnd"))
+                              and kind in (None, s.kind)), None)
+                if match is not None:
+                    taken.add(match.pid)
+                    matches[w, i] = match
+    windows: list[Window] = []
+    for w, wd in enumerate(windows_data):
         hwnd = wd.get("hwnd")
         tab_objs: list[Tab] = []
 
@@ -75,29 +108,10 @@ def build_layout(
                                 agent=session.kind,
                                 command=discover.session_command(session.pid)))
 
-        placed = []
-        for title in wd.get("titles", []):
-            resolved = resolve_tab(title, title_map, live, repos_root)
-            if resolved is not None:
-                placed.append(agents.title_kind(title) + resolved)
-        # One session per title, so a window titled `retro, meta, retro`
-        # keeps that order. A session whose window is known belongs to that
-        # window only. A title whose mark names its kind takes a session of
-        # that kind or none, and before any unmarked title can take one.
-        matches = [None] * len(placed)
-        for marked in (True, False):
-            for i, (_bare, kind, cwd, _low) in enumerate(placed):
-                if (kind is not None) != marked:
-                    continue
-                matches[i] = next((s for s in pool if s.pid not in taken
-                                   and norm(s.cwd) == norm(cwd)
-                                   and s.hwnd in (None, hwnd)
-                                   and kind in (None, s.kind)), None)
-                if matches[i] is not None:
-                    taken.add(matches[i].pid)
         # Placed by a title that does not say which kind it holds.
         unmarked = set()
-        for (bare, kind, cwd, low), match in zip(placed, matches):
+        for i, (bare, kind, cwd, low) in enumerate(placed[w]):
+            match = matches.get((w, i))
             if match is not None:
                 if kind is None:
                     unmarked.add(len(tab_objs))
