@@ -72,6 +72,10 @@ class Agent:
     # See relaunch._session_id.
     session_id_env: str = ""
     session_pid_env: str = ""
+    # The name prefix of the session record a running session holds open,
+    # where it holds one - which is how capture learns which conversation a
+    # tab is in. See discover.held_threads.
+    held_record_prefix: str = ""
     # Options that take no value, that take every value after them, and that
     # take one only if it does not look like an option. Any other option takes
     # the next argument whatever it looks like. See `_roles`, which tells an
@@ -197,6 +201,9 @@ CODEX = Agent(
     # CODEX_THREAD_ID; restarting the tab means its root. No pid comes with
     # it (exec_env.rs, rust-v0.162.1).
     session_id_env="CODEX_SESSION_ID",
+    # On its own server a Codex holds its thread's rollout open, its
+    # subagents' beside it; on the shared daemon it holds none (measured).
+    held_record_prefix="rollout-",
     # From `codex --help` and `codex resume --help`, 0.162.1: the options
     # with no <value>, and the one whose value is <FILE>.... Every other
     # option takes one value.
@@ -281,12 +288,38 @@ def resume_exactly(kind, argv: list, session_id: str | None) -> list:
     if not session_id or not (agent.resume_by_id or agent.resume_subcommand):
         return list(argv)
     argv = list(argv) or agent.launch.split()
-    # A resume option goes with the conversation it named.
-    kept = [arg for arg, (role, option) in zip(argv[1:], _roles(agent, argv[1:]))
+    return _resumed(agent, argv[0], argv[1:], _roles(agent, argv[1:]), session_id)
+
+
+def _resumed(agent: Agent, program: str, args: list, roles: list, session_id: str) -> list:
+    """`program` and `args` resuming `session_id`: a resume option goes with
+    the conversation it named, and a bare word - the opening prompt, or
+    Codex's subcommand and its id - goes too."""
+    kept = [arg for arg, (role, option) in zip(args, roles)
             if role != "word" and option not in agent.resume_tokens]
     if agent.resume_subcommand:
-        return [argv[0], agent.resume_subcommand, session_id] + kept
-    return [argv[0]] + kept + [agent.resume_by_id[0], session_id]
+        return [program, agent.resume_subcommand, session_id] + kept
+    return [program] + kept + [agent.resume_by_id[0], session_id]
+
+
+_SESSION_ID = re.compile(r"[A-Za-z0-9-]{8,64}")
+
+
+def resuming_exactly(kind, command: str, session_id: str) -> str:
+    """`command` - a PowerShell command line - made to resume `session_id`,
+    as `resume_exactly` rewrites an argv, keeping every kept argument as
+    written: the program too, which may be a full path (the smoke kit's fake
+    agents). Unchanged without an id, or with one that is not a plain id -
+    it is spliced into PowerShell unquoted."""
+    if not session_id or not _SESSION_ID.fullmatch(session_id):
+        return command
+    agent = for_kind(kind)
+    if not (agent.resume_by_id or agent.resume_subcommand):
+        return command
+    tokens = _ps_tokens(command or agent.launch)
+    roles = _roles(agent, [value for *_x, value in tokens[1:]])
+    return " ".join(_resumed(agent, tokens[0][2], [text for _s, _e, text, _q, _v in tokens[1:]],
+                             roles, session_id))
 
 
 def resuming(kind, command: str) -> str:

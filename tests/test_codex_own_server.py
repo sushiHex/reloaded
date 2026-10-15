@@ -83,20 +83,20 @@ def test_the_threads_a_codex_writes_are_its_root_rollouts(tmp_path, monkeypatch)
         _rollout(tmp_path, "sub", "T-sub", {"subagent": {"thread_spawn": {}}}),
         str(tmp_path / "not-a-rollout.log")])
 
-    assert discover_mod.held_threads(1) == ["T-root"]
+    assert discover_mod.held_threads(1, "codex") == ["T-root"]
 
 
 def test_unreadable_handles_or_files_hold_nothing(tmp_path, monkeypatch):
     bad = tmp_path / "rollout-x.jsonl"
     bad.write_text("not json\n", encoding="utf-8")
     _holding(monkeypatch, [str(bad), str(tmp_path / "rollout-gone.jsonl")])
-    assert discover_mod.held_threads(1) == []
+    assert discover_mod.held_threads(1, "codex") == []
 
     def _denied():
         raise PermissionError("denied")
     proc = types.SimpleNamespace(open_files=_denied)
     monkeypatch.setattr(discover_mod, "_ps", lambda: types.SimpleNamespace(Process=lambda pid: proc))
-    assert discover_mod.held_threads(1) == []
+    assert discover_mod.held_threads(1, "codex") == []
 
 
 # ── restart --self names the thread ──────────────────────────────────────
@@ -117,7 +117,7 @@ ARGV = ["codex.exe", "resume", "--last", "--dangerously-bypass-approvals-and-san
 
 def test_a_codex_comes_back_to_the_thread_it_holds(monkeypatch):
     monkeypatch.setenv("CODEX_SESSION_ID", "T1")
-    monkeypatch.setattr(discover_mod, "held_threads", lambda pid: ["T1"] if pid == 20 else [])
+    monkeypatch.setattr(discover_mod, "held_threads", lambda pid, kind: ["T1"] if pid == 20 else [])
 
     assert relaunch_mod._resume_command(_Session(ARGV), "codex") == (
         "codex resume --no-daemon T1 --dangerously-bypass-approvals-and-sandbox")
@@ -127,7 +127,7 @@ def test_an_id_its_process_does_not_hold_is_not_taken(monkeypatch):
     """Inherited from some other Codex - a variable alone says nothing about
     whose it is. The restart resumes as the command does, as before."""
     monkeypatch.setenv("CODEX_SESSION_ID", "T-other")
-    monkeypatch.setattr(discover_mod, "held_threads", lambda pid: ["T1"])
+    monkeypatch.setattr(discover_mod, "held_threads", lambda pid, kind: ["T1"])
 
     assert relaunch_mod._resume_command(_Session(ARGV), "codex") == (
         "codex resume --no-daemon --last --dangerously-bypass-approvals-and-sandbox")
@@ -141,3 +141,70 @@ def test_claude_still_needs_its_own_pid_beside_the_id(monkeypatch):
     assert "--resume" not in relaunch_mod._resume_command(_Session(argv), "claude")
     monkeypatch.setenv("CLAUDE_PID", "20")
     assert relaunch_mod._resume_command(_Session(argv), "claude").endswith("--resume S1")
+
+
+# ── capture records the thread; the launch resumes it ────────────────────
+
+
+def test_a_kind_that_holds_no_record_is_not_asked(monkeypatch):
+    """Claude Code keeps no transcript open; reading every Claude session's
+    handles would cost each capture ~150 ms a session for nothing."""
+    monkeypatch.setattr(discover_mod, "_ps", lambda: pytest.fail("read open files"))
+
+    assert discover_mod.held_threads(1, "claude") == []
+
+
+TID = "01a1414f-f035-76b1-a2e3-5ddb2b3db568"
+
+
+@pytest.mark.parametrize("command,expected", [
+    ("codex resume --last --dangerously-bypass-approvals-and-sandbox",
+     f"codex resume {TID} --dangerously-bypass-approvals-and-sandbox"),
+    # The program as written: a smoke fake's full path stays the fake.
+    (r"C:\smoke\.fakes\codex.exe resume --last", rf"C:\smoke\.fakes\codex.exe resume {TID}"),
+    ("codex -c 'model=\"x\"' 'fix it'", f"codex resume {TID} -c 'model=\"x\"'"),
+    ("", f"codex resume {TID} --dangerously-bypass-approvals-and-sandbox"),
+])
+def test_a_captured_thread_is_resumed_by_name(command, expected):
+    assert agents_mod.resuming_exactly("codex", command, TID) == expected
+
+
+def test_an_id_that_is_not_a_plain_id_is_not_spliced_in():
+    command = "codex resume --last"
+    assert agents_mod.resuming_exactly("codex", command, "x; Remove-Item -Recurse C:\\") == command
+    assert agents_mod.resuming_exactly("codex", command, "") == command
+
+
+def test_a_tab_with_a_thread_launches_into_it():
+    """Two Codex tabs in one directory both came back as `--last`: the same
+    conversation twice, and the other one out of reach."""
+    launcher = deploy_mod.launcher_command(
+        r"C:\repos\app", 0, 0, "codex",
+        "codex resume --last --dangerously-bypass-approvals-and-sandbox", TID)
+
+    assert f"codex resume --no-daemon {TID} --dangerously-bypass-approvals-and-sandbox" in launcher
+    assert "--last" not in launcher
+
+
+@pytest.mark.parametrize("held,expected", [
+    ([TID], TID),
+    # Two roots: a switch inside the TUI leaves no way to tell which is shown.
+    ([TID, "01a14150-1856-70a1-b9a9-59b8e88a5552"], ""),
+    # None: on the shared daemon, or before its first prompt.
+    ([], ""),
+])
+def test_capture_records_the_thread_only_when_it_is_the_only_one(monkeypatch, held, expected):
+    import reloaded.capture as capture_mod
+    from reloaded.layout import Monitor
+    from reloaded.paths import norm
+
+    monkeypatch.setattr(discover_mod, "session_command", lambda pid: "codex resume --last")
+    monkeypatch.setattr(discover_mod, "held_threads", lambda pid, kind: held)
+    cwd = r"C:\repos\app"
+    lo = capture_mod.build_layout(
+        [{"titles": ["app"], "monitor": "M", "rect": [0, 0, 100, 100], "state": "normal",
+          "dpi": 96, "inset": [0, 0, 0, 0]}],
+        [Monitor(device="M", primary=True, work=[0, 0, 2560, 1392], dpi=96)],
+        {}, {norm(cwd): 7}, r"C:\repos", "t", kinds={norm(cwd): "codex"})
+
+    assert [t.session_id for w in lo.windows for t in w.tabs] == [expected]

@@ -121,7 +121,12 @@ A plain `claude` or `codex` command can start a new conversation after restart.
 Named restart warns about commands it does not recognize as resuming, but the
 warning does not pause execution or rewrite the command. Review launch settings
 before exiting. Restoring a directory and tab is not a guarantee of restoring
-a particular conversation; Reloaded does not store a separate conversation ID.
+a particular conversation. Capture saves a Codex tab's thread id
+(`session_id`) when its process holds exactly one root thread open, which a
+Codex on its own server does, and the launch then resumes that thread by id
+(`codex resume <id>`) instead of the directory's newest; a thread that has
+gone fails on screen rather than being swapped for another. Claude Code tabs
+carry no id.
 
 A Claude Code directory with no conversation yet gives `--continue` nothing to
 resume, and Claude exits: at once, or, in a directory not yet trusted, once

@@ -135,10 +135,13 @@ def build_layout(
         def add(session, cwd, title, low):
             taken.add(session.pid)
             # The command is read off the live process so the tab comes back
-            # with the flags it was actually running.
+            # with the flags it was actually running, and the conversation
+            # when the process says which, with no other in the running.
+            held = discover.held_threads(session.pid, session.kind)
             tab_objs.append(Tab(cwd=cwd, title=title, low_confidence=low,
                                 agent=session.kind,
-                                command=discover.session_command(session.pid)))
+                                command=discover.session_command(session.pid),
+                                session_id=held[0] if len(held) == 1 else ""))
 
         # Placed by a title that does not say which kind it holds.
         unmarked = set()
@@ -266,6 +269,7 @@ def merge_pinned(fresh: Layout, previous: Layout | None) -> Layout:
                     # five minutes.
                     agent=tab.agent,
                     command=tab.command,
+                    session_id=tab.session_id,
                 )
             )
             present.add(identity(tab))

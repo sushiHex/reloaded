@@ -198,7 +198,8 @@ def test_every_field_survives_a_roundtrip(tmp_path):
     """
     monitor = Monitor(device=r"\\.\DISPLAY9", primary=True, work=[1, 2, 3, 4], dpi=192)
     tab = Tab(cwd=r"C:\x", title="t", low_confidence=True, pinned=True,
-              agent="codex", command="codex resume --last")
+              agent="codex", command="codex resume --last",
+              session_id="01a1414f-f035-76b1-a2e3-5ddb2b3db568")
     window = Window(
         monitor=r"\\.\DISPLAY9",
         rect=[5, 6, 7, 8],

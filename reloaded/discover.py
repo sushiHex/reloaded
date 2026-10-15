@@ -174,18 +174,24 @@ def owning_session(pid: int | None = None, depth: int = 12) -> tuple | None:
     return None
 
 
-def held_threads(pid: int) -> list[str]:
-    """The Codex threads process `pid` is writing: the ids of the root-thread
-    rollouts it holds open. [] when it holds none or cannot be read.
+def held_threads(pid: int, kind: str) -> list[str]:
+    """The conversations session `pid` is writing, for a kind whose sessions
+    hold their record open (agents.Agent.held_record_prefix): the ids of the
+    root-thread rollouts it has open. [] when it holds none or cannot be read.
 
     Only a Codex on its own server holds its rollouts; on the shared daemon
     the daemon holds every attached tab's (measured, 0.162.1). A subagent's
     rollout is held beside its root's and says so in its first line's
     `source`. A thread that has had no prompt yet has no rollout.
     """
+    from . import agents as agents_mod
+
+    prefix = agents_mod.for_kind(kind).held_record_prefix
+    if not prefix:
+        return []
     try:
         paths = [f.path for f in _ps().Process(pid).open_files()
-                 if os.path.basename(f.path).startswith("rollout-")
+                 if os.path.basename(f.path).startswith(prefix)
                  and f.path.endswith(".jsonl")]
     except Exception:
         return []

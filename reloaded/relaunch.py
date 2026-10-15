@@ -290,7 +290,7 @@ def _session_id(session, kind: str) -> str | None:
         return None
     if agent.session_pid_env:
         return claimed if os.environ.get(agent.session_pid_env) == str(session.pid) else None
-    return claimed if claimed in discover_mod.held_threads(session.pid) else None
+    return claimed if claimed in discover_mod.held_threads(session.pid, kind) else None
 
 
 def _launch_command(session) -> str:

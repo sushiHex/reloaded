@@ -40,6 +40,11 @@ class Tab:
     # rather than assumed because the flags are the user's choice, and this
     # package's whole premise is putting things back as they were.
     command: str = ""
+    # The conversation the tab was in at capture, for a kind whose sessions
+    # say so (discover.held_threads) - "" where unknown or ambiguous. The
+    # launch resumes it by id (agents.resume_exactly): `--last`, the only
+    # other choice, gives two tabs in one directory the same conversation.
+    session_id: str = ""
 
     def __post_init__(self):
         # A key present but null in the JSON defeats the dataclass default and
@@ -48,6 +53,8 @@ class Tab:
             self.agent = DEFAULT_KIND
         if not self.command:
             self.command = ""
+        if not self.session_id:
+            self.session_id = ""
 
 
 @dataclass
@@ -118,6 +125,7 @@ class Layout:
                             # turns an absent-or-null value into the default.
                             agent=t.get("agent", DEFAULT_KIND),
                             command=t.get("command", ""),
+                            session_id=t.get("session_id", ""),
                         )
                         for t in w.get("tabs", [])
                     ],
