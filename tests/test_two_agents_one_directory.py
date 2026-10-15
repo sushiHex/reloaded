@@ -375,6 +375,18 @@ def test_a_marked_title_in_a_later_window_still_comes_first():
     assert [[t.agent for t in w.tabs] for w in lo.windows] == [["claude"], ["codex"]]
 
 
+def test_a_title_takes_its_own_windows_session_before_one_from_anywhere():
+    """The marked Codex title in the second window took the older session,
+    whose window is unknown, leaving its own window's session to no title -
+    and the first window's title with nothing it could take (Codex review)."""
+    sessions = [Session(1, RETRO, "codex", 10.0, None),
+                Session(2, RETRO, "codex", 20.0, 200)]
+
+    lo = _capture([_window(100, ["retro"]), _window(200, [_marked("codex")])], sessions)
+
+    assert [[t.agent for t in w.tabs] for w in lo.windows] == [["codex"], ["codex"]]
+
+
 # ── a tab opened by hand (#77, 2026-10-14) ───────────────────────────────
 
 

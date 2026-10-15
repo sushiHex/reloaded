@@ -96,10 +96,14 @@ def build_layout(
             for i, (_bare, kind, cwd, _low) in enumerate(placed[w]):
                 if cwd is None or (kind is not None) != marked:
                     continue
-                match = next((s for s in pool if s.pid not in taken
-                              and norm(s.cwd) == norm(cwd)
-                              and s.hwnd in (None, wd.get("hwnd"))
-                              and kind in (None, s.kind)), None)
+                fits = [s for s in pool if s.pid not in taken
+                        and norm(s.cwd) == norm(cwd)
+                        and s.hwnd in (None, wd.get("hwnd"))
+                        and kind in (None, s.kind)]
+                # One known to be in this window before one that could be in
+                # any: taken first, the latter left this window's own session
+                # to no title, and two windows were saved as one.
+                match = min(fits, key=lambda s: s.hwnd is None, default=None)
                 if match is not None:
                     taken.add(match.pid)
                     matches[w, i] = match
