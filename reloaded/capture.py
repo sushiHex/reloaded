@@ -20,8 +20,10 @@ def resolve_tab(
 
     Returns (cwd, low_confidence), or None when the tab is not a live Claude
     session. Requiring a live session is what enforces "Claude tabs only" —
-    plain shells and dashboards resolve to nothing and are dropped.
+    plain shells and dashboards resolve to nothing and are dropped. A title's
+    kind mark (agents.title_kind) is not part of the name it resolves by.
     """
+    title = agents.title_kind(title)[0]
     candidate = title_map.get(title)
     if candidate and norm(candidate) in live:
         return candidate, False
@@ -73,25 +75,38 @@ def build_layout(
                                 agent=session.kind,
                                 command=discover.session_command(session.pid)))
 
+        placed = []
         for title in wd.get("titles", []):
             resolved = resolve_tab(title, title_map, live, repos_root)
-            if resolved is None:
-                continue
-            cwd, low = resolved
-            # One session per title, so a window titled `retro, meta, retro`
-            # keeps that order. A session whose window is known belongs to
-            # that window only.
-            match = next((s for s in pool if s.pid not in taken
-                          and norm(s.cwd) == norm(cwd)
-                          and s.hwnd in (None, hwnd)), None)
+            if resolved is not None:
+                placed.append(agents.title_kind(title) + resolved)
+        # One session per title, so a window titled `retro, meta, retro`
+        # keeps that order. A session whose window is known belongs to that
+        # window only. A title whose mark names its kind takes a session of
+        # that kind or none, and before any unmarked title can take one.
+        matches = [None] * len(placed)
+        for marked in (True, False):
+            for i, (_bare, kind, cwd, _low) in enumerate(placed):
+                if (kind is not None) != marked:
+                    continue
+                matches[i] = next((s for s in pool if s.pid not in taken
+                                   and norm(s.cwd) == norm(cwd)
+                                   and s.hwnd in (None, hwnd)
+                                   and kind in (None, s.kind)), None)
+                if matches[i] is not None:
+                    taken.add(matches[i].pid)
+        # Placed by a title that does not say which kind it holds.
+        unmarked = set()
+        for (bare, kind, cwd, low), match in zip(placed, matches):
             if match is not None:
-                add(match, cwd, title, low)
-        by_title = set(range(len(tab_objs)))
+                if kind is None:
+                    unmarked.add(len(tab_objs))
+                add(match, cwd, bare, low)
         # In this window by its shell, under a title that names no repo.
         for s in pool:
             if s.pid not in taken and hwnd is not None and s.hwnd == hwnd:
                 add(s, s.cwd, tab_title(s.cwd), False)
-        keep_saved_order(tab_objs, previous, by_title)
+        keep_saved_order(tab_objs, previous, unmarked)
         if not tab_objs:
             continue
         windows.append(
@@ -115,10 +130,10 @@ def build_layout(
 def keep_saved_order(tabs: list[Tab], previous: Layout | None,
                      movable: set[int]) -> None:
     """Put a window's same-titled tabs of one directory - those at `movable`,
-    the places a title gave them - in the kind order the saved layout has for
-    them, in place.
+    the places an unmarked title gave them - in the kind order the saved
+    layout has for them, in place.
 
-    Two tabs with one title cannot be told apart, so build_layout fills them
+    Two unmarked tabs with one title cannot be told apart, so build_layout fills them
     in the order their agents started - and a capture every five minutes
     wrote that guess over the layout, undoing any correction made in the
     editor (#77). The saved order is no better evidence of where each tab is

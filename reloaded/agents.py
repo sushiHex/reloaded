@@ -16,6 +16,7 @@ import re
 from dataclasses import dataclass
 
 from . import pwsh
+from .paths import tab_title
 
 
 @dataclass(frozen=True)
@@ -76,6 +77,12 @@ class Agent:
     # kind's session records. Repair ends in a truncation, so running it on an
     # unverified format is a guess with a destructive edit on the end.
     repairs_transcripts: bool = False
+    # One zero-width character ending the title of every tab reloaded opens
+    # for this kind - the only thing that tells a directory's Claude tab from
+    # its Codex one, which otherwise carry the same name (#77). Measured on
+    # Terminal 1.24: `wt --title` keeps it, UIA returns it, and the tab strip
+    # draws nothing for it. See `tab_label` and `title_kind`.
+    title_mark: str = ""
 
 
 def _codex_home() -> str:
@@ -138,6 +145,7 @@ CLAUDE = Agent(
         "--remote-control", "--resume", "--teleport", "--worktree",
         "-d", "-r", "-w"),
     resume_latest="--continue",
+    title_mark="​",  # ZERO WIDTH SPACE
 )
 
 CODEX = Agent(
@@ -161,6 +169,7 @@ CODEX = Agent(
     quit_label="Ctrl+C",
     resume_tokens=("resume",),
     sessions_dir=os.path.join(_codex_home(), "sessions"),
+    title_mark="⁠",  # WORD JOINER
 )
 
 AGENTS = {a.kind: a for a in (CLAUDE, CODEX)}
@@ -390,6 +399,22 @@ def _ps_tokens(command: str) -> list:
             i += 1
         tokens.append((start, i, command[start:i], quoted, "".join(value)))
     return tokens
+
+
+def tab_label(kind, cwd: str) -> str:
+    """The title reloaded gives a tab it opens: the directory's name, which
+    is what the user sees, and the kind's invisible mark."""
+    return tab_title(cwd) + for_kind(kind).title_mark
+
+
+def title_kind(title: str) -> tuple[str, str | None]:
+    """A tab title without its mark, and the kind the mark names - None for
+    a title with none, which is a tab opened before marks existed, or by
+    hand, and could hold either kind."""
+    for agent in AGENTS.values():
+        if agent.title_mark and title.endswith(agent.title_mark):
+            return title[:-len(agent.title_mark)], agent.kind
+    return title, None
 
 
 def for_kind(kind) -> Agent:

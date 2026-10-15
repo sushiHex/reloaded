@@ -19,14 +19,23 @@ those titles stable even when an agent would normally replace them. That makes
 newly opened sessions discoverable before they write transcript titles, at the
 cost of hiding later conversation-name changes in the tab strip.
 
+That title ends in one zero-width character naming the tab's agent kind
+(`agents.tab_label`; U+200B for Claude Code, U+2060 for Codex). The tab strip
+draws nothing for it, so both of a directory's tabs still read as its name, but
+UIA returns it, and that is the only thing that tells the two apart: nothing in
+a tab's UIA properties, its hidden console window or Terminal's own state links
+an unselected tab to its shell (#77, measured on Terminal 1.24). A title without
+a mark - a tab opened before marks existed, or by hand - could hold either kind.
+
 Capture saves one tab per live session, not per directory, so a repository
 running Claude Code in one tab and Codex in another keeps both. Their tabs carry
 the same title, so no title can tell them apart; each session is placed by its
 own process instead. Every Windows Terminal tab's console has a hidden
 `PseudoConsoleWindow` belonging to the tab's shell and owned by the Terminal
 window hosting it (`win32.tab_shells`), and an agent runs under its tab's shell.
-Titles now only order a window's tabs. Where they cannot - a directory's two
-same-titled tabs - the tabs keep the kind order the saved layout already has
+Titles now only order a window's tabs, and a marked title takes a session of its
+own kind before any unmarked title can take one. Where titles cannot order them -
+a directory's unmarked tabs - the tabs keep the kind order the saved layout already has
 for them, taken from the one saved window that holds the most of what this one
 does. They fall back to the order their agents started where that window holds
 other kinds there, or where two saved windows match equally. A swap of two such
