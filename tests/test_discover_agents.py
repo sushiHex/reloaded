@@ -216,6 +216,18 @@ def test_codexs_background_server_is_not_a_session(monkeypatch):
     assert discover_mod.live_sessions() == {norm(REPOS + r"\beta"): 15}
 
 
+def test_a_server_is_known_by_its_subcommand_not_its_first_argument(monkeypatch):
+    """The desktop app starts its server as `codex.exe -c ... app-server`
+    (measured): the option's value comes first."""
+    _stub(monkeypatch, [_Proc(13, "codex.exe", REPOS + r"\srv", ancestors=()),
+                        _Proc(15, "codex.exe", REPOS + r"\beta")])
+    _with_argv(monkeypatch, {
+        13: ["codex.exe", "-c", "features.code_mode_host=true", "app-server"],
+        15: ["codex.exe", "--no-daemon", "resume", "--last"]})
+
+    assert discover_mod.live_sessions() == {norm(REPOS + r"\beta"): 15}
+
+
 # ── failures that must not drop a real session ───────────────────────────
 
 

@@ -99,15 +99,26 @@ def test_there_is_nothing_else_to_type(capsys):
 
 
 class _Proc:
-    def __init__(self, pid, image, cwd=CWD, parent=None, cwd_raises=None):
+    def __init__(self, pid, image, cwd=CWD, parent=None, cwd_raises=None, argv=None):
         self.pid = pid
         self._image = image
         self._cwd = cwd
         self._parent = parent
         self._cwd_raises = cwd_raises
+        self._argv = argv or [image]
 
     def name(self):
         return self._image
+
+    def cmdline(self):
+        return self._argv
+
+    def parents(self):
+        line, p = [], self._parent
+        while p is not None:
+            line.append(p)
+            p = p._parent
+        return line
 
     def cwd(self):
         if self._cwd_raises:
@@ -136,6 +147,49 @@ def test_the_agent_above_this_process_is_found(monkeypatch):
 
 def test_codex_is_recognised_too(monkeypatch):
     agent = _Proc(111, "codex.exe", parent=None)
+    _chain(monkeypatch, _Proc(222, "pwsh.exe", parent=agent))
+
+    assert discover_mod.owning_session() == (111, CWD, "codex")
+
+
+DAEMON = ["codex.exe", "app-server", "--listen", "unix://"]
+
+
+def test_a_shared_server_is_nobodys_session(monkeypatch, capsys):
+    """Codex 0.162.1 runs every attached tab's tool calls in its shared
+    daemon (measured): the chain is pwsh <- daemon, with no parent above
+    it. The daemon was taken for the session, and refused only because it
+    has no shell above it - the right answer for the wrong reason, saying
+    the session could not be read."""
+    daemon = _Proc(111, "codex.exe", cwd=r"C:\Users\u\.codex\app-server-daemon\workdir",
+                   argv=DAEMON)
+    _chain(monkeypatch, _Proc(333, "python.exe", parent=_Proc(222, "pwsh.exe", parent=daemon)))
+    monkeypatch.setattr(main_mod.relaunch_mod, "relaunch",
+                        lambda *a, **k: pytest.fail("relaunched the shared server"))
+
+    assert discover_mod.owning_session() is None
+    assert main_mod.cmd_restart(_args()) == 1
+    assert "shared background server" in capsys.readouterr().out
+
+
+def test_an_agent_it_cannot_read_ends_the_walk(monkeypatch):
+    """A Codex whose command line is unreadable might be a server. Walked
+    past, the walk reached the Claude session outside it, and --self would
+    have ended that one."""
+    class _Unreadable(_Proc):
+        def cmdline(self):
+            raise PermissionError("denied")
+
+    outer = _Proc(1, "claude.exe")
+    inner = _Unreadable(111, "codex.exe", parent=_Proc(5, "pwsh.exe", parent=outer))
+    _chain(monkeypatch, _Proc(222, "pwsh.exe", parent=inner))
+
+    assert discover_mod.owning_session() is None
+
+
+def test_a_tab_with_its_own_server_is_found_through_it(monkeypatch):
+    """`--no-daemon`: its tool calls are its own children again (measured)."""
+    agent = _Proc(111, "codex.exe", argv=["codex.exe", "--no-daemon"])
     _chain(monkeypatch, _Proc(222, "pwsh.exe", parent=agent))
 
     assert discover_mod.owning_session() == (111, CWD, "codex")

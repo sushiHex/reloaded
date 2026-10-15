@@ -1292,6 +1292,14 @@ def cmd_restart_self(args) -> int:
         return 1
 
     found = discover_mod.owning_session()
+    if found is None and discover_mod.server_above():
+        print("This session's commands run in its agent's shared background "
+              "server, not under its tab,")
+        print("    so nothing says which tab it is in. Tabs reloaded opens run "
+              "their own server (--no-daemon);")
+        print("    quit this one and start it again yourself, or restart it "
+              "by name: `reloaded restart <repo>`.")
+        return 1
     if found is None:
         print("Not running inside an agent session.")
         print("    `restart --self` restarts the session it is called from, so "

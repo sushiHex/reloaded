@@ -103,6 +103,7 @@ def desk(monkeypatch, tmp_path):
                         lambda pid, created, seconds: waited.append(pid) or True)
     monkeypatch.delenv("CLAUDE_PID", raising=False)
     monkeypatch.delenv("CLAUDE_CODE_SESSION_ID", raising=False)
+    monkeypatch.delenv("CODEX_SESSION_ID", raising=False)
     return types.SimpleNamespace(shell=shell, session=session, bash=bash, me=me,
                                  mcp=mcp, mcp_child=mcp_child, helper=helper,
                                  helper_child=helper_child, marker=marker, own_marker=own_marker,
@@ -192,6 +193,21 @@ def test_an_old_loop_that_would_replay_no_conversation_is_stopped(desk, launched
     _run(desk)
 
     assert desk.stale == [True]
+
+
+@pytest.mark.parametrize("launched,stale", [
+    # Found by review: `resuming` leaves a Codex command alone, so a plain
+    # `codex` replay - an empty thread - was never judged stale.
+    (["codex", "--no-daemon"], True),
+    (["codex", "resume", "--last"], False),
+])
+def test_an_old_codex_loop_is_judged_by_whether_it_resumes(desk, launched, stale):
+    desk.shell._cmdline = OLD_LOOP
+    desk.session._cmdline = launched
+
+    relaunch_mod.relaunch(desk.session.pid, CWD, "codex", say=lambda *_: None)
+
+    assert desk.stale == [stale]
 
 
 def test_an_old_loop_replaying_a_conversation_is_not_killed_loading_it(desk, monkeypatch):
@@ -592,10 +608,23 @@ def test_whatever_resumed_before_is_replaced_by_the_id(argv, expected):
     assert agents_mod.resume_exactly("claude", argv, "id") == expected
 
 
-def test_a_kind_that_cannot_name_a_session_is_left_alone():
-    argv = ["codex", "resume", "--last"]
-
-    assert agents_mod.resume_exactly("codex", argv, "id") == argv
+@pytest.mark.parametrize("argv,expected", [
+    (["codex", "resume", "--last", "--dangerously-bypass-approvals-and-sandbox"],
+     ["codex", "resume", "id", "--dangerously-bypass-approvals-and-sandbox"]),
+    (["codex", "resume", "old", "--no-daemon"], ["codex", "resume", "id", "--no-daemon"]),
+    (["codex", "--no-daemon", "--dangerously-bypass-approvals-and-sandbox"],
+     ["codex", "resume", "id", "--no-daemon", "--dangerously-bypass-approvals-and-sandbox"]),
+    # The opening prompt goes: resumed, it would be sent again.
+    (["codex", "-m", "gpt", "fix the tests"], ["codex", "resume", "id", "-m", "gpt"]),
+    (["codex", "resume", "--all", "-c", "model=x"], ["codex", "resume", "id", "-c", "model=x"]),
+    # A variadic option keeps every value; the id sits where none can take it.
+    (["codex", "-i", "a.png", "b.png"], ["codex", "resume", "id", "-i", "a.png", "b.png"]),
+    ([], ["codex", "resume", "id", "--dangerously-bypass-approvals-and-sandbox"]),
+])
+def test_codex_names_its_thread_with_the_resume_subcommand(argv, expected):
+    """`codex resume <id>` (0.162.1). `--last` would take the directory's
+    newest thread, which in a directory with two is not this one."""
+    assert agents_mod.resume_exactly("codex", argv, "id") == expected
 
 
 def test_no_id_means_no_rewrite():
@@ -626,7 +655,7 @@ def helper(monkeypatch, tmp_path):
         if state["loop_takes_marker"] and not state["session_alive"]:
             marker.unlink(missing_ok=True)
 
-    def _send_keys(pid, keys):
+    def _send_keys(pid, keys, created=None):
         state["keys"].append((pid, tuple(keys)))
         if state["quits_on_keys"]:
             state["session_alive"] = False
@@ -687,7 +716,7 @@ def test_the_keys_wait_until_the_helper_is_outside_the_session(helper, monkeypat
     _inside_until(helper, monkeypatch, moment=1.0)
     sent_at = []
     monkeypatch.setattr(relaunch_mod, "send_keys",
-                        lambda pid, keys: sent_at.append(helper["now"]))
+                        lambda pid, keys, created=None: sent_at.append(helper["now"]))
 
     _bring_back(helper)
 
@@ -732,7 +761,7 @@ def test_a_session_that_does_not_quit_is_ended(helper):
 
 
 def test_keys_that_cannot_be_written_fall_back_to_ending_it(helper, monkeypatch):
-    def _refused(pid, keys):
+    def _refused(pid, keys, created=None):
         raise OSError("AttachConsole failed (6)")
 
     monkeypatch.setattr(relaunch_mod, "send_keys", _refused)
@@ -959,3 +988,18 @@ def test_quit_keys_go_in_one_at_a_time(monkeypatch):
     assert events == [("write", 10),
                       ("pause", relaunch_mod.KEY_PAUSE_SECONDS),
                       ("write", 2)]
+
+
+def test_quit_keys_stop_once_the_session_has_quit(monkeypatch):
+    """An idle Codex quits on the first of its two Ctrl+C (measured,
+    0.162.1). The second has no console left to go into, and its failure
+    read as a quit that had not worked."""
+    writes = []
+    monkeypatch.setattr(relaunch_mod, "_write_input",
+                        lambda pid, records: writes.append(pid))
+    monkeypatch.setattr(relaunch_mod, "time", types.SimpleNamespace(sleep=lambda s: None))
+    monkeypatch.setattr(relaunch_mod, "_alive", lambda pid, created: not writes)
+
+    relaunch_mod.send_keys(20, ("{Ctrl}c", "{Ctrl}c"), 1.0)
+
+    assert writes == [20]

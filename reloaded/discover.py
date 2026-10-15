@@ -156,6 +156,14 @@ def owning_session(pid: int | None = None, depth: int = 12) -> tuple | None:
             return None
         if kind is None:
             continue
+        # A kind's background server runs commands for every session attached
+        # to it - Codex 0.162.1's shared daemon runs each tab's tool calls
+        # (measured) - so it is nobody's session, and nothing above it is
+        # this process's either: the walk ends. So does one whose command
+        # line cannot be read - walking past it could reach an outer
+        # session, and --self ends what it finds.
+        if _serving(proc, kind, unreadable=True):
+            return None
         try:
             cwd = proc.cwd()
         except Exception:
@@ -165,6 +173,67 @@ def owning_session(pid: int | None = None, depth: int = 12) -> tuple | None:
             # fully read".
             cwd = ""
         return proc.pid, cwd, kind
+    return None
+
+
+def held_threads(pid: int, kind: str) -> list[str]:
+    """The conversations session `pid` is writing, for a kind whose sessions
+    hold their record open (agents.Agent.held_record_prefix): the ids of the
+    root-thread rollouts it has open. [] when it holds none or cannot be read.
+
+    Only a Codex on its own server holds its rollouts; on the shared daemon
+    the daemon holds every attached tab's (measured, 0.162.1). A subagent's
+    rollout is held beside its root's and says so in its first line's
+    `source`. A thread that has had no prompt yet has no rollout.
+    """
+    from . import agents as agents_mod
+
+    prefix = agents_mod.for_kind(kind).held_record_prefix
+    if not prefix:
+        return []
+    try:
+        paths = [f.path for f in _ps().Process(pid).open_files()
+                 if os.path.basename(f.path).startswith(prefix)
+                 and f.path.endswith(".jsonl")]
+    except Exception:
+        return []
+    ids = []
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                meta = json.loads(fh.readline())
+        except (OSError, ValueError):
+            continue
+        if not isinstance(meta, dict) or meta.get("type") != "session_meta":
+            continue
+        payload = meta.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        source = payload.get("source")
+        if isinstance(source, dict) and "subagent" in source:
+            continue
+        if isinstance(payload.get("id"), str):
+            ids.append(payload["id"])
+    return ids
+
+
+def server_above(depth: int = 12) -> str | None:
+    """The kind whose background server this process runs under, if any -
+    what `owning_session` walked past. A command Codex's shared daemon runs
+    for a tab has no line back to that tab's process."""
+    from . import agents as agents_mod
+
+    try:
+        line = _ps().Process(os.getpid()).parents()[:depth]
+    except Exception:
+        return None
+    for proc in line:
+        try:
+            kind = agents_mod.BY_PROCESS.get((proc.name() or "").lower())
+        except Exception:
+            continue
+        if kind and _serving(proc, kind):
+            return kind
     return None
 
 
@@ -303,22 +372,26 @@ def _agent_processes(table: dict) -> Iterator[tuple[int, str, str]]:
             cwd = proc.cwd()
         except Exception:
             continue
-        if cwd and not _serving(proc, agents_mod.AGENTS[kind].services):
+        if cwd and not _serving(proc, kind):
             yield pid, kind, cwd
 
 
-def _serving(proc, services: tuple) -> bool:
+def _serving(proc, kind: str, unreadable: bool = False) -> bool:
     """Whether an agent process is one of its kind's background servers
-    (agents.Agent.services). Its command line is read only for a kind that
-    has any, and an unreadable one is a session: dropping a real session is
-    the worse failure."""
+    (agents.Agent.services), judged by its subcommand: the desktop app starts
+    one as `codex.exe -c ... app-server`. Its command line is read only for a
+    kind that has any. An unreadable one counts as `unreadable`: a session
+    for discovery, where dropping a real session is the worse failure."""
+    from . import agents as agents_mod
+
+    services = agents_mod.AGENTS[kind].services
     if not services:
         return False
     try:
         argv = proc.cmdline()
     except Exception:
-        return False
-    return len(argv) > 1 and argv[1].lower() in services
+        return unreadable
+    return agents_mod.subcommand(kind, argv) in services
 
 
 class Session(NamedTuple):

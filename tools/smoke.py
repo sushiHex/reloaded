@@ -199,11 +199,16 @@ def teardown() -> None:
     if _sessions():
         sys.exit("smoke sessions are still running; `end` them first")
     live = LAYOUTS / "default.json"
-    if _real_tabs(live) != _real_tabs(BACKUP):
-        sys.exit("default.json changed outside the smoke tabs; left as it is, "
-                 f"with the backup at {BACKUP}")
-    shutil.copy2(BACKUP, live)
-    print("default.json restored", _digest(live))
+    # The backup lives under the root, so a teardown stopped by a fixture
+    # held open has already restored and lost it: run again, it only cleans.
+    if BACKUP.exists():
+        if _real_tabs(live) != _real_tabs(BACKUP):
+            sys.exit("default.json changed outside the smoke tabs; left as it is, "
+                     f"with the backup at {BACKUP}")
+        shutil.copy2(BACKUP, live)
+        print("default.json restored", _digest(live))
+    else:
+        print("no backup: default.json was restored by an earlier teardown")
     LAYOUT.unlink(missing_ok=True)
     # An agent's MCP servers can outlive it by a few seconds, holding a
     # fixture as their working directory.

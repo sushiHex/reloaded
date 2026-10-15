@@ -4,7 +4,9 @@ Claude Code tabs resolve through `~/.claude/projects/<encoded-cwd>/<uuid>.jsonl`
 the directory name carries the cwd, and each transcript carries a `customTitle`.
 `discover.transcript_index` and `discover.title_to_cwd` are built on that.
 
-Codex has no equivalent, and `agents.CODEX.sessions_dir` is read by nothing.
+Codex has no equivalent, and `agents.CODEX.sessions_dir` is not indexed: the
+only rollouts read are the ones a live Codex holds open (see "The shared
+server" below).
 The obvious fix — walk `~/.codex/sessions`, mirror what Claude does — was
 investigated and rejected. This is why, so it is not re-derived.
 
@@ -76,7 +78,52 @@ config can come from a profile, `-c`, or project-local file.
 
 **Resume scope.** `codex resume --last` is scoped to the current working
 directory, so staggered launches into six different repos do not collide.
-`--all` widens it, `codex resume <id>` is exact.
+`--all` widens it, `codex resume <id>` is exact. From the source at
+`rust-v0.162.1` (`tui/src/lib.rs` `latest_session_lookup_params`): one
+`thread/list` call, newest `updated_at`, sources `cli` and `vscode` only (no
+`exec` unless `--include-non-interactive`, never a subagent), cwd compared
+after canonicalizing; no match starts a new session. With the `worktrees`
+feature on, the cwd filter is every linked worktree of the repository, so two
+worktrees can resume the same thread. Measured: in a directory with no
+thread, it started fresh.
+
+## The shared server (0.162.1)
+
+Codex now runs one background app-server for every TUI that does not pass
+`--no-daemon` (feature `daemon_auto_start`, stable, on). Measured on this
+machine, 2026-10-15:
+
+- **A tab is not where its session runs.** The tab's `codex.exe` has no
+  children. The shells its tool calls run in, and every MCP server, are the
+  daemon's (`codex.exe app-server --listen unix://`, no parent, cwd
+  `~/.codex/app-server-daemon/workdir`).
+- **The daemon holds the files.** It has every attached thread's rollout
+  open, subagents' included. An attached tab holds none.
+- **Ending a tab ends nothing.** A tab ended by pid mid-turn left its turn
+  running: it reached `task_complete` 85 s later. Upstream, exit unsubscribes
+  and never cancels.
+- **Ctrl+C on a busy attached tab opens a menu.** "Task is still running:
+  Cancel task / Run in background / Exit", with Cancel highlighted. The turn
+  carried on, the menu outlived it, and a second Ctrl+C closed it. The source
+  at the tag says the first Ctrl+C interrupts; the installed binary does not,
+  so the source is no authority on TUI keys.
+- **A tab can show another directory's thread.** A tab started fresh in an
+  empty directory ended up displaying a live thread from another repository,
+  mid-turn, after a prompt was written into its console. The text sat unsent
+  in that thread's composer. No index row tied the two. Mechanism unknown;
+  not reproduced, because trying risks another live session.
+- **Recency is not mtime.** The rollout of a thread the daemon holds open
+  kept a stale NTFS mtime while records were being appended.
+
+With `--no-daemon`, each of those is the tab's own again: tool calls are its
+children, it holds its own thread's rollout (and its subagents'), one Ctrl+C
+interrupts a busy turn, one quits an idle tab, and subagents work. The tool
+calls measured got `CODEX_THREAD_ID` (their own thread) and `CODEX_SESSION_ID`
+(the root session) either way; upstream sets both where it builds a shell's
+environment. So reloaded launches every Codex tab with `--no-daemon`
+(`agents.CODEX.own_server_flag`), finds which thread a tab is writing from
+the root rollout it holds open (`discover.held_threads`), and `restart --self`
+resumes that thread by id when the tab's variable and its open file agree.
 
 ## If this is ever built
 

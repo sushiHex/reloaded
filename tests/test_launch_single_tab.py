@@ -50,14 +50,14 @@ def _command(argv):
 def test_a_codex_repo_is_reopened_with_codex(spawned):
     main_mod._launch_single_tab(_session(agent="codex"))
 
-    assert "codex resume --last" in _command(spawned[0])
+    assert "codex resume --no-daemon --last" in _command(spawned[0])
     assert "claude --dangerously-skip-permissions" not in _command(spawned[0])
 
 
 def test_a_captured_command_is_used(spawned):
     main_mod._launch_single_tab(_session(agent="codex", command="codex --profile fast"))
 
-    assert "codex --profile fast" in _command(spawned[0])
+    assert "codex --no-daemon --profile fast" in _command(spawned[0])
 
 
 def test_a_claude_repo_is_unchanged(spawned):
@@ -95,7 +95,7 @@ def test_open_uses_the_kind_the_layout_recorded(spawned, monkeypatch, tmp_path):
 
     main_mod.cmd_open(_args("constructicon", tmp_path))
 
-    assert "codex resume --last" in _command(spawned[0])
+    assert "codex resume --no-daemon --last" in _command(spawned[0])
 
 
 def test_open_falls_back_to_claude_with_no_layout(spawned, monkeypatch, tmp_path):

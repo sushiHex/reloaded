@@ -194,17 +194,25 @@ def _wt_escape(s: str) -> str:
 
 
 def launcher_command(cwd: str, delay: int, size_bytes: int,
-                     agent: str = agents_mod.DEFAULT_KIND, command: str = "") -> str:
+                     agent: str = agents_mod.DEFAULT_KIND, command: str = "",
+                     session_id: str = "") -> str:
     """The PowerShell command run inside one tab.
 
     `command` is what capture read off the live process; empty falls back to
-    the kind's default. Only that invocation differs between agent kinds - the
-    environment hygiene around it, the restart loop and the self-closing guard
-    are properties of the shell and apply to every tab.
+    the kind's default. `session_id` is the conversation capture saw it in,
+    which it resumes by name where known. Only that invocation differs
+    between agent kinds - the environment hygiene around it, the restart loop
+    and the self-closing guard are properties of the shell and apply to
+    every tab.
+
+    A conversation named and gone is not swapped for another: its resume
+    fails on screen, where `--last` would open some other conversation and a
+    fresh start an empty one.
     """
 
-    invocation = (agents_mod.resuming(agent, command)
-                  or agents_mod.for_kind(agent).launch)
+    invocation = agents_mod.resuming(agent, command) or agents_mod.for_kind(agent).launch
+    invocation = agents_mod.own_server(
+        agent, agents_mod.resuming_exactly(agent, invocation, session_id))
     fresh = agents_mod.fresh(agent, invocation)
     folder = agents_mod.conversations_dir(agent, cwd)
     if fresh and folder:
@@ -320,7 +328,7 @@ def wt_argvs(name: str, rect: list[int], tabs: list[Tab], delays: list[int],
     def tab_args(i: int) -> list[str]:
         tab = tabs[i]
         return new_tab_args(tab.cwd, launcher_command(
-            tab.cwd, delays[i], sizes[i], tab.agent, tab.command), tab.agent)
+            tab.cwd, delays[i], sizes[i], tab.agent, tab.command, tab.session_id), tab.agent)
 
     x, y = rect[0], rect[1]
     # `--pos=x,y` rather than `--pos x,y`: a monitor left of the primary yields

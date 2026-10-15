@@ -128,7 +128,14 @@ def relaunch(pid: int, cwd: str, kind: str, *, dry_run: bool = False,
         say("    Quit it and start it again yourself.")
         return 1
 
-    command = _resume_command(session, kind)
+    try:
+        command = _resume_command(session, kind)
+    except Unconfirmed as exc:
+        say(f"This session was handed conversation {exc}, but nothing confirms "
+            f"it is pid {pid}'s own,")
+        say("    and its command resumes nothing, so a restart would bring it "
+            "back empty. Quit it and start it again yourself.")
+        return 1
     if dry_run:
         say(f"Would quit {cwd} (pid {pid}, {kind}) and bring it back in the "
             f"same tab as: {command}")
@@ -155,8 +162,12 @@ def relaunch(pid: int, cwd: str, kind: str, *, dry_run: bool = False,
     # conversation loading. An unreadable loop is not judged stale: stopping
     # a replay that was the right command would cost the session a restart.
     replay = _launch_command(session)
-    stale = (bool(loop) and "$rlNext=" not in loop
-             and agents_mod.resuming(kind, replay) != replay)
+    # A replay that brings back nothing: Claude's bare `--resume` or no
+    # resume at all (what `resuming` rewrites), or, for a kind `resuming`
+    # leaves alone, any command that does not resume (Codex's plain `codex`).
+    stale = (bool(loop) and "$rlNext=" not in loop and bool(replay)
+             and (agents_mod.resuming(kind, replay) != replay
+                  or not agents_mod.resumes(kind, replay)))
     marker.write_text(command, encoding="utf-8")
     try:
         _spawn_helper(session, shell, kind, command, marker, stale)
@@ -265,16 +276,54 @@ def _resume_command(session, kind: str) -> str:
         argv = session.cmdline()
     except Exception:
         argv = []
-    session_id = None
-    if os.environ.get("CLAUDE_PID") == str(session.pid):
-        session_id = os.environ.get("CLAUDE_CODE_SESSION_ID")
+    try:
+        session_id, unconfirmed = _session_id(session, kind), None
+    except Unconfirmed as exc:
+        session_id, unconfirmed = None, exc
     argv = agents_mod.resume_exactly(kind, argv, session_id)
     # Without the session's id that leaves its argv as it was - possibly a
     # bare `--resume`, no resume at all, or an opening prompt - so it goes
     # through the same rewrite as every launch. A named `--resume <id>` is
     # left as it is.
-    return agents_mod.resuming(kind, discover_mod._format_command(argv)
-                               or agents_mod.for_kind(kind).launch)
+    command = agents_mod.own_server(kind, agents_mod.resuming(
+        kind, discover_mod._format_command(argv) or agents_mod.for_kind(kind).launch))
+    # An id handed down that is not this session's is not used, and the
+    # command resumes as it would have. Where that resumes nothing - a Codex
+    # started as plain `codex` - the restart would end the session and start
+    # an empty one, so it is refused before anything is ended.
+    if unconfirmed is not None and not agents_mod.resumes(kind, command):
+        raise unconfirmed
+    return command
+
+
+def _session_id(session, kind: str) -> str | None:
+    """The conversation `session` holds, from what it hands the commands it
+    runs - or None, which leaves the restart resuming as its command does.
+
+    An inherited variable could be an outer session's, so the id is taken
+    only with a second source saying it is this one's: the pid the kind
+    hands with it (Claude Code), or, for a kind that hands none (Codex), the
+    session's own process holding that conversation's file open
+    (discover.held_threads).
+
+    An id that is there and not confirmed raises Unconfirmed, for
+    `_resume_command` to decide on.
+    """
+    agent = agents_mod.for_kind(kind)
+    claimed = os.environ.get(agent.session_id_env) if agent.session_id_env else None
+    if not claimed:
+        return None
+    if agent.session_pid_env:
+        confirmed = os.environ.get(agent.session_pid_env) == str(session.pid)
+    else:
+        confirmed = claimed in discover_mod.held_threads(session.pid, kind)
+    if not confirmed:
+        raise Unconfirmed(claimed)
+    return claimed
+
+
+class Unconfirmed(Exception):
+    """A session id handed down that nothing confirms is this session's."""
 
 
 def _launch_command(session) -> str:
@@ -496,7 +545,7 @@ def _bring_back(session_pid, session_created, shell_pid, shell_created, kind,
         return "cancelled", (f"pid {session_pid}: the restart was called off "
                              "- left running")
     try:
-        send_keys(session_pid, agents_mod.for_kind(kind).quit_keys)
+        send_keys(session_pid, agents_mod.for_kind(kind).quit_keys, session_created)
     except OSError as exc:
         _note(f"could not write the quit keys to pid {session_pid}: {exc}")
 
@@ -653,12 +702,19 @@ def type_into_console(shell_pid: int, text: str) -> None:
     _write_input(shell_pid, _key_records(text) + _key_records("{Enter}"))
 
 
-def send_keys(pid: int, keys) -> None:
+def send_keys(pid: int, keys, created: float | None = None) -> None:
     """Write an agent's quit keys (`agents.Agent.quit_keys`) into `pid`'s
-    console input, one at a time - see KEY_PAUSE_SECONDS."""
+    console input, one at a time - see KEY_PAUSE_SECONDS.
+
+    Given its `created` time, it stops once `pid` is no longer that process:
+    an idle Codex quits on the first of its two Ctrl+C (measured, 0.162.1),
+    and attaching to a console that has gone fails, which read as a quit
+    that did not work."""
     for i, key in enumerate(keys):
         if i:
             time.sleep(KEY_PAUSE_SECONDS)
+            if created is not None and not _alive(pid, created):
+                return
         _write_input(pid, _key_records(key))
 
 

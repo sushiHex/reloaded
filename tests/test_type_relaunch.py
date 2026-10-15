@@ -56,7 +56,7 @@ def test_a_codex_tab_gets_the_codex_launcher(typed):
     main_mod._type_relaunch(_session(agent="codex"))
 
     body = script.read_text(encoding="utf-8")
-    assert "codex resume --last" in body
+    assert "codex resume --no-daemon --last" in body
     assert "claude --dangerously-skip-permissions" not in body
 
 
@@ -65,7 +65,7 @@ def test_a_captured_command_is_used(typed):
 
     main_mod._type_relaunch(_session(agent="codex", command="codex --profile fast"))
 
-    assert "codex --profile fast" in script.read_text(encoding="utf-8")
+    assert "codex --no-daemon --profile fast" in script.read_text(encoding="utf-8")
 
 
 def test_a_claude_tab_is_unchanged(typed):
