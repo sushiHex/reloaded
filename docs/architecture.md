@@ -40,7 +40,12 @@ for them, taken from the one saved window that holds the most of what this one
 does. They fall back to the order their agents started where that window holds
 other kinds there, or where two saved windows match equally. A swap of two such
 tabs is therefore not recorded, but a correction made in `reloaded edit` is
-kept (#77). A window whose tab strip could not be read is left out of the
+kept (#77). A tab opened by hand shows its agent's own title (Codex's reads
+`retro | retro`), which names no repository; it keeps its place if the title
+names, as a word of its own, exactly one directory among the window's sessions
+no other title took. Otherwise its session goes to the end of the window, in
+start order. This only orders tabs, so it stays out of `resolve_tab`, which
+teardown aims by. A window whose tab strip could not be read is left out of the
 capture rather than filled in by shell, which would put its tabs in start
 order; its sessions are then missing, and the save is refused. A restore then
 skips a tab only when that directory and agent kind are both already running.

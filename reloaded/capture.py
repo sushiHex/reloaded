@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import re
 from collections import Counter, deque
 
 from . import agents, discover, tabs, win32
@@ -41,6 +42,14 @@ def resolve_tab(
     return None
 
 
+def _names(title: str, cwd: str) -> bool:
+    """Whether `title` holds the name of directory `cwd` as a word of its own -
+    not as part of a longer name, so "hermes-realtime" does not name `hermes`."""
+    name = tab_title(cwd)
+    return bool(name) and re.search(
+        rf"(?<![\w.-]){re.escape(name)}(?![\w.-])", title, re.IGNORECASE) is not None
+
+
 def build_layout(
     windows_data: list[dict],
     monitors: list[Monitor],
@@ -68,15 +77,14 @@ def build_layout(
     # Once each, across the whole layout: two titles can resolve to one
     # session, and a duplicate would launch it twice against one transcript.
     taken: set[int] = set()
-    # Each window's titles that name a live repo: (bare title, kind or None,
-    # cwd, low_confidence).
+    # Each window's titles, in strip order: (bare title, kind or None, cwd,
+    # low_confidence), cwd None where the title names no live repo.
     placed: list[list[tuple]] = []
     for wd in windows_data:
         placed.append([])
         for title in wd.get("titles", []):
             resolved = resolve_tab(title, title_map, live, repos_root)
-            if resolved is not None:
-                placed[-1].append(agents.title_kind(title) + resolved)
+            placed[-1].append(agents.title_kind(title) + (resolved or (None, False)))
     # One session per title, so a window titled `retro, meta, retro` keeps
     # that order. A session whose window is known belongs to that window only.
     # A title whose mark names its kind takes a session of that kind or none,
@@ -86,7 +94,7 @@ def build_layout(
     for marked in (True, False):
         for w, wd in enumerate(windows_data):
             for i, (_bare, kind, cwd, _low) in enumerate(placed[w]):
-                if (kind is not None) != marked:
+                if cwd is None or (kind is not None) != marked:
                     continue
                 match = next((s for s in pool if s.pid not in taken
                               and norm(s.cwd) == norm(cwd)
@@ -95,6 +103,26 @@ def build_layout(
                 if match is not None:
                     taken.add(match.pid)
                     matches[w, i] = match
+    # A tab opened by hand shows its agent's own title - Codex's reads
+    # "retro | retro" - which names no repo, so its session went to the end of
+    # the window, in start order (#77). Such a title keeps its place if it
+    # names exactly one directory among the sessions in this window that no
+    # title took. Unmarked titles only: a marked one names a kind, and is
+    # that kind's or nothing. Not in resolve_tab, which teardown aims by: this
+    # orders tabs, and is not good enough to act on.
+    for w, wd in enumerate(windows_data):
+        hwnd = wd.get("hwnd")
+        left = [s for s in pool if s.pid not in taken and hwnd is not None and s.hwnd == hwnd]
+        for i, (bare, kind, cwd, _low) in enumerate(placed[w]):
+            if cwd is not None or kind is not None:
+                continue
+            named = {norm(s.cwd) for s in left if _names(bare, s.cwd)}
+            match = next((s for s in left if s.pid not in taken and norm(s.cwd) in named),
+                         None) if len(named) == 1 else None
+            if match is not None:
+                taken.add(match.pid)
+                matches[w, i] = match
+                placed[w][i] = (tab_title(match.cwd), None, match.cwd, False)
     windows: list[Window] = []
     for w, wd in enumerate(windows_data):
         hwnd = wd.get("hwnd")
