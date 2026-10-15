@@ -6,6 +6,7 @@ an argument like `/exit` into `C:/Program Files/Git/exit` before Python sees
 it; `keys` refuses one that arrives that way.
 
     python tools/smoke.py setup alpha:claude beta:codex a/twin:claude b/twin:codex
+    python tools/smoke.py setup --fake alpha:claude beta:codex   # or: no real agent
     python -m reloaded --layout smoke up
     python tools/smoke.py wait 4
     python tools/smoke.py screen alpha
@@ -39,6 +40,7 @@ HOME = pathlib.Path.home()
 ROOT = HOME / "reloaded-smoke"
 LAYOUTS = HOME / ".reloaded" / "layouts"
 BACKUP = ROOT / ".backup" / "default.json"
+FAKES = ROOT / ".fakes"
 LAYOUT = LAYOUTS / "smoke.json"
 
 
@@ -50,25 +52,50 @@ def _digest(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
 
 
+def _build_fakes() -> pathlib.Path:
+    """tools/fake_agent.cs compiled as claude.exe and codex.exe, for a run
+    that must not start a real agent."""
+    csc = pathlib.Path(os.environ.get("WINDIR", r"C:\Windows"),
+                       r"Microsoft.NET\Framework64\v4.0.30319\csc.exe")
+    if " " in str(FAKES):
+        # The launcher splices the command into PowerShell unquoted.
+        sys.exit(f"{FAKES} has a space in it; the fakes cannot be launched from there")
+    FAKES.mkdir(parents=True, exist_ok=True)
+    source = pathlib.Path(__file__).with_name("fake_agent.cs")
+    for agent in agents.AGENTS.values():
+        subprocess.run([str(csc), "/nologo", f"/out:{FAKES / agent.process}", str(source)],
+                       check=True)
+    return FAKES
+
+
 def setup(*specs: str) -> None:
     """Repos under ~/reloaded-smoke, one per `name:kind`, none with a
     conversation, and a one-window layout `smoke` holding them in order.
-    Refused while a backup exists: by then the default layout may hold smoke
-    tabs, and backing that up would lose the clean copy."""
+    With `--fake` first, each tab runs tools/fake_agent.cs in place of its
+    agent. Refused while a backup exists: by then the default layout may hold
+    smoke tabs, and backing that up would lose the clean copy."""
+    fake = bool(specs) and specs[0] == "--fake"
+    specs = specs[fake:]
     if BACKUP.exists():
         sys.exit(f"{BACKUP} exists: `teardown` the last run first")
+    fakes = _build_fakes() if fake else None
     BACKUP.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(LAYOUTS / "default.json", BACKUP)
     print("backed up default.json", _digest(BACKUP))
     tabs_ = []
     for spec in specs:
         name, _, kind = spec.partition(":")
+        agent = agents.for_kind(kind)
         repo = ROOT / pathlib.Path(name)
         repo.mkdir(parents=True, exist_ok=True)
         subprocess.run(["git", "init", "-q", str(repo)], check=True)
+        # The kind's own launch, with the fake's path for its binary: deploy
+        # keeps a command's program as written.
+        command = (" ".join([str(fakes / agent.process)] + agent.launch.split()[1:])
+                   if fakes else "")
         tabs_.append({"cwd": str(repo), "title": tab_title(str(repo)),
                       "low_confidence": False, "pinned": True,
-                      "agent": agents.for_kind(kind).kind, "command": ""})
+                      "agent": agent.kind, "command": command})
         print(f"  {tabs_[-1]['agent']:6} {repo}")
     monitor = win32.list_monitors()[0]
     LAYOUT.write_text(json.dumps({
