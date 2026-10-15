@@ -83,6 +83,10 @@ class Agent:
     # Terminal 1.24: `wt --title` keeps it, UIA returns it, and the tab strip
     # draws nothing for it. See `tab_label` and `title_kind`.
     title_mark: str = ""
+    # Subcommands that run a background server rather than a session. Such a
+    # process has this kind's image name and a directory of its own, and is
+    # nobody's tab: discovery skips one whose first argument is listed.
+    services: tuple = ()
 
 
 def _codex_home() -> str:
@@ -170,6 +174,12 @@ CODEX = Agent(
     resume_tokens=("resume",),
     sessions_dir=os.path.join(_codex_home(), "sessions"),
     title_mark="⁠",  # WORD JOINER
+    # 0.162.1 keeps a managed daemon running with no parent at all, in
+    # ~/.codex/app-server-daemon/workdir: `codex.exe app-server --listen
+    # unix:// ... --managed-daemon` and `codex.exe app-server daemon
+    # pid-update-loop`. Counted as sessions, they were two Codex tabs no
+    # capture could find (measured 2026-10-15).
+    services=("app-server",),
 )
 
 AGENTS = {a.kind: a for a in (CLAUDE, CODEX)}
