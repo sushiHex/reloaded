@@ -189,7 +189,42 @@ def test_an_agent_past_the_search_depth_is_not_a_host(monkeypatch):
     assert discover_mod.live_sessions() == {norm(REPOS + r"\eta"): 8}
 
 
+def _with_argv(monkeypatch, argv):
+    """psutil as `_stub` left it, and each process's command line."""
+    stubbed = sys.modules["psutil"].Process
+
+    def process(pid):
+        proc = stubbed(pid)
+        proc.cmdline = lambda: argv[pid]
+        return proc
+
+    monkeypatch.setattr(sys.modules["psutil"], "Process", process)
+
+
+def test_codexs_background_server_is_not_a_session(monkeypatch):
+    """Codex 0.162.1's managed daemon: two codex.exe with no parent, in a
+    directory of their own, both reported as tabs that no capture found."""
+    daemon = r"C:\Users\k\.codex\app-server-daemon\workdir"
+    _stub(monkeypatch, [_Proc(13, "codex.exe", daemon, ancestors=()),
+                        _Proc(14, "codex.exe", daemon, ancestors=()),
+                        _Proc(15, "codex.exe", REPOS + r"\beta")])
+    _with_argv(monkeypatch, {
+        13: ["codex.exe", "app-server", "--listen", "unix://", "--managed-daemon"],
+        14: ["codex.exe", "app-server", "daemon", "pid-update-loop"],
+        15: ["codex.exe", "resume", "--last"]})
+
+    assert discover_mod.live_sessions() == {norm(REPOS + r"\beta"): 15}
+
+
 # ── failures that must not drop a real session ───────────────────────────
+
+
+def test_an_unreadable_command_line_keeps_the_session(monkeypatch):
+    _stub(monkeypatch, [_Proc(17, "codex.exe", REPOS + r"\beta")])
+    _with_argv(monkeypatch, {})  # KeyError: as an access-denied read would
+
+    assert discover_mod.live_sessions() == {norm(REPOS + r"\beta"): 17}
+
 
 
 def test_a_reused_parent_pid_does_not_drop_the_session(monkeypatch):

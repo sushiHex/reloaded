@@ -303,8 +303,22 @@ def _agent_processes(table: dict) -> Iterator[tuple[int, str, str]]:
             cwd = proc.cwd()
         except Exception:
             continue
-        if cwd:
+        if cwd and not _serving(proc, agents_mod.AGENTS[kind].services):
             yield pid, kind, cwd
+
+
+def _serving(proc, services: tuple) -> bool:
+    """Whether an agent process is one of its kind's background servers
+    (agents.Agent.services). Its command line is read only for a kind that
+    has any, and an unreadable one is a session: dropping a real session is
+    the worse failure."""
+    if not services:
+        return False
+    try:
+        argv = proc.cmdline()
+    except Exception:
+        return False
+    return len(argv) > 1 and argv[1].lower() in services
 
 
 class Session(NamedTuple):
