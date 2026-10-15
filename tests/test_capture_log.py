@@ -302,6 +302,58 @@ def test_a_malformed_saved_command_cannot_fail_the_record():
     main_mod.layout_mod.tab_changes(before, _tabs(("app", "claude", "claude")))
 
 
+# ── order within a window (#80) ──────────────────────────────────────────
+
+
+def _windows(*windows):
+    """Windows given as lists of (repo, agent)."""
+    return make_layout([make_window(
+        [0, 0, 800, 600],
+        [Tab(cwd=rf"C:\repos\{r}", title=r, agent=a) for r, a in tabs],
+    ) for tabs in windows])
+
+
+def test_a_reorder_is_recorded_in_its_new_order(capture):
+    """Diagnosing #77 meant reconstructing the saved order from a restore's
+    stagger lines: nothing recorded that a capture had reordered the window."""
+    capture["live"] = _windows([("retro", "codex"), ("retro", "claude"), ("app", "claude")])
+    capture["run"]()
+    capture["live"] = _windows([("retro", "claude"), ("app", "claude"), ("retro", "codex")])
+
+    [line] = _lines(capture["run"]())[1:]
+
+    assert "reordered 1 window(s) (claude retro, claude app, codex retro)" in line
+
+
+def test_the_windows_trading_places_records_nothing(capture):
+    """Windows are saved in z-order, which changes whenever one is focused."""
+    a, b = [("app", "claude"), ("beta", "claude")], [("retro", "codex"), ("meta", "claude")]
+    capture["live"] = _windows(a, b)
+    before = capture["run"]()
+    capture["live"] = _windows(b, a)
+
+    assert capture["run"]() == before
+
+
+def test_a_gain_or_a_move_between_windows_is_not_also_a_reorder():
+    """Only the tabs both windows hold are compared."""
+    before = _windows([("app", "claude"), ("beta", "claude"), ("gamma", "claude")],
+                      [("retro", "codex"), ("meta", "claude")])
+    after = _windows([("app", "claude"), ("new", "claude"), ("gamma", "claude")],
+                     [("retro", "codex"), ("beta", "claude"), ("meta", "claude")])
+
+    assert main_mod.layout_mod.reordered(before, after) == []
+
+
+def test_a_window_two_saved_windows_match_equally_is_not_compared():
+    """Which one it was is unknowable, so neither is called its old order."""
+    before = _windows([("app", "claude"), ("beta", "claude")],
+                      [("beta", "claude"), ("app", "claude")])
+    after = _windows([("beta", "claude"), ("app", "claude")])
+
+    assert main_mod.layout_mod.reordered(before, after) == []
+
+
 def test_the_line_names_the_layout_and_its_writer(capture):
     [line] = _lines(capture["run"]())
 

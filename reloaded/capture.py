@@ -6,7 +6,7 @@ import os
 from collections import Counter, deque
 
 from . import agents, discover, tabs, win32
-from .layout import LAYOUT_VERSION, Layout, Monitor, Tab, Window
+from .layout import LAYOUT_VERSION, Layout, Monitor, Tab, Window, matching_window
 from .paths import norm, tab_title
 
 
@@ -156,24 +156,14 @@ def keep_saved_order(tabs: list[Tab], previous: Layout | None,
     holds the same title and directory with exactly these kinds; anywhere else
     start order stands.
     """
-    def held(ts) -> Counter:
-        return Counter((norm(t.cwd), t.agent) for t in ts)
-
     groups: dict[tuple[str, str], list[int]] = {}
     for i in sorted(movable):
         groups.setdefault((tabs[i].title, norm(tabs[i].cwd)), []).append(i)
     mixed = {key: places for key, places in groups.items()
              if len({tabs[i].agent for i in places}) > 1}
-    if not mixed or previous is None:
+    window = matching_window(tabs, previous.windows) if mixed and previous else None
+    if window is None:
         return
-    # Windows are saved by position, which shifts, so the saved one is found
-    # by what it holds - and not at all where two hold this much of it.
-    here = held(tabs)
-    scored = sorted(((sum((here & held(w.tabs)).values()), i)
-                     for i, w in enumerate(previous.windows)), reverse=True)
-    if not scored or scored[0][0] == 0 or (len(scored) > 1 and scored[1][0] == scored[0][0]):
-        return
-    window = previous.windows[scored[0][1]]
     for (title, cwd), places in mixed.items():
         saved = [t.agent for t in window.tabs if t.title == title and norm(t.cwd) == cwd]
         queues: dict[str, deque] = {}
