@@ -218,27 +218,33 @@ def reordered(before: Layout | None, after: Layout) -> list[list[tuple[str, str]
     """The new tab order, as session keys, of each window of `after` whose
     tabs run in a different order than in its window of `before` (#80).
 
-    Only the tabs both windows hold are compared, so a tab gained, lost or
-    moved to another window is not also a reorder, and neither is the order
-    of the windows themselves.
+    A window is reordered when the tabs both windows hold cannot all keep
+    their order - when their longest common subsequence is shorter than what
+    they share. So a tab gained, lost or moved to another window is not also
+    a reorder, nor is closing one of two alike, nor the order of the windows
+    themselves. Tabs are told apart by command too, so two conversations of
+    one kind in one directory trading places is one.
     """
-    def shared(keys, other):
-        left = Counter(other)
-        kept = []
-        for k in keys:
-            if left[k]:
-                left[k] -= 1
-                kept.append(k)
-        return kept
+    def keys(ts):
+        return [session_key(t) + (str(t.command or ""),) for t in ts]
+
+    def in_order(a, b) -> int:
+        row = [0] * (len(b) + 1)
+        for x in a:
+            diagonal = 0
+            for j, y in enumerate(b, 1):
+                diagonal, row[j] = row[j], (diagonal + 1 if x == y
+                                            else max(row[j], row[j - 1]))
+        return row[-1]
 
     moved = []
     for w in after.windows:
         old = matching_window(w.tabs, before.windows) if before is not None else None
         if old is None:
             continue
-        now, was = [session_key(t) for t in w.tabs], [session_key(t) for t in old.tabs]
-        if shared(now, was) != shared(was, now):
-            moved.append(now)
+        now, was = keys(w.tabs), keys(old.tabs)
+        if in_order(now, was) < sum((Counter(now) & Counter(was)).values()):
+            moved.append([k[:2] for k in now])
     return moved
 
 

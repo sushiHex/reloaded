@@ -345,6 +345,24 @@ def test_a_gain_or_a_move_between_windows_is_not_also_a_reorder():
     assert main_mod.layout_mod.reordered(before, after) == []
 
 
+def test_closing_one_of_two_alike_tabs_is_not_a_reorder():
+    """[A, B, A] to [B, A]: the survivors kept their order, whichever A went.
+    Pairing each tab with its first namesake said otherwise (Codex review)."""
+    before = _windows([("app", "claude"), ("beta", "claude"), ("app", "claude")])
+    after = _windows([("beta", "claude"), ("app", "claude")])
+
+    assert main_mod.layout_mod.reordered(before, after) == []
+    assert main_mod.layout_mod.reordered(after, before) == []
+
+
+def test_two_conversations_of_one_kind_trading_places_is_a_reorder():
+    before = _tabs(("app", "claude", "claude --resume 1"), ("app", "claude", "claude --resume 2"))
+    after = _tabs(("app", "claude", "claude --resume 2"), ("app", "claude", "claude --resume 1"))
+
+    assert main_mod.layout_mod.reordered(before, after) == [
+        [(r"c:\repos\app", "claude")] * 2]
+
+
 def test_a_window_two_saved_windows_match_equally_is_not_compared():
     """Which one it was is unknowable, so neither is called its old order."""
     before = _windows([("app", "claude"), ("beta", "claude")],
