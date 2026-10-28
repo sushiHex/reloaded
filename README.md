@@ -109,9 +109,10 @@ A bare `restart` saves a fresh capture over the selected layout before exiting
 sessions. `--layout` selects a file; it does **not** restrict `down` or a full
 `restart` to that layout's members. Name repositories when targeting a subset.
 
-Hand-started sessions can be upgraded to Reloaded's launcher during a named
-restart. This changes the shell's behavior: after a successful agent run ends,
-its tab closes automatically. See [restart behavior](docs/usage.md#restarting-sessions)
+A tab Reloaded launches stays open when its session ends: press Enter to start
+it again, or Ctrl+C for a plain shell. Only `down` closes it. Hand-started
+sessions can be upgraded to Reloaded's launcher during a named restart, after
+which their tab behaves the same way. See [restart behavior](docs/usage.md#restarting-sessions)
 for timeouts, fallback tabs, and concurrent restart limits.
 
 ## For agents

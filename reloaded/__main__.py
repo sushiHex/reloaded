@@ -1066,8 +1066,8 @@ def _preview_restart(plans) -> None:
             # that until after the fact.
             print("    Started by hand, so restarting it changes the tab:")
             print("    its tab would be upgraded to the reloaded launcher, "
-                  "which self-closes")
-            print("    when the session exits.")
+                  "which offers to start")
+            print("    the session again (Enter) when it exits.")
     print("\nDry run — no marker written, nothing sent.")
 
 
@@ -1157,8 +1157,9 @@ def _report_never_exited(s: _Restarting) -> bool:
     Its marker is deliberately left armed. "Timed out" only means it had not
     exited within EXIT_TIMEOUT_SECONDS, not that it never will - and if the
     marker is gone when it does, the shell breaks out of the restart loop and
-    CLOSE_TAB_IF_STARTED closes the tab. Disarming here would destroy the very
-    session this command was asked to bring back. Left armed, the worst case is
+    the tab waits for an Enter (deploy.ended_prompt) instead of bringing the
+    session back. Disarming here would undo the very restart this command was
+    asked for. Left armed, the worst case is
     a late restart, which is what was requested, bounded by the TTL.
     """
     print(f"    {s.cwd} never exited — still running as pid {s.pid}, not restarted")
@@ -1209,7 +1210,7 @@ def _relaunch_by_typing(s: _Restarting) -> bool:
         print(f"    [warn] {s.cwd} did not come back — start it by hand")
         return False
     print(f"    restarted in place -> {s.cwd} (pid {pid}); its tab is "
-          "now upgraded and will self-close on exit")
+          "now upgraded: when the session exits, Enter starts it again")
     return True
 
 
@@ -1271,8 +1272,8 @@ def _reopen_in_a_new_tab(s: _Restarting) -> bool:
 # A marker is deleted in exactly one place above: after the tab that could have
 # read it is confirmed gone. Everywhere else, deleting means guessing that a
 # live shell will not read it, and that guess is unrecoverable when wrong - the
-# shell leaves the restart loop, CLOSE_TAB_IF_STARTED fires, and the session
-# the restart was meant to bring back is destroyed instead. A timed-out target
+# shell leaves the restart loop, and the session the restart was meant to
+# bring back waits at its tab's prompt instead. A timed-out target
 # is therefore left armed, because "did not exit in 20s" is not "will never
 # exit". The rest of staleness is handled where being wrong costs nothing:
 # deploy's TTL makes an old marker inert, and _sweep_stale_markers clears the

@@ -1,7 +1,7 @@
 """Each tab relaunches with its own agent's command.
 
 Only the invocation in the middle differs by kind. The environment hygiene
-around it, the restart loop and the self-closing guard are properties of the
+around it, the restart loop and the ended prompt are properties of the
 shell and apply to every tab.
 """
 from __future__ import annotations
@@ -64,9 +64,8 @@ def test_the_environment_hygiene_applies_to_every_kind():
         launcher_command(CWD, 0, 0, agent="codex")
 
 
-def test_the_self_closing_guard_applies_to_every_kind():
-    assert "Stop-Process -Id $PID" in \
-        deploy_mod.relaunch_script(CWD, 0, agent="codex")
+def test_the_ended_prompt_applies_to_every_kind():
+    assert "$rlAns=Read-Host" in deploy_mod.relaunch_script(CWD, 0, agent="codex")
 
 
 def test_a_codex_tab_carries_its_own_restart_marker():

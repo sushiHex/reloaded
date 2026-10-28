@@ -6,7 +6,6 @@ import reloaded.deploy as deploy_mod
 from reloaded.deploy import (
     CHILD_SESSION_CLEAR,
     CLAUDE_STARTED_AT,
-    CLOSE_TAB_IF_STARTED,
     RESUME_SUPPRESSOR,
     LaunchResult,
     PlanEntry,
@@ -58,29 +57,23 @@ def test_launcher_clears_the_inherited_child_session_marker():
     assert cmd.index(CHILD_SESSION_CLEAR) < cmd.index("claude ")
 
 
-def test_launcher_closes_its_tab_once_the_session_ends():
-    """The tab hosts exactly one session, so it should not outlive it at a bare
-    shell prompt - that is what stranded tabs in windows kept open by a single
-    holdout."""
+def test_launcher_never_closes_its_tab():
+    """Quitting to restart is common, and a closed tab's place in its window
+    is gone for good. When the session ends, the tab waits for an Enter."""
     cmd = launcher_command(r"C:\repos\editor-app", 0, 1024)
     assert cmd.index(CLAUDE_STARTED_AT) < cmd.index("claude ")
-    assert cmd.index(CLOSE_TAB_IF_STARTED) > cmd.index("claude ")
+    assert cmd.index("Read-Host") > cmd.index("claude ")
+    # The one exit left is `down`'s, behind its stop file.
+    assert cmd.count("{ exit }") == 1
+    assert cmd.index("$rlStop") < cmd.index("{ exit }") < cmd.index("Read-Host")
 
 
-def test_launcher_keeps_a_failed_launch_on_screen():
-    """The self-close is gated on elapsed time so a claude that dies instantly
-    leaves its tab (and its error) visible, which is why -NoExit exists."""
-    cmd = launcher_command(r"C:\repos\editor-app", 0, 1024)
-    assert f"-gt {deploy_mod.STARTUP_GRACE_SECONDS}" in cmd
-    assert deploy_mod.STARTUP_GRACE_SECONDS > 0
-
-
-def test_launcher_self_close_survives_wt_argument_escaping():
+def test_launcher_ended_prompt_survives_wt_argument_escaping():
     """wt treats ';' inside an argument as a subcommand separator, so an
     unescaped statement would be torn into extra tabs rather than run."""
     cmd = launcher_command(r"C:\repos\editor-app", 0, 1024)
     escaped = wt_argv_single_tab(r"C:\repos\editor-app", 1024)[-1]
-    assert "{ exit }" in escaped
+    assert "$rlAns=Read-Host" in escaped
     unescaped = [
         i for i, ch in enumerate(escaped) if ch == ";" and (i == 0 or escaped[i - 1] != "\\")
     ]

@@ -11,16 +11,17 @@ recognized session and every one of them actually exited; a window with an
 unrelated manual tab, or a holdout that didn't quit in time, is left open
 rather than force-closed.
 
-A tab launched by this package closes itself once its session ends
-(deploy.CLOSE_TAB_IF_STARTED), which is what keeps a window with one holdout
-from stranding the tabs that did exit - they used to sit at a bare shell prompt
-until the whole window could be closed. It also means a window may be gone
-before the close below runs; see is_wt_window.
+A tab does not close itself when its session ends: one this package launched
+waits for an Enter to start it again (deploy.ended_prompt), and one started by
+hand sits at its shell's prompt. So close_dead_tabs invokes the Close button of
+each tab whose session it saw exit, which is what keeps a window with one
+holdout from stranding the tabs that did exit. Tabs launched before that
+change still close themselves once their session has run 10s, so a window may
+be gone before the close below runs; see is_wt_window.
 
-A tab started by hand does not close itself, so close_dead_tabs invokes its
-Close button. Both that and the window close are governed by close_emptied,
-which `restart` turns off: it is about to put a session back into the very tab
-and window that are being emptied.
+Both the tab and the window close are governed by close_emptied, which
+`restart` turns off: it is about to put a session back into the very tab and
+window that are being emptied.
 """
 from __future__ import annotations
 
@@ -30,7 +31,7 @@ from typing import NamedTuple
 
 from . import agents, discover, tabs, win32
 from .capture import resolve_tab
-from .paths import norm
+from .paths import norm, shell_stop
 
 EXIT_TIMEOUT_SECONDS = 20.0
 EXIT_POLL_SECONDS = 0.5
@@ -241,9 +242,9 @@ def _still_has_tabs(hwnd: int) -> bool:
 def close_dead_tabs(plans, exited, still_open=None, log=print) -> int:
     """Close tabs whose session ended but whose shell did not close itself.
 
-    A tab launched by reloaded closes itself once its session ends - see
-    deploy.CLOSE_TAB_IF_STARTED. One started by hand sits in a plain
-    interactive shell and does not, leaving a dead prompt in the strip where a
+    Neither kind of tab closes itself: one reloaded launched waits for an
+    Enter (deploy.ended_prompt), one started by hand sits in a plain
+    interactive shell, and either leaves a dead prompt in the strip where a
     session used to be. WM_CLOSE is the wrong tool for that: the window may
     hold other live sessions.
 
@@ -340,6 +341,47 @@ def execute_down(
     closed: list[int] = []
     left_open: list[int] = []
 
+    # Its tabs are being emptied for good, so each closes when its session
+    # goes rather than waiting for an Enter that could start it again under
+    # this teardown (deploy.ended_prompt). Removed at the end: a holdout that
+    # quits later is the user's, and gets the prompt.
+    stops = _write_stops(plans) if close_emptied else []
+    try:
+        _down(plans, log, close_emptied, before_exit, kinds,
+              exited, timed_out, closed, left_open)
+    finally:
+        for stop in stops:
+            try:
+                stop.unlink(missing_ok=True)
+            except OSError:
+                pass
+    return {
+        "exited": exited,
+        "timed_out": timed_out,
+        "closed": closed,
+        "left_open": left_open,
+    }
+
+
+def _write_stops(plans) -> list:
+    """A stop file for the shell of every target (paths.shell_stop). One for
+    a shell running no reloaded loop is read by nothing, and removed with the
+    rest."""
+    import psutil
+
+    written = []
+    for t in targets(plans):
+        try:
+            stop = shell_stop(psutil.Process(t.pid).ppid())
+            stop.write_text("stop", encoding="utf-8")
+        except Exception:
+            continue
+        written.append(stop)
+    return written
+
+
+def _down(plans, log, close_emptied, before_exit, kinds,
+          exited, timed_out, closed, left_open) -> None:
     for plan in plans:
         all_exited = True
         for title, cwd, pid, item in plan.targets:
@@ -479,8 +521,8 @@ def execute_down(
             closed.append(plan.hwnd)
             log(f"    closed window 0x{plan.hwnd:X}")
         elif not win32.is_wt_window(plan.hwnd):
-            # Its tabs closed themselves as their sessions ended (see
-            # deploy.CLOSE_TAB_IF_STARTED) and the last one took the window
+            # Its tabs closed - by close_dead_tabs, or by themselves in a tab
+            # launched before deploy.ended_prompt - and the last one took the window
             # with it, so there was nothing left for WM_CLOSE to reach. Racing
             # us to the same outcome is success, not a failure to report.
             closed.append(plan.hwnd)
@@ -488,10 +530,3 @@ def execute_down(
         else:
             left_open.append(plan.hwnd)
             log(f"    [warn] could not close window 0x{plan.hwnd:X}")
-
-    return {
-        "exited": exited,
-        "timed_out": timed_out,
-        "closed": closed,
-        "left_open": left_open,
-    }
