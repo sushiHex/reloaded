@@ -343,14 +343,16 @@ def execute_down(
 
     # Its tabs are being emptied for good, so each closes when its session
     # goes rather than waiting for an Enter that could start it again under
-    # this teardown (deploy.ended_prompt). Removed at the end: a holdout that
-    # quits later is the user's, and gets the prompt.
-    stops = _write_stops(plans) if close_emptied else []
+    # this teardown (deploy.ended_prompt). Each is written as its target's
+    # turn comes - targets wait up to EXIT_TIMEOUT_SECONDS each, and one
+    # written at the start would be stale by the eighth. Removed at the end: a
+    # holdout that quits later is the user's, and gets the prompt.
+    stops = [] if close_emptied else None
     try:
-        _down(plans, log, close_emptied, before_exit, kinds,
+        _down(plans, log, close_emptied, before_exit, kinds, stops,
               exited, timed_out, closed, left_open)
     finally:
-        for stop in stops:
+        for stop in stops or ():
             try:
                 stop.unlink(missing_ok=True)
             except OSError:
@@ -363,28 +365,27 @@ def execute_down(
     }
 
 
-def _write_stops(plans) -> list:
-    """A stop file for the shell of every target (paths.shell_stop). One for
-    a shell running no reloaded loop is read by nothing, and removed with the
-    rest."""
+def _write_stop(pid: int, stops: list) -> None:
+    """A stop file for the shell of session `pid` (paths.shell_stop), kept
+    in `stops` for removal. One for a shell running no reloaded loop is read
+    by nothing."""
     import psutil
 
-    written = []
-    for t in targets(plans):
-        try:
-            stop = shell_stop(psutil.Process(t.pid).ppid())
-            stop.write_text("stop", encoding="utf-8")
-        except Exception:
-            continue
-        written.append(stop)
-    return written
+    try:
+        stop = shell_stop(psutil.Process(pid).ppid())
+        stop.write_text("stop", encoding="utf-8")
+    except Exception:
+        return
+    stops.append(stop)
 
 
-def _down(plans, log, close_emptied, before_exit, kinds,
+def _down(plans, log, close_emptied, before_exit, kinds, stops,
           exited, timed_out, closed, left_open) -> None:
     for plan in plans:
         all_exited = True
         for title, cwd, pid, item in plan.targets:
+            if stops is not None:
+                _write_stop(pid, stops)
             arm = None if before_exit is None else (lambda c=cwd: before_exit(c))
             # How this session is asked to quit depends on which CLI it is.
             # An unknown cwd is Claude Code, which is what every teardown

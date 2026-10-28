@@ -147,12 +147,14 @@ before the sessions it started have finished starting. For the same reason a
 deploy only reports a tab as failed once its own staggered turn has passed.
 A tab does not close when its session ends. It prints that the session ended
 and waits: a bare Enter starts the same command again (the exact resume a
-`restart --self` last handed it, where there was one), anything typed runs as
-it would at the shell's prompt, and Ctrl+C leaves for that prompt. `down` is
-the exception: it leaves a stop file for each target's shell
-(`paths.shell_stop`, read once, two minutes' life) before quitting the
-session, and that tab closes as tabs used to, so an Enter cannot start a
-session again under the teardown closing it.
+`restart --self` last handed it, where there was one), a typed command runs in
+the session's place inside the loop, so restart markers still reach it, and
+Ctrl+C leaves for the shell's prompt. `down` is the exception: as each
+target's turn comes, it leaves a stop file for that shell (`paths.shell_stop`,
+read once, two minutes' life, removed when the teardown ends). The loop reads
+it before any restart marker, and that tab closes as tabs used to, so neither
+an Enter nor a marker left by a timed-out `restart` can start a session again
+under the teardown closing it.
 
 A Claude command Reloaded launches always resumes something
 (`agents.resuming`): a bare `--resume`, which opens a picker, becomes

@@ -127,13 +127,79 @@ def test_enter_starts_the_ended_session_again_in_its_tab(run_launcher):
     assert "ended. Enter starts it again" in proc.stdout
 
 
-def test_anything_typed_runs_and_hands_the_shell_back(run_launcher, tmp_path):
-    """Its prompt is the shell's: relaunch's helper types a resume command
-    there when no loop took its marker, and a teardown resend's `/exit` lands
-    there as text - neither may start the session again."""
+def test_a_typed_command_runs_in_the_session_s_place(run_launcher, tmp_path):
+    """relaunch's helper types a resume command there when no loop took its
+    marker; a teardown resend's `/exit` can land there as text. Either runs
+    in place of the session - not the session itself - and the tab waits
+    again afterwards."""
     runs, _m, proc = run_launcher(answers="'typed-ran'\n", after="; 'AFTER'")
     assert runs == 1, proc.stderr
     assert "typed-ran" in proc.stdout and "AFTER" in proc.stdout
+    assert proc.stdout.count("ended. Enter starts it again") == 2
+
+
+def test_a_typed_command_is_restarted_by_a_marker(run_launcher, tmp_path, monkeypatch):
+    """Found by review: run outside the loop, a typed agent ignored the
+    restart marker `restart <repo>` armed, and the restart failed with the
+    tab still open. The stub stands in for an agent typed at the prompt that
+    `restart` then asks to quit: it files the shell's own marker on its first
+    run, and the loop brings it back."""
+    monkeypatch.setattr(deploy_mod, "restart_marker_dir", lambda: tmp_path)
+    tally = tmp_path / "runs.txt"
+    (tmp_path / "typed.ps1").write_text(
+        f"Add-Content -LiteralPath '{tally}' 'typed'\n"
+        f"if (-not (Test-Path '{tmp_path}\\filed')) {{\n"
+        f"  New-Item '{tmp_path}\\filed' | Out-Null\n"
+        f"  Set-Content -LiteralPath ('{tmp_path}\\shell-' + $PID + '.marker') 'restart'\n"
+        f"}}\n", encoding="utf-8")
+
+    _runs, _m, proc = run_launcher(answers="typed\n")
+
+    # The session, the typed command, then the marker's restart - of the
+    # tab's own invocation, as a `restart` marker asks.
+    assert tally.read_text(encoding="utf-8").split() == ["run", "typed", "run"], proc.stderr
+
+
+def test_a_restart_marker_does_not_outrank_down_s_stop(run_launcher, tmp_path, monkeypatch):
+    """Found by review: a `restart` that timed out leaves its marker armed,
+    and a `down` right after would have had the session restarted under it."""
+    monkeypatch.setattr(deploy_mod, "restart_marker_dir", lambda: tmp_path)
+    tally = tmp_path / "runs.txt"
+    (tmp_path / "claude.cmd").unlink()
+    (tmp_path / "claude.ps1").write_text(
+        f"Add-Content -LiteralPath '{tally}' 'run'\n"
+        f"Set-Content -LiteralPath ('{tmp_path}\\shell-' + $PID + '.stop') 'stop'\n",
+        encoding="utf-8")
+
+    runs, _m, proc = run_launcher(marker_body="restart", after="; 'AFTER'")
+
+    assert runs == 1, proc.stderr
+    assert "AFTER" not in proc.stdout
+
+
+def test_a_state_path_spelling_the_loop_still_parses(run_launcher, tmp_path, monkeypatch):
+    """Found by review: the loop's text was split at its first `while ($true)`,
+    which a home directory can spell."""
+    odd = tmp_path / "while ($true)"
+    odd.mkdir()
+    monkeypatch.setattr(deploy_mod, "restart_marker_dir", lambda: odd)
+
+    runs, _m, proc = run_launcher(after="; 'AFTER'")
+
+    assert runs == 1 and "AFTER" in proc.stdout, proc.stderr
+
+
+def test_enter_does_not_run_a_marker_refused_as_stale(run_launcher, tmp_path):
+    """Found by review: the stale marker's command was already in `$rlNext`
+    when the loop refused it, and Enter then ran a conversation nobody had
+    asked for."""
+    (tmp_path / "other.cmd").write_text(f"@echo other>>{tmp_path / 'runs.txt'}\r\n",
+                                        encoding="ascii")
+
+    run_launcher(marker_body="other --resume OTHER",
+                 marker_age_seconds=RESTART_MARKER_TTL_SECONDS + 60, answers="\n")
+
+    assert (tmp_path / "runs.txt").read_text(encoding="ascii").split() == ["run", "run"]
 
 
 def test_down_s_stop_file_closes_the_tab(run_launcher, tmp_path, monkeypatch):

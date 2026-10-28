@@ -65,28 +65,24 @@ def ended_prompt(name: str) -> str:
     exit through the tab's own button (teardown.close_dead_tabs).
 
     `down` is the exception: it leaves a stop file for the shell
-    (paths.shell_stop) before quitting the session, and a tab that finds one
-    closes, as tabs always used to. Otherwise an Enter landing between the
-    session's exit and teardown closing the tab would start it again, and the
-    close would end what it had just started.
+    (paths.shell_stop) before quitting the session, and the loop closes the
+    tab when it finds one (restart_loop), as tabs always used to. Otherwise an
+    Enter landing between the session's exit and teardown closing the tab
+    would start it again, and the close would end what it had just started.
 
-    Only an empty answer restarts. Anything typed runs as it would at the
-    shell's prompt, which this then is - including a resume command
-    relaunch's helper types when no loop took its marker - and Ctrl+C leaves
-    for the shell too. End of input reads as $null, not "", so a shell with no
+    Only an empty answer starts the session again: the command the last pass
+    ran (`$rlRan`). Anything typed runs in its place, inside the loop - so
+    restart markers reach it as they reach the session, and a resume command
+    relaunch's helper types when no loop took its marker works. Ctrl+C leaves
+    for the shell. End of input reads as $null, not "", so a shell with no
     console never loops (measured, pwsh 7 and Windows PowerShell 5.1).
     """
-    say = (f"[reloaded] {name} ended. Enter starts it again; anything typed runs "
-           "as a command, and Ctrl+C leaves you at the shell.")
-    return ("$rlStop=$rlOwn -replace '\\.marker$','.stop'; "
-            "if (Test-Path -LiteralPath $rlStop) { "
-            "$rlAge=((Get-Date)-(Get-Item -LiteralPath $rlStop).LastWriteTime).TotalSeconds; "
-            "Remove-Item -LiteralPath $rlStop -Force -ErrorAction SilentlyContinue; "
-            f"if ($rlAge -lt {RESTART_MARKER_TTL_SECONDS}) {{ exit }} }}; "
-            f"Write-Host '{pwsh.escape(say)}' -ForegroundColor DarkGray; "
+    say = (f"[reloaded] {name} ended. Enter starts it again; a typed command runs "
+           "in its place, and Ctrl+C leaves you at the shell.")
+    return (f"Write-Host '{pwsh.escape(say)}' -ForegroundColor DarkGray; "
             "$rlAns=Read-Host; "
             "if ($null -eq $rlAns) { break }; "
-            "if ($rlAns -ne '') { Invoke-Expression $rlAns; break }; "
+            "if ($rlAns -ne '') { $rlNext=$rlAns } else { $rlNext=$rlRan }; "
             "$rlStart=Get-Date")
 
 def nothing_to_resume(folder: str) -> str:
@@ -147,10 +143,30 @@ def restart_loop(cwd: str, invocation: str) -> str:
     checked before the directory's. Only this shell reads it, so a sibling
     tab in the same directory cannot take a request meant for this one.
     """
+    return "".join(_restart_loop_parts(cwd, invocation))
+
+
+def _restart_loop_parts(cwd: str, invocation: str) -> tuple[str, str]:
+    """restart_loop as its setup and its `while`, so that a tab can run the
+    `while` again (deploy.ended_prompt) without the setup clearing `$rlNext`.
+
+    `$rlRan` is the command the pass ran - what Enter brings back - kept apart
+    from `$rlNext`, which a marker the loop then refuses as stale has already
+    overwritten.
+
+    `down`'s stop file (paths.shell_stop) is read straight after the session
+    returns, before any restart marker: a restart left armed by a timed-out
+    `restart` must not bring a session back under the teardown closing it.
+    """
     m = pwsh.escape(str(restart_marker(cwd)))
     own = pwsh.escape(str(restart_marker_dir() / "shell-"))
     body = "; ".join((
-        f"if ($rlNext) {{ Invoke-Expression $rlNext }} else {{ {invocation} }}",
+        f"$rlRan=$rlNext; if ($rlNext) {{ Invoke-Expression $rlNext }} else {{ {invocation} }}",
+        "$rlStop=$rlOwn -replace '\\.marker$','.stop'",
+        "if (Test-Path -LiteralPath $rlStop) { "
+        "$rlAge=((Get-Date)-(Get-Item -LiteralPath $rlStop).LastWriteTime).TotalSeconds; "
+        "Remove-Item -LiteralPath $rlStop -Force -ErrorAction SilentlyContinue; "
+        f"if ($rlAge -lt {RESTART_MARKER_TTL_SECONDS}) {{ exit }} }}",
         f"$rlM=$null; if (Test-Path -LiteralPath $rlOwn) {{ $rlM=$rlOwn }} "
         f"elseif (Test-Path -LiteralPath '{m}') {{ $rlM='{m}' }}",
         "if (-not $rlM) { break }",
@@ -175,15 +191,8 @@ def restart_loop(cwd: str, invocation: str) -> str:
         f"if ($rlAge -gt {RESTART_MARKER_TTL_SECONDS}) {{ break }}",
         "$rlStart=Get-Date",
     ))
-    return (f"$rlNext=$null; $rlOwn='{own}' + $PID + '.marker'; "
+    return (f"$rlNext=$null; $rlOwn='{own}' + $PID + '.marker'; ",
             f"while ($true) {{ {body} }}")
-
-
-def _split_loop(loop: str) -> tuple[str, str]:
-    """restart_loop's text as its setup and its `while`, so that a tab can run
-    the `while` again without the setup clearing `$rlNext`."""
-    at = loop.index("while ($true)")
-    return loop[:at], loop[at:]
 
 
 @functools.lru_cache(maxsize=1)
@@ -257,7 +266,7 @@ def launcher_command(cwd: str, delay: int, size_bytes: int,
     # Enter, markers and all; `break` in ended_prompt leaves for the shell.
     # Its setup runs once: `$rlNext` keeps the command that last ran - an
     # exact resume `--self` handed the loop - so Enter brings that back.
-    setup, loop = _split_loop(restart_loop(cwd, invocation))
+    setup, loop = _restart_loop_parts(cwd, invocation)
     parts.append(f"{setup}while ($true) {{ {loop}; {ended_prompt(name)} }}")
     return "; ".join(parts)
 
