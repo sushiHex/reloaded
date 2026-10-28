@@ -144,8 +144,8 @@ def test_a_mixed_batch_handles_each_by_its_own_kind(world, capsys):
 
 
 def test_the_output_says_the_tab_was_upgraded(world, capsys):
-    """The tab's behaviour changes permanently - it will self-close from now
-    on. That is worth one line rather than a silent change."""
+    """The tab's behaviour changes permanently - it runs the reloaded loop
+    from now on. That is worth one line rather than a silent change."""
     main_mod.cmd_restart(_args(repos=["by-hand"]))
 
     out = capsys.readouterr().out.lower()
@@ -154,13 +154,13 @@ def test_the_output_says_the_tab_was_upgraded(world, capsys):
 
 def test_the_dry_run_warns_that_a_hand_launched_tab_gets_changed(world, capsys):
     """Restarting a hand-launched session rewrites what its tab runs, for good
-    - it self-closes from then on. A preview that reads the same for both kinds
-    hides the one consequence worth previewing."""
+    - it runs the reloaded loop from then on. A preview that reads the same
+    for both kinds hides the one consequence worth previewing."""
     main_mod.cmd_restart(_args(repos=["by-hand"], dry_run=True))
 
     out = capsys.readouterr().out.lower()
     assert "hand" in out
-    assert "self-clos" in out or "upgrad" in out
+    assert "upgrad" in out
 
 
 def test_the_dry_run_does_not_warn_about_a_reloaded_tab(world, capsys):

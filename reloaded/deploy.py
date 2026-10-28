@@ -48,30 +48,42 @@ RESUME_SUPPRESSOR = "$env:CLAUDE_CODE_RESUME_TOKEN_THRESHOLD='999999999'"
 # setting it empty, so children of this shell do not see it at all (verified).
 CHILD_SESSION_CLEAR = "$env:CLAUDE_CODE_CHILD_SESSION=$null"
 
-# A tab exists to host one Claude Code session, so once that session ends the
-# tab is dead weight. `-NoExit` (see new_tab_args) keeps the shell alive on
-# purpose though: a launch that fails immediately has to stay on screen with
-# its error rather than vanishing, which is the "silently dead sessions" case
-# shell_executable() guards against. Exiting only after claude has run long
-# enough to have started successfully satisfies both.
-#
-# This is what lets `down`/`restart` leave a clean desktop. A window is closed
-# only when every one of its Claude tabs exited (teardown.execute_down), so one
-# holdout used to strand the whole window - including tabs whose session had
-# already ended, left sitting at a bare shell prompt. Now those tabs close
-# themselves and the window shrinks to just the holdout.
-#
-# Gated on elapsed time rather than $LASTEXITCODE because the exit code does
-# not separate the two cases: /exit returns 0 (measured, 2.1.296), but so does
-# a startup that ends at once by declining the folder-trust question, and every
-# kind and version would have to be measured to lean on it. Elapsed time
-# separates them directly. Verified: an explicit `exit` inside -Command
-# terminates the shell even under -NoExit.
+# How long a session must have run to count as started, rather than dying on
+# startup - what relaunch's stale-loop handling still measures against.
 STARTUP_GRACE_SECONDS = 10
 CLAUDE_STARTED_AT = "$rlStart=Get-Date"
-CLOSE_TAB_IF_STARTED = (
-    f"if (((Get-Date)-$rlStart).TotalSeconds -gt {STARTUP_GRACE_SECONDS}) {{ exit }}"
-)
+
+
+def ended_prompt(name: str) -> str:
+    """What a tab does once its session ends with no restart asked for: it
+    stays, and a bare Enter starts the session again.
+
+    Tabs used to close themselves here, once their session had run 10s. A
+    closed tab's place in its window is gone - Windows Terminal cannot put a
+    tab back at an index - and quitting to restart quickly is common. `down`
+    does not need the self-close: teardown closes a tab whose session it saw
+    exit through the tab's own button (teardown.close_dead_tabs).
+
+    `down` is the exception: it leaves a stop file for the shell
+    (paths.shell_stop) before quitting the session, and the loop closes the
+    tab when it finds one (restart_loop), as tabs always used to. Otherwise an
+    Enter landing between the session's exit and teardown closing the tab
+    would start it again, and the close would end what it had just started.
+
+    Only an empty answer starts the session again: the command the last pass
+    ran (`$rlRan`). Anything typed runs in its place, inside the loop - so
+    restart markers reach it as they reach the session, and a resume command
+    relaunch's helper types when no loop took its marker works. Ctrl+C leaves
+    for the shell. End of input reads as $null, not "", so a shell with no
+    console never loops (measured, pwsh 7 and Windows PowerShell 5.1).
+    """
+    say = (f"[reloaded] {name} ended. Enter starts it again; a typed command runs "
+           "in its place, and Ctrl+C leaves you at the shell.")
+    return (f"Write-Host '{pwsh.escape(say)}' -ForegroundColor DarkGray; "
+            "$rlAns=Read-Host; "
+            "if ($null -eq $rlAns) { break }; "
+            "if ($rlAns -ne '') { $rlNext=$rlAns } else { $rlNext=$rlRan }; "
+            "$rlStart=Get-Date")
 
 def nothing_to_resume(folder: str) -> str:
     """The test, in the tab, that a resume of the latest conversation failed
@@ -117,10 +129,9 @@ def restart_loop(cwd: str, invocation: str) -> str:
     to keep a restarted session where it was is to not let the tab go. The
     shell that already owns the tab runs claude again instead.
 
-    `$rlStart` is reset per iteration so CLOSE_TAB_IF_STARTED still measures
-    the *relaunched* session's lifetime. Measured from the original launch it
-    would always look successful, and a relaunch that died on startup would
-    close its tab and take the error with it.
+    `$rlStart` is reset per iteration, so it is the start of the session now
+    running - what relaunch's old-loop handling measures against
+    STARTUP_GRACE_SECONDS.
 
     A marker holding a command rather than the word `restart` runs that
     command, once, in place of `invocation`. `restart --self` writes its exact
@@ -132,10 +143,30 @@ def restart_loop(cwd: str, invocation: str) -> str:
     checked before the directory's. Only this shell reads it, so a sibling
     tab in the same directory cannot take a request meant for this one.
     """
+    return "".join(_restart_loop_parts(cwd, invocation))
+
+
+def _restart_loop_parts(cwd: str, invocation: str) -> tuple[str, str]:
+    """restart_loop as its setup and its `while`, so that a tab can run the
+    `while` again (deploy.ended_prompt) without the setup clearing `$rlNext`.
+
+    `$rlRan` is the command the pass ran - what Enter brings back - kept apart
+    from `$rlNext`, which a marker the loop then refuses as stale has already
+    overwritten.
+
+    `down`'s stop file (paths.shell_stop) is read straight after the session
+    returns, before any restart marker: a restart left armed by a timed-out
+    `restart` must not bring a session back under the teardown closing it.
+    """
     m = pwsh.escape(str(restart_marker(cwd)))
     own = pwsh.escape(str(restart_marker_dir() / "shell-"))
     body = "; ".join((
-        f"if ($rlNext) {{ Invoke-Expression $rlNext }} else {{ {invocation} }}",
+        f"$rlRan=$rlNext; if ($rlNext) {{ Invoke-Expression $rlNext }} else {{ {invocation} }}",
+        "$rlStop=$rlOwn -replace '\\.marker$','.stop'",
+        "if (Test-Path -LiteralPath $rlStop) { "
+        "$rlAge=((Get-Date)-(Get-Item -LiteralPath $rlStop).LastWriteTime).TotalSeconds; "
+        "Remove-Item -LiteralPath $rlStop -Force -ErrorAction SilentlyContinue; "
+        f"if ($rlAge -lt {RESTART_MARKER_TTL_SECONDS}) {{ exit }} }}",
         f"$rlM=$null; if (Test-Path -LiteralPath $rlOwn) {{ $rlM=$rlOwn }} "
         f"elseif (Test-Path -LiteralPath '{m}') {{ $rlM='{m}' }}",
         "if (-not $rlM) { break }",
@@ -160,7 +191,7 @@ def restart_loop(cwd: str, invocation: str) -> str:
         f"if ($rlAge -gt {RESTART_MARKER_TTL_SECONDS}) {{ break }}",
         "$rlStart=Get-Date",
     ))
-    return (f"$rlNext=$null; $rlOwn='{own}' + $PID + '.marker'; "
+    return (f"$rlNext=$null; $rlOwn='{own}' + $PID + '.marker'; ",
             f"while ($true) {{ {body} }}")
 
 
@@ -202,7 +233,7 @@ def launcher_command(cwd: str, delay: int, size_bytes: int,
     the kind's default. `session_id` is the conversation capture saw it in,
     which it resumes by name where known. Only that invocation differs
     between agent kinds - the environment hygiene around it, the restart loop
-    and the self-closing guard are properties of the shell and apply to
+    and the ended prompt are properties of the shell and apply to
     every tab.
 
     A conversation named and gone is not swapped for another: its resume
@@ -231,8 +262,12 @@ def launcher_command(cwd: str, delay: int, size_bytes: int,
         parts.append(f"Start-Sleep {delay}")
 
     parts.append(CLAUDE_STARTED_AT)
-    parts.append(restart_loop(cwd, invocation))
-    parts.append(CLOSE_TAB_IF_STARTED)
+    # The restart loop runs again after each session the user starts with
+    # Enter, markers and all; `break` in ended_prompt leaves for the shell.
+    # Its setup runs once: `$rlNext` keeps the command that last ran - an
+    # exact resume `--self` handed the loop - so Enter brings that back.
+    setup, loop = _restart_loop_parts(cwd, invocation)
+    parts.append(f"{setup}while ($true) {{ {loop}; {ended_prompt(name)} }}")
     return "; ".join(parts)
 
 
@@ -249,17 +284,10 @@ def relaunch_script(cwd: str, size_bytes: int,
     syntax; escaped, the launcher is 838 keystrokes, and they did not arrive
     intact when tried. One short line runs the file instead.
 
-    The one thing that cannot survive the move is `exit`. Inside a called
-    script it ends the script, and the tab would be left open where a reloaded
-    tab closes - so the shell is stopped by pid, which works from any scope. A
-    PowerShell script runs in the calling process, so $PID is that shell.
+    It is the launcher as it is: leaving the outer loop ends the script, and
+    the shell that ran it is back at its prompt - what a reloaded tab does too.
     """
-    body = launcher_command(cwd, 0, size_bytes, agent, command)
-    return body.replace(
-        CLOSE_TAB_IF_STARTED,
-        f"if (((Get-Date)-$rlStart).TotalSeconds -gt {STARTUP_GRACE_SECONDS}) "
-        f"{{ Stop-Process -Id $PID }}",
-    ) + "\n"
+    return launcher_command(cwd, 0, size_bytes, agent, command) + "\n"
 
 
 def new_tab_args(cwd: str, command: str,

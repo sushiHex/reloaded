@@ -145,8 +145,16 @@ have not started, read them as closed, and write a layout with them missing.
 The marker expires on its own, because the process that wrote it returns long
 before the sessions it started have finished starting. For the same reason a
 deploy only reports a tab as failed once its own staggered turn has passed.
-A run ending within the ten-second startup grace leaves its shell visible so
-an error can be read; a longer completed run closes its tab.
+A tab does not close when its session ends. It prints that the session ended
+and waits: a bare Enter starts the same command again (the exact resume a
+`restart --self` last handed it, where there was one), a typed command runs in
+the session's place inside the loop, so restart markers still reach it, and
+Ctrl+C leaves for the shell's prompt. `down` is the exception: as each
+target's turn comes, it leaves a stop file for that shell (`paths.shell_stop`,
+read once, two minutes' life, removed when the teardown ends). The loop reads
+it before any restart marker, and that tab closes as tabs used to, so neither
+an Enter nor a marker left by a timed-out `restart` can start a session again
+under the teardown closing it.
 
 A Claude command Reloaded launches always resumes something
 (`agents.resuming`): a bare `--resume`, which opens a picker, becomes

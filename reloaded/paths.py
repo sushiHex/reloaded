@@ -135,6 +135,14 @@ def shell_marker(pid: int) -> pathlib.Path:
     return restart_marker_dir() / f"shell-{pid}.marker"
 
 
+def shell_stop(pid: int) -> pathlib.Path:
+    """`down`'s word to one tab's shell that its session is being ended for
+    good: the tab closes when the session goes, instead of waiting for an
+    Enter (deploy.ended_prompt). Beside the shell's marker, under the name the
+    loop derives from it."""
+    return restart_marker_dir() / f"shell-{pid}.stop"
+
+
 def tab_title(cwd: str) -> str:
     """What reloaded calls a tab it launched.
 

@@ -39,7 +39,7 @@ the shell's command line, is also right for a hand tab that an earlier
 A loop launched before markers carried a command reads only that one exists,
 and replays the command its tab was launched with - a bare `--resume` came
 back as Claude Code's picker. No file can steer it, but it keeps its tab when
-its agent dies on startup (deploy.CLOSE_TAB_IF_STARTED). So when that replay
+its agent dies on startup (it closes the tab only after 10s). So when that replay
 brings back no conversation at all, the helper ends it as soon as it appears,
 and the shell, left at its prompt, is brought back like a plain one. A replay
 that resumes one is not killed while it loads it.

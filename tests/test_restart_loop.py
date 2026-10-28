@@ -79,7 +79,8 @@ def run_launcher(monkeypatch, tmp_path):
     monkeypatch.setenv("PATH", str(tmp_path) + ";" + str(pathlib.Path().cwd()))
 
     def _run(*, marker_body: str | None = None, marker_age_seconds: float = 0.0,
-             through_wt_escaping: bool = False, load_profile: bool = False):
+             through_wt_escaping: bool = False, load_profile: bool = False,
+             answers: str = "", after: str = ""):
         if tally.exists():
             tally.unlink()
         if marker_body is not None:
@@ -100,9 +101,12 @@ def run_launcher(monkeypatch, tmp_path):
             cmd = launcher_command(CWD, 0, 0)
         if load_profile:
             _refuse_a_shadowed_claude(tmp_path)
-        argv = [SHELL] + ([] if load_profile else ["-NoProfile"]) + ["-Command", cmd]
+        argv = [SHELL] + ([] if load_profile else ["-NoProfile"]) + ["-Command", cmd + after]
+        # The tab's answers when its session ends (deploy.ended_prompt); end
+        # of input hands the shell back, so the launcher finishes.
         proc = subprocess.run(
-            argv, capture_output=True, text=True, timeout=60, cwd=str(tmp_path),
+            argv, input=answers, capture_output=True, text=True, timeout=60,
+            cwd=str(tmp_path),
         )
         runs = len(tally.read_text(encoding="ascii").split()) if tally.exists() else 0
         return runs, marker.exists(), proc
@@ -114,6 +118,134 @@ def test_without_a_marker_the_session_launches_once(run_launcher):
     runs, marker_left, proc = run_launcher()
     assert runs == 1, proc.stderr
     assert not marker_left
+
+
+def test_enter_starts_the_ended_session_again_in_its_tab(run_launcher):
+    """Quitting to restart is common; the tab waits instead of closing."""
+    runs, _marker_left, proc = run_launcher(answers="\n\n")
+    assert runs == 3, proc.stderr
+    assert "ended. Enter starts it again" in proc.stdout
+
+
+def test_a_typed_command_runs_in_the_session_s_place(run_launcher, tmp_path):
+    """relaunch's helper types a resume command there when no loop took its
+    marker; a teardown resend's `/exit` can land there as text. Either runs
+    in place of the session - not the session itself - and the tab waits
+    again afterwards."""
+    runs, _m, proc = run_launcher(answers="'typed-ran'\n", after="; 'AFTER'")
+    assert runs == 1, proc.stderr
+    assert "typed-ran" in proc.stdout and "AFTER" in proc.stdout
+    assert proc.stdout.count("ended. Enter starts it again") == 2
+
+
+def test_a_typed_command_is_restarted_by_a_marker(run_launcher, tmp_path, monkeypatch):
+    """Found by review: run outside the loop, a typed agent ignored the
+    restart marker `restart <repo>` armed, and the restart failed with the
+    tab still open. The stub stands in for an agent typed at the prompt that
+    `restart` then asks to quit: it files the shell's own marker on its first
+    run, and the loop brings it back."""
+    monkeypatch.setattr(deploy_mod, "restart_marker_dir", lambda: tmp_path)
+    tally = tmp_path / "runs.txt"
+    (tmp_path / "typed.ps1").write_text(
+        f"Add-Content -LiteralPath '{tally}' 'typed'\n"
+        f"if (-not (Test-Path '{tmp_path}\\filed')) {{\n"
+        f"  New-Item '{tmp_path}\\filed' | Out-Null\n"
+        f"  Set-Content -LiteralPath ('{tmp_path}\\shell-' + $PID + '.marker') 'restart'\n"
+        f"}}\n", encoding="utf-8")
+
+    _runs, _m, proc = run_launcher(answers="typed\n")
+
+    # The session, the typed command, then the marker's restart - of the
+    # tab's own invocation, as a `restart` marker asks.
+    assert tally.read_text(encoding="utf-8").split() == ["run", "typed", "run"], proc.stderr
+
+
+def test_a_restart_marker_does_not_outrank_down_s_stop(run_launcher, tmp_path, monkeypatch):
+    """Found by review: a `restart` that timed out leaves its marker armed,
+    and a `down` right after would have had the session restarted under it."""
+    monkeypatch.setattr(deploy_mod, "restart_marker_dir", lambda: tmp_path)
+    tally = tmp_path / "runs.txt"
+    (tmp_path / "claude.cmd").unlink()
+    (tmp_path / "claude.ps1").write_text(
+        f"Add-Content -LiteralPath '{tally}' 'run'\n"
+        f"Set-Content -LiteralPath ('{tmp_path}\\shell-' + $PID + '.stop') 'stop'\n",
+        encoding="utf-8")
+
+    runs, _m, proc = run_launcher(marker_body="restart", after="; 'AFTER'")
+
+    assert runs == 1, proc.stderr
+    assert "AFTER" not in proc.stdout
+
+
+def test_a_state_path_spelling_the_loop_still_parses(run_launcher, tmp_path, monkeypatch):
+    """Found by review: the loop's text was split at its first `while ($true)`,
+    which a home directory can spell."""
+    odd = tmp_path / "while ($true)"
+    odd.mkdir()
+    monkeypatch.setattr(deploy_mod, "restart_marker_dir", lambda: odd)
+
+    runs, _m, proc = run_launcher(after="; 'AFTER'")
+
+    assert runs == 1 and "AFTER" in proc.stdout, proc.stderr
+
+
+def test_enter_does_not_run_a_marker_refused_as_stale(run_launcher, tmp_path):
+    """Found by review: the stale marker's command was already in `$rlNext`
+    when the loop refused it, and Enter then ran a conversation nobody had
+    asked for."""
+    (tmp_path / "other.cmd").write_text(f"@echo other>>{tmp_path / 'runs.txt'}\r\n",
+                                        encoding="ascii")
+
+    run_launcher(marker_body="other --resume OTHER",
+                 marker_age_seconds=RESTART_MARKER_TTL_SECONDS + 60, answers="\n")
+
+    assert (tmp_path / "runs.txt").read_text(encoding="ascii").split() == ["run", "run"]
+
+
+def test_down_s_stop_file_closes_the_tab(run_launcher, tmp_path, monkeypatch):
+    """`down` leaves a stop file for the shell before quitting its session,
+    and the tab closes as tabs always did - an Enter cannot start the session
+    again under the teardown that is closing it. A PowerShell stub runs in
+    the loop's own process, so its `$PID` is the loop shell's."""
+    monkeypatch.setattr(deploy_mod, "restart_marker_dir", lambda: tmp_path)
+    tally = tmp_path / "runs.txt"
+    (tmp_path / "claude.cmd").unlink()
+    (tmp_path / "claude.ps1").write_text(
+        f"Add-Content -LiteralPath '{tally}' 'run'\n"
+        f"Set-Content -LiteralPath ('{tmp_path}\\shell-' + $PID + '.stop') 'stop'\n",
+        encoding="utf-8")
+
+    runs, _m, proc = run_launcher(answers="\n", after="; 'AFTER'")
+
+    assert runs == 1, proc.stderr
+    assert "AFTER" not in proc.stdout, "the tab waited instead of closing"
+    assert not list(tmp_path.glob("shell-*.stop")), "a stop file is read once"
+
+
+def test_an_old_stop_file_is_not_obeyed(run_launcher, tmp_path, monkeypatch):
+    """A holdout `down` gave up on keeps its tab when the user quits it later."""
+    monkeypatch.setattr(deploy_mod, "restart_marker_dir", lambda: tmp_path)
+    (tmp_path / "claude.cmd").unlink()
+    (tmp_path / "claude.ps1").write_text(
+        f"$s = '{tmp_path}\\shell-' + $PID + '.stop'; Set-Content -LiteralPath $s 'stop'; "
+        f"(Get-Item -LiteralPath $s).LastWriteTime = (Get-Date).AddMinutes(-10)\n",
+        encoding="utf-8")
+
+    _runs, _m, proc = run_launcher(after="; 'AFTER'")
+
+    assert "AFTER" in proc.stdout, proc.stderr
+
+
+def test_enter_brings_back_the_command_that_last_ran(run_launcher, tmp_path):
+    """After `restart --self` ran its exact resume command, Enter must bring
+    that conversation back, not whatever the tab was first launched with."""
+    tally = tmp_path / "runs.txt"
+    (tmp_path / "resume-exact.cmd").write_text(f"@echo exact>>{tally}\r\n",
+                                               encoding="ascii")
+
+    run_launcher(marker_body="resume-exact --resume 0673eda5", answers="\n")
+
+    assert tally.read_text(encoding="ascii").split() == ["run", "exact", "exact"]
 
 
 def test_a_fresh_marker_relaunches_the_session_in_place(run_launcher):
