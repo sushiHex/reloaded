@@ -7,7 +7,8 @@ Bring your [Claude Code](https://claude.com/claude-code) and
 [Codex CLI](https://github.com/openai/codex) sessions back to their Windows
 Terminal layout: repositories, window positions, sizes, and tab order.
 Capture an arrangement once, restore missing sessions later, or restart a
-selected session in its existing tab.
+session in its existing tab with its conversation intact. A session that ends
+leaves its tab open, one Enter from starting again.
 
 Reloaded is a **Windows command-line tool**. It manages terminal sessions;
 Codex desktop sessions and agents running inside another agent are excluded.
@@ -71,11 +72,18 @@ When no command was recorded, the bundled defaults bypass agent approval
 prompts and, for Codex, the sandbox. Review [launch commands and resumption](docs/usage.md#launch-commands-and-resumption)
 before using those defaults.
 
+**Codex tabs get a server of their own.** By default Codex runs sessions on a
+shared background server, where a tab is not where its session runs: Reloaded
+cannot restart it in place, and quitting the tab leaves its turn running.
+Reloaded launches every Codex tab with `--no-daemon` and resumes the exact
+thread it captured (`codex resume <id>`) rather than the directory's newest.
+`reloaded status` names any session still on the shared server.
+
 ## Commands
 
 | Command | Purpose |
 | --- | --- |
-| `reloaded status` | Compare the saved layout with live sessions and check readiness. |
+| `reloaded status` | Compare the saved layout with live sessions and check readiness; `--json` for scripts. |
 | `reloaded capture` | Save the current arrangement, retaining pinned tabs. |
 | `reloaded edit` | Edit the saved layout; also the default when running `reloaded` alone. |
 | `reloaded up` | Launch missing sessions from the saved layout. |
@@ -110,9 +118,11 @@ sessions. `--layout` selects a file; it does **not** restrict `down` or a full
 `restart` to that layout's members. Name repositories when targeting a subset.
 
 A tab Reloaded launches stays open when its session ends: press Enter to start
-it again, or Ctrl+C for a plain shell. Only `down` closes it. Hand-started
-sessions can be upgraded to Reloaded's launcher during a named restart, after
-which their tab behaves the same way. See [restart behavior](docs/usage.md#restarting-sessions)
+it again with the command that last ran, type a different command to run in
+its place, or press Ctrl+C for a plain shell. Only `down` closes it.
+Hand-started sessions are upgraded to Reloaded's launcher during a named
+restart, after which their tab behaves the same way. A tab keeps the launcher
+it started with until Reloaded next launches it. See [restart behavior](docs/usage.md#restarting-sessions)
 for timeouts, fallback tabs, and concurrent restart limits.
 
 ## For agents
@@ -131,8 +141,10 @@ reloaded restart --self
 
 It quits the session straight away, so save anything worth keeping first. It works
 in a Reloaded tab and in a PowerShell tab started by hand, and cannot take a
-repository name. See [self restart](docs/usage.md#self-restart), which also has
-a `/relaunch` command for Claude Code.
+repository name. The same conversation comes back: Claude Code's by session
+id, Codex's by thread id when it runs on its own server. A Codex session on the
+shared server is refused. See [self restart](docs/usage.md#self-restart) for a
+`/relaunch` command for Claude Code and a `$relaunch` skill for Codex.
 
 ## Restore at sign-in
 
@@ -159,6 +171,7 @@ installed. See [automation setup and troubleshooting](docs/automation.md).
 | [Layouts and sessions](docs/usage.md) | Installation alternatives, editing, launch defaults, restart behavior, and agent workflows. |
 | [Automation](docs/automation.md) | Logon setup, shared state, logs, and troubleshooting. |
 | [Architecture](docs/architecture.md) | Discovery, window placement, restart markers, transcript handling, and design limits. |
+| [Codex session identity](docs/codex-session-identity.md) | How a Codex tab is tied to its thread, and what Codex's shared server breaks. |
 | [Smoke testing](docs/smoke-testing.md) | Checking a release live, with throwaway repos, without disturbing your own sessions. |
 
 ## Development
@@ -174,8 +187,11 @@ python -m pytest -v
 ```
 
 CI runs on Windows with Python 3.9 and 3.14. Tests mock desktop operations and guard
-against sending real keystrokes, changing windows, or launching live agents.
-Preserve those guards when adding tests.
+against sending real keystrokes, changing windows, or launching live agents;
+they do run real PowerShell to exercise the tab's launcher loop. Preserve those
+guards when adding tests. A live check against throwaway repositories is
+`tools/smoke.py` ([smoke testing](docs/smoke-testing.md)); it opens windows and
+takes keyboard focus while it runs.
 
 ## License
 
