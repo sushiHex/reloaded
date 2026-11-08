@@ -170,7 +170,8 @@ while another running session is in a directory with the same name.
 
 A Reloaded-launched tab restarts through its shell loop, retaining its slot.
 A hand-started session is exited and its waiting shell receives a launcher
-script; subsequent runs use Reloaded's restart loop and automatic tab closing.
+script; from then on the tab runs Reloaded's loop, which keeps it open when
+the session ends.
 If the original tab disappears, a replacement may open in Terminal's most-recent
 window, so fallback placement is best-effort.
 
@@ -227,25 +228,30 @@ needs no keyboard focus, and the command waits while the session quits the
 ordinary way. A session that has not quit within a minute is ended by pid,
 with its MCP servers. How it comes back depends on the tab:
 
-- **A Reloaded tab** relaunches it from its restart marker, with its captured
-  command.
-- **A tab started by hand in PowerShell** gets the resume command written into
-  its shell's console input, which needs no focus. For Claude Code, which
+- **A Reloaded tab** relaunches it from its restart marker, which carries the
+  resume command below; the tab's loop runs it in place of its launch command.
+- **A tab started by hand in PowerShell** gets that command written into
+  its shell's console input, which needs no focus.
+
+The resume command names the conversation where it can. For Claude Code, which
   hands its session id to the commands it runs, that command ends in
-  `--resume <session id>`, so the same conversation returns even when the
-  session was started with a bare `--resume` or with none. Codex hands its
-  commands its session id too (`CODEX_SESSION_ID`), and its command comes
-  back as `codex resume <id>` when the session's own process holds that
-  thread's file open, which only a Codex on its own server does; otherwise it
-  gets its original command line back. A hand tab under any other shell is
-  refused before anything is ended.
+`--resume <session id>`, so the same conversation returns even when the
+session was started with a bare `--resume` or with none. Codex hands its
+commands its session id too (`CODEX_SESSION_ID`), and its command comes
+back as `codex resume <id>` when the session's own process holds that
+thread's file open, which only a Codex on its own server does; otherwise it
+gets its original command line back. A hand tab under any other shell is
+refused before anything is ended.
 
 A Codex tab on the shared background server is refused: its commands run in
 the server, so nothing ties them to a tab.
 
-A Reloaded tab replays its captured command, so what comes back is whatever
-that command resumes — `--continue`, by default, the directory's latest
-conversation.
+A Reloaded tab whose loop predates this (no `$rlNext=` in its command line)
+reads only that the marker exists and replays its launch command, so what
+comes back is whatever that command resumes — `--continue`, by default, the
+directory's latest conversation. Where that would bring back no conversation
+at all, the helper stops the replay and writes the resume command into the
+shell, as for a hand tab.
 
 The helper records what it did in `~/.reloaded/reloaded.log`. If a restart's
 helper could not do its part, or stopped without saying, the next `--self` in
