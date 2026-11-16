@@ -119,7 +119,9 @@ sessions. `--layout` selects a file; it does **not** restrict `down` or a full
 
 A tab Reloaded launches stays open when its session ends: press Enter to start
 it again with the command that last ran, type a different command to run in
-its place, or press Ctrl+C for a plain shell. Only `down` closes it.
+its place, or press Ctrl+C for a plain shell. Only `down` closes it. A session
+that quit to update its agent, as Codex does when you accept its update
+prompt, starts again on its own.
 Hand-started sessions are upgraded to Reloaded's launcher during a named
 restart, after which their tab behaves the same way. A tab keeps the launcher
 it started with until Reloaded next launches it. See [restart behavior](docs/usage.md#restarting-sessions)

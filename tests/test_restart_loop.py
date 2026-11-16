@@ -127,6 +127,73 @@ def test_enter_starts_the_ended_session_again_in_its_tab(run_launcher):
     assert "ended. Enter starts it again" in proc.stdout
 
 
+# How each installer leaves the agent's file (measured): Claude Code's
+# overwrites it, a new write time; Codex's extracts a new release, a new
+# creation time and the build's old write time.
+_REINSTALL = {
+    "claude": 'copy /b "%~f0"+,, "%~f0" >nul',
+    "codex": (f'"{SHELL}" -NoProfile -Command "$f=Get-Item -LiteralPath \'%~f0\'; '
+              "$f.LastWriteTime=(Get-Date).AddDays(-3); $f.CreationTime=Get-Date\""),
+}
+
+
+@pytest.mark.parametrize("installer", sorted(_REINSTALL))
+def test_a_session_that_updated_its_agent_starts_again_unasked(run_launcher, tmp_path,
+                                                               installer):
+    """Codex installs its update and exits saying to restart it. The stub's
+    first run reinstalls itself the way `installer` would, and the tab starts
+    the session again without waiting for an Enter; the next end asks."""
+    flag = tmp_path / "updated.flag"
+    stub = tmp_path / "claude.cmd"
+    stub.write_text(
+        f"@echo run>>{tmp_path / 'runs.txt'}\r\n"
+        f'@if not exist "{flag}" (echo.>"{flag}" & {_REINSTALL[installer]})\r\n'
+        # Exit 1 would read as a resume with nothing to resume, and the
+        # loop's new-conversation fallback would add a run of its own.
+        "@exit /b 0\r\n",
+        encoding="ascii")
+    runs, _m, proc = run_launcher()
+    assert runs == 2, proc.stderr
+    assert proc.stdout.count("claude was updated; starting stub-repo again") == 1
+    assert proc.stdout.count("ended. Enter starts it again") == 1
+
+
+def test_an_install_dated_in_the_future_is_no_update(run_launcher, tmp_path):
+    """A file dated ahead of the clock would pass "installed since the session
+    started, and recently" on every exit until the clock caught up."""
+    flag = tmp_path / "updated.flag"
+    (tmp_path / "claude.cmd").write_text(
+        f"@echo run>>{tmp_path / 'runs.txt'}\r\n"
+        f'@if not exist "{flag}" (echo.>"{flag}" & "{SHELL}" -NoProfile -Command '
+        "\"(Get-Item -LiteralPath '%~f0').LastWriteTime=(Get-Date).AddDays(1)\")\r\n"
+        "@exit /b 0\r\n",
+        encoding="ascii")
+    runs, _m, proc = run_launcher()
+    assert runs == 1, proc.stderr
+    assert "was updated" not in proc.stdout
+
+
+def test_a_typed_command_is_not_replayed_because_the_agent_updated(run_launcher):
+    """What ran was not the agent, so an install landing meanwhile - here the
+    typed command does it itself - says nothing about why it ended."""
+    touch = "(Get-Item -LiteralPath (Get-Command claude).Source).LastWriteTime=Get-Date; 'typed-ran'"
+    runs, _m, proc = run_launcher(answers=touch + "\n")
+    assert runs == 1, proc.stderr
+    # Once as the typed line echoed back, once as its output.
+    assert proc.stdout.splitlines().count("typed-ran") == 1, proc.stdout
+    assert proc.stdout.count("ended. Enter starts it again") == 2
+    assert "was updated" not in proc.stdout
+
+
+def test_an_agent_installed_before_the_session_started_is_no_update(run_launcher):
+    """The stub is written moments before the run - well within the window -
+    but before the session started, so the end is an ordinary quit."""
+    runs, _m, proc = run_launcher()
+    assert runs == 1, proc.stderr
+    assert "was updated" not in proc.stdout
+    assert "ended. Enter starts it again" in proc.stdout
+
+
 def test_a_typed_command_runs_in_the_session_s_place(run_launcher, tmp_path):
     """relaunch's helper types a resume command there when no loop took its
     marker; a teardown resend's `/exit` can land there as text. Either runs
