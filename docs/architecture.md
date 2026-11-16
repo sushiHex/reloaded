@@ -149,7 +149,13 @@ A tab does not close when its session ends. It prints that the session ended
 and waits: a bare Enter starts the same command again (the exact resume a
 `restart --self` last handed it, where there was one), a typed command runs in
 the session's place inside the loop, so restart markers still reach it, and
-Ctrl+C leaves for the shell's prompt. `down` is the exception: as each
+Ctrl+C leaves for the shell's prompt. A session that ended by updating its
+agent does not wait: when the agent's file on PATH was installed while the
+session ran, within the minute before it ended (`deploy.updated_test`, the
+later of its creation and write times, since Codex's installer sets one and
+Claude Code's the other), the loop starts the same command again. The minute
+is what keeps Claude Code's background updates, which do not end the session,
+from restarting one quit long after. `down` is the exception: as each
 target's turn comes, it leaves a stop file for that shell (`paths.shell_stop`,
 read once, two minutes' life, removed when the teardown ends). The loop reads
 it before any restart marker, and that tab closes as tabs used to, so neither

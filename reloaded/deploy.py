@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import functools
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -54,7 +55,51 @@ STARTUP_GRACE_SECONDS = 10
 CLAUDE_STARTED_AT = "$rlStart=Get-Date"
 
 
-def ended_prompt(name: str) -> str:
+# How recently the agent's program must have been installed, when its session
+# ends, for the tab to read the session as one that updated itself and quit.
+UPDATED_WITHIN_SECONDS = 60
+
+
+def updated_test(binary: str) -> str:
+    """The test, in the tab, that the session just ended was its agent
+    updating itself: `binary`'s file on PATH was installed while the session
+    ran (`$rlStart`), within UPDATED_WITHIN_SECONDS of it ending.
+
+    Codex asks at startup to update, installs, and exits ("Please restart
+    Codex"). Installed is the later of the file's two times, since the two
+    installers keep different ones (measured): Codex's standalone installer
+    extracts a new release whose files keep the build's write time and get a
+    new creation time; Claude Code's overwrites `~/.local/bin/claude.exe`, which
+    keeps its creation time and gets a new write time.
+
+    Recent, because Claude Code updates itself in the background without
+    exiting: one updated an hour into its session was not quit by the update.
+
+    Once per install (`$rlDone`), and never for a time ahead of the clock: a
+    file dated in the future would otherwise pass on every exit until the
+    clock caught up. Only when what ran was the agent - the tab's own
+    invocation, or a command naming `binary` first, as markers' resume
+    commands do - so a command typed at the prompt is not replayed because
+    the agent updated. UTC, so a DST change cannot shift the window.
+
+    Not proof that this session did the updating: another tab's update, or a
+    background one, landing in the minute before a deliberate quit restarts it
+    too, and the tab says so; Ctrl+C or a second quit leaves it.
+    """
+    named = pwsh.escape(f"^\\s*{re.escape(binary)}(\\.exe)?(\\s|$)")
+    return (f"$rlUp=$false; if ((-not $rlRan) -or ($rlRan -match '{named}')) {{ "
+            f"$rlBin=Get-Command '{pwsh.escape(binary)}' -CommandType Application "
+            "-ErrorAction SilentlyContinue | Select-Object -First 1; "
+            "if ($rlBin) { $rlI=Get-Item -LiteralPath $rlBin.Source -ErrorAction SilentlyContinue; "
+            "if ($rlI) { $rlT=$rlI.LastWriteTimeUtc; "
+            "if ($rlI.CreationTimeUtc -gt $rlT) { $rlT=$rlI.CreationTimeUtc }; "
+            "$rlAge=([DateTime]::UtcNow-$rlT).TotalSeconds; "
+            "$rlUp=($rlT -gt $rlStart.ToUniversalTime()) -and ($rlAge -ge 0) -and "
+            f"($rlAge -lt {UPDATED_WITHIN_SECONDS}) -and ($rlT -ne $rlDone); "
+            "if ($rlUp) { $rlDone=$rlT } } } }")
+
+
+def ended_prompt(name: str, binary: str) -> str:
     """What a tab does once its session ends with no restart asked for: it
     stays, and a bare Enter starts the session again.
 
@@ -76,13 +121,21 @@ def ended_prompt(name: str) -> str:
     relaunch's helper types when no loop took its marker works. Ctrl+C leaves
     for the shell. End of input reads as $null, not "", so a shell with no
     console never loops (measured, pwsh 7 and Windows PowerShell 5.1).
+
+    A session that ended by updating its agent (updated_test) is started
+    again without asking: the update said to restart, and Enter was all the
+    prompt would have been given.
     """
     say = (f"[reloaded] {name} ended. Enter starts it again; a typed command runs "
            "in its place, and Ctrl+C leaves you at the shell.")
-    return (f"Write-Host '{pwsh.escape(say)}' -ForegroundColor DarkGray; "
+    again = f"[reloaded] {binary} was updated; starting {name} again."
+    return (f"{updated_test(binary)}; "
+            f"if ($rlUp) {{ Write-Host '{pwsh.escape(again)}' -ForegroundColor DarkGray; "
+            "$rlNext=$rlRan } else { "
+            f"Write-Host '{pwsh.escape(say)}' -ForegroundColor DarkGray; "
             "$rlAns=Read-Host; "
             "if ($null -eq $rlAns) { break }; "
-            "if ($rlAns -ne '') { $rlNext=$rlAns } else { $rlNext=$rlRan }; "
+            "if ($rlAns -ne '') { $rlNext=$rlAns } else { $rlNext=$rlRan } }; "
             "$rlStart=Get-Date")
 
 def nothing_to_resume(folder: str) -> str:
@@ -267,7 +320,7 @@ def launcher_command(cwd: str, delay: int, size_bytes: int,
     # Its setup runs once: `$rlNext` keeps the command that last ran - an
     # exact resume `--self` handed the loop - so Enter brings that back.
     setup, loop = _restart_loop_parts(cwd, invocation)
-    parts.append(f"{setup}while ($true) {{ {loop}; {ended_prompt(name)} }}")
+    parts.append(f"{setup}while ($true) {{ {loop}; {ended_prompt(name, agents_mod.for_kind(agent).binary)} }}")
     return "; ".join(parts)
 
 
