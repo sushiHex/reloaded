@@ -8,7 +8,7 @@ import shutil
 import subprocess
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from . import agents as agents_mod
 from . import pwsh
@@ -16,7 +16,8 @@ from . import tabs as tabs_mod
 from . import win32
 from .discover import TranscriptInfo
 from .layout import Layout, Monitor, Tab, clamp_rect, window_id
-from .paths import norm, restart_marker, restart_marker_dir, restore_marker, tab_title
+from .paths import (norm, parked_record, restart_marker, restart_marker_dir, restore_marker,
+                    tab_title)
 from .transcript import SIZE_WARN_BYTES, human_size
 
 STAGGER_SECONDS = 4
@@ -60,6 +61,50 @@ CLAUDE_STARTED_AT = "$rlStart=Get-Date"
 UPDATED_WITHIN_SECONDS = 60
 
 
+def _names_agent(binary: str) -> str:
+    """A PowerShell regex, escaped for a single-quoted string, matching a
+    command that runs `binary` - as the tab's invocation and markers' resume
+    commands do, and as a command typed at the prompt usually does not."""
+    return pwsh.escape(f"^\\s*{re.escape(binary)}(\\.exe)?(\\s|$)")
+
+
+def park_write(cwd: str, kind: str) -> str:
+    """Statements, in the tab, that record it as parked (parked.py) and set
+    `$rlParked` - only once the record is there.
+
+    The record holds its directory and kind, the agent command it takes back
+    (`$rlAgent`, an exact resume a marker last handed the loop, else the tab's
+    own invocation `$rlInv` - never a command typed at the prompt), and its
+    shell, by pid and start time, so a record left by a shell since gone is
+    told from the tab open now. Written to a temporary file and moved into
+    place, so a reader never sees half of one; by .NET, for an absolute path
+    and UTF-8 without a byte-order mark in both PowerShell versions. A
+    failure says so and leaves the tab unparked: a tab that reads as parked
+    with no record is one a restore would start, taking the conversation
+    back."""
+    path = pwsh.escape(str(parked_record(cwd, kind)))
+    return ("try { $rlCmd=$rlInv; if ($rlAgent) { $rlCmd=$rlAgent }; "
+            f"$rlRec=[ordered]@{{cwd='{pwsh.escape(cwd)}'; agent='{pwsh.escape(kind)}'; "
+            "command=$rlCmd; shell_pid=$PID; "
+            "shell_created=[DateTimeOffset]::new((Get-Process -Id $PID).StartTime)"
+            ".ToUnixTimeMilliseconds()}; "
+            f"[IO.File]::WriteAllText('{path}.tmp', ($rlRec | ConvertTo-Json -Compress)); "
+            f"Move-Item -LiteralPath '{path}.tmp' -Destination '{path}' -Force -ErrorAction Stop; "
+            "$rlParked=$true } catch { "
+            "Write-Host \"[reloaded] could not park this tab: $_\" -ForegroundColor Red }")
+
+
+def park_remove(cwd: str, kind: str) -> str:
+    """Statements that remove the tab's record and clear `$rlParked` - only
+    once it is gone: one left behind would keep the tab parked for every
+    restore, while its session runs."""
+    path = pwsh.escape(str(parked_record(cwd, kind)))
+    return (f"Remove-Item -LiteralPath '{path}' -Force -ErrorAction SilentlyContinue; "
+            f"if (Test-Path -LiteralPath '{path}') {{ "
+            "Write-Host '[reloaded] could not unpark this tab: its record would not delete.' "
+            "-ForegroundColor Red } else { $rlParked=$false }")
+
+
 def updated_test(binary: str) -> str:
     """The test, in the tab, that the session just ended was its agent
     updating itself: `binary`'s file on PATH was installed while the session
@@ -86,8 +131,7 @@ def updated_test(binary: str) -> str:
     background one, landing in the minute before a deliberate quit restarts it
     too, and the tab says so; Ctrl+C or a second quit leaves it.
     """
-    named = pwsh.escape(f"^\\s*{re.escape(binary)}(\\.exe)?(\\s|$)")
-    return (f"$rlUp=$false; if ((-not $rlRan) -or ($rlRan -match '{named}')) {{ "
+    return (f"$rlUp=$false; if ((-not $rlRan) -or ($rlRan -match '{_names_agent(binary)}')) {{ "
             f"$rlBin=Get-Command '{pwsh.escape(binary)}' -CommandType Application "
             "-ErrorAction SilentlyContinue | Select-Object -First 1; "
             "if ($rlBin) { $rlI=Get-Item -LiteralPath $rlBin.Source -ErrorAction SilentlyContinue; "
@@ -99,7 +143,10 @@ def updated_test(binary: str) -> str:
             "if ($rlUp) { $rlDone=$rlT } } } }")
 
 
-def ended_prompt(name: str, binary: str) -> str:
+PARK_WORD = "park"
+
+
+def ended_prompt(name: str, binary: str, cwd: str = "", kind: str = "") -> str:
     """What a tab does once its session ends with no restart asked for: it
     stays, and a bare Enter starts the session again.
 
@@ -125,17 +172,38 @@ def ended_prompt(name: str, binary: str) -> str:
     A session that ended by updating its agent (updated_test) is started
     again without asking: the update said to restart, and Enter was all the
     prompt would have been given.
+
+    `park` (PARK_WORD) is not run: it records the tab as parked (parked.py,
+    park_write) and asks again, under a prompt that says so. Parked, only a
+    bare Enter takes the tab back: its record is removed, and the agent
+    command it was parked with starts (`$rlAgent`, else the tab's own) - not
+    a command typed earlier, which a restored tab would not have. Anything
+    else typed is ignored, so keystrokes meant for another window - a
+    teardown's `/exit`, or typing that lands in a window that took the focus
+    - cannot start a session and take the conversation back. End of input
+    leaves it parked. A tab opened parked (`$rlParked`, from launcher_command)
+    starts here, without a session.
     """
-    say = (f"[reloaded] {name} ended. Enter starts it again; a typed command runs "
+    say = (f"[reloaded] {name} ended. Enter starts it again; `{PARK_WORD}` keeps it "
+           "closed so its conversation can continue elsewhere, a typed command runs "
            "in its place, and Ctrl+C leaves you at the shell.")
+    parked = (f"[reloaded] {name} is parked: its conversation is free to continue "
+              "elsewhere, such as Codex's remote control. Enter takes it back here.")
     again = f"[reloaded] {binary} was updated; starting {name} again."
-    return (f"{updated_test(binary)}; "
+    ask = ("$rlGo=$false; $rlQuit=$false; while (-not $rlGo) { "
+           f"if ($rlParked) {{ Write-Host '{pwsh.escape(parked)}' -ForegroundColor Cyan }} "
+           f"else {{ Write-Host '{pwsh.escape(say)}' -ForegroundColor DarkGray }}; "
+           "$rlAns=Read-Host; "
+           "if ($null -eq $rlAns) { $rlQuit=$true; $rlGo=$true } "
+           f"elseif ($rlParked) {{ if ($rlAns -eq '') {{ {park_remove(cwd, kind)}; "
+           "if (-not $rlParked) { $rlNext=$rlAgent; $rlGo=$true } } } "
+           f"elseif ($rlAns.Trim() -eq '{PARK_WORD}') {{ {park_write(cwd, kind)} }} "
+           "else { if ($rlAns -ne '') { $rlNext=$rlAns } else { $rlNext=$rlRan }; "
+           "$rlGo=$true } }; "
+           "if ($rlQuit) { break }")
+    return (f"if ($rlParked) {{ $rlUp=$false }} else {{ {updated_test(binary)} }}; "
             f"if ($rlUp) {{ Write-Host '{pwsh.escape(again)}' -ForegroundColor DarkGray; "
-            "$rlNext=$rlRan } else { "
-            f"Write-Host '{pwsh.escape(say)}' -ForegroundColor DarkGray; "
-            "$rlAns=Read-Host; "
-            "if ($null -eq $rlAns) { break }; "
-            "if ($rlAns -ne '') { $rlNext=$rlAns } else { $rlNext=$rlRan } }; "
+            f"$rlNext=$rlRan }} else {{ {ask} }}; "
             "$rlStart=Get-Date")
 
 def nothing_to_resume(folder: str) -> str:
@@ -242,6 +310,9 @@ def _restart_loop_parts(cwd: str, invocation: str) -> tuple[str, str]:
         # subprocess timeout.
         "if (Test-Path -LiteralPath $rlM) { break }",
         f"if ($rlAge -gt {RESTART_MARKER_TTL_SECONDS}) {{ break }}",
+        # The agent command the tab now runs, for a park to record
+        # (park_write): a marker's exact resume, or none for the tab's own.
+        "$rlAgent=$rlNext",
         "$rlStart=Get-Date",
     ))
     return (f"$rlNext=$null; $rlOwn='{own}' + $PID + '.marker'; ",
@@ -279,7 +350,7 @@ def _wt_escape(s: str) -> str:
 
 def launcher_command(cwd: str, delay: int, size_bytes: int,
                      agent: str = agents_mod.DEFAULT_KIND, command: str = "",
-                     session_id: str = "") -> str:
+                     session_id: str = "", parked: bool = False) -> str:
     """The PowerShell command run inside one tab.
 
     `command` is what capture read off the live process; empty falls back to
@@ -297,6 +368,8 @@ def launcher_command(cwd: str, delay: int, size_bytes: int,
     invocation = agents_mod.resuming(agent, command) or agents_mod.for_kind(agent).launch
     invocation = agents_mod.own_server(
         agent, agents_mod.resuming_exactly(agent, invocation, session_id))
+    # The agent command alone, for a park to record (park_write).
+    agent_command = invocation
     fresh = agents_mod.fresh(agent, invocation)
     folder = agents_mod.conversations_dir(agent, cwd)
     if fresh and folder:
@@ -320,7 +393,16 @@ def launcher_command(cwd: str, delay: int, size_bytes: int,
     # Its setup runs once: `$rlNext` keeps the command that last ran - an
     # exact resume `--self` handed the loop - so Enter brings that back.
     setup, loop = _restart_loop_parts(cwd, invocation)
-    parts.append(f"{setup}while ($true) {{ {loop}; {ended_prompt(name, agents_mod.for_kind(agent).binary)} }}")
+    binary = agents_mod.for_kind(agent).binary
+    # A parked tab opens at the prompt, its session not started, and records
+    # itself again: the shell that parked it is gone, and this one is it now.
+    setup += (f"$rlInv='{pwsh.escape(agent_command)}'; $rlRan=$null; $rlAgent=$null; "
+              f"$rlParked=$false; $rlSkip=${str(parked).lower()}; ")
+    if parked:
+        setup += f"{park_write(cwd, agent)}; "
+    prompt = ended_prompt(name, binary, cwd, agent)
+    parts.append(f"{setup}while ($true) {{ if ($rlSkip) {{ $rlSkip=$false }} "
+                 f"else {{ {loop} }}; {prompt} }}")
     return "; ".join(parts)
 
 
@@ -409,7 +491,8 @@ def wt_argvs(name: str, rect: list[int], tabs: list[Tab], delays: list[int],
     def tab_args(i: int) -> list[str]:
         tab = tabs[i]
         return new_tab_args(tab.cwd, launcher_command(
-            tab.cwd, delays[i], sizes[i], tab.agent, tab.command, tab.session_id), tab.agent)
+            tab.cwd, delays[i], sizes[i], tab.agent, tab.command, tab.session_id,
+            tab.parked), tab.agent)
 
     x, y = rect[0], rect[1]
     # `--pos=x,y` rather than `--pos x,y`: a monitor left of the primary yields
@@ -472,6 +555,7 @@ def plan_deploy(
     monitors: list[Monitor],
     sizes: dict[str, int],
     running=None,
+    records=None,
 ) -> list[PlanEntry]:
     """Compute exactly what would be launched, without launching it.
 
@@ -482,17 +566,49 @@ def plan_deploy(
     there are not both answered by one live one. Without it, a live directory
     counts as running every kind.
     """
-    from . import discover
+    from . import discover, parked as parked_mod
 
     plan: list[PlanEntry] = []
     index = 0
     remaining = None if running is None else running.copy()
+    if records is None:
+        records = parked_mod.load_all()
+    held = parked_mod.by_key(records)
+    table = win32.process_table() if held else {}
+    # One record is one tab: of a directory's saved tabs of its kind, the one
+    # saved parked, else the first. Its siblings are ordinary sessions.
+    owner: dict = {}
+    for prefer_parked in (True, False):
+        for window in lo.windows:
+            for tab in window.tabs:
+                key = (norm(tab.cwd), tab.agent or agents_mod.DEFAULT_KIND)
+                if key in held and key not in owner and (tab.parked or not prefer_parked):
+                    owner[key] = id(tab)
 
     for position, window in enumerate(lo.windows):
         to_launch: list[Tab] = []
         skipped: list[Tab] = []
         missing: list[Tab] = []
         for tab in window.tabs:
+            # Parked: what decides is its record, not the layout's flag, which
+            # is only as fresh as the last capture. Open already, it is
+            # skipped like a running session; closed, it opens waiting, with
+            # the command the record says it takes back.
+            key = (norm(tab.cwd), tab.agent or agents_mod.DEFAULT_KIND)
+            record = held.get(key) if owner.get(key) == id(tab) else None
+            if record is None and tab.parked:
+                # Saved parked, and taken back or unparked since: a session.
+                tab = replace(tab, parked=False)
+            if record is not None:
+                if parked_mod.is_open(record, table):
+                    skipped.append(tab)
+                elif os.path.isdir(tab.cwd):
+                    to_launch.append(replace(
+                        tab, parked=True, command=record.command or tab.command,
+                        session_id="" if record.command else tab.session_id))
+                else:
+                    missing.append(tab)
+                continue
             if remaining is not None:
                 up = discover.claim_running(remaining, live, tab.cwd, tab.agent)
             else:
@@ -513,9 +629,10 @@ def plan_deploy(
         delays = []
         tab_sizes = []
         for tab in to_launch:
-            delays.append(index * STAGGER_SECONDS)
+            # A parked tab starts nothing, so it takes no turn in the stagger.
+            delays.append(0 if tab.parked else index * STAGGER_SECONDS)
             tab_sizes.append(int(sizes.get(norm(tab.cwd), 0)))
-            index += 1
+            index += 0 if tab.parked else 1
 
         rect = clamp_rect(
             window.rect, window.dpi, window.monitor, monitors, window.inset
@@ -611,7 +728,9 @@ def transcripts_to_repair(plan: list[PlanEntry], index: dict[str, TranscriptInfo
     wanted = {
         norm(t.cwd)
         for entry in plan for t in entry.tabs
-        if guards_for(t.agent)
+        # A parked tab opens with no session: its transcript is not read now,
+        # and may be in use elsewhere.
+        if guards_for(t.agent) and not t.parked
     }
     return [info.path for key, info in index.items() if key in wanted]
 

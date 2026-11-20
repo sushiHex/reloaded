@@ -5,8 +5,10 @@ import datetime
 import os
 import re
 from collections import Counter, deque
+from dataclasses import replace
 
 from . import agents, discover, tabs, win32
+from . import parked as parked_mod
 from .layout import LAYOUT_VERSION, Layout, Monitor, Tab, Window, matching_window
 from .paths import norm, tab_title
 
@@ -60,6 +62,7 @@ def build_layout(
     kinds: dict[str, str] | None = None,
     sessions: list | None = None,
     previous: Layout | None = None,
+    parked: dict | None = None,
 ) -> Layout:
     """One tab per live session, in the window its tab is in.
 
@@ -70,7 +73,12 @@ def build_layout(
     order a window's tabs. Without `sessions`, each live directory is one
     session of the kind `kinds` names, placed by title alone, as before.
     `previous` orders what the titles cannot (keep_saved_order).
+
+    `parked` (shell pid -> parked.Record) names the sessions in `sessions`
+    that are a parked tab's shell rather than an agent: placed the same way,
+    saved as parked, with the command its record takes back.
     """
+    parked = parked or {}
     pool = sorted(sessions if sessions is not None else [
         discover.Session(pid, cwd, (kinds or {}).get(cwd, agents.DEFAULT_KIND), 0.0, None)
         for cwd, pid in live.items()], key=lambda s: s.started)
@@ -134,6 +142,12 @@ def build_layout(
 
         def add(session, cwd, title, low):
             taken.add(session.pid)
+            record = parked.get(session.pid)
+            if record is not None:
+                tab_objs.append(Tab(cwd=cwd, title=title, low_confidence=low,
+                                    agent=session.kind, command=record.command,
+                                    parked=True))
+                return
             # The command is read off the live process so the tab comes back
             # with the flags it was actually running, and the conversation
             # when the process says which, with no other in the running.
@@ -323,7 +337,59 @@ def capture_live(
             }
         )
 
+    # A parked tab's shell stands in for its session: placed like one, by the
+    # window its shell is in and its title.
+    records = parked_mod.load_all()
+    table = win32.process_table() if records else {}
+    open_records = {r.shell_pid: r for r in records if parked_mod.is_open(r, table)}
+    if open_records:
+        shells = win32.tab_shells()
+        found = list(found) + [
+            discover.Session(r.shell_pid, r.cwd, r.agent, r.shell_created,
+                             shells.get(r.shell_pid))
+            for r in open_records.values()]
+        live = dict(live)
+        for r in open_records.values():
+            live.setdefault(norm(r.cwd), r.shell_pid)
+
     now_iso = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     fresh = build_layout(windows_data, monitors, title_map, live, repos_root,
-                         now_iso, sessions=found, previous=previous)
-    return merge_pinned(fresh, previous)
+                         now_iso, sessions=found, previous=previous, parked=open_records)
+    return merge_pinned(carry_parked(fresh, previous, {r.key for r in records}), previous)
+
+
+def carry_parked(fresh: Layout, previous: Layout | None, parked_keys: set) -> Layout:
+    """Keep each parked tab the capture did not place - closed, not yet
+    reopened after a restart, or in a window whose tabs could not be read -
+    where it was saved.
+
+    Nothing live says where it is, so it goes back to its saved window: the
+    capture's window holding most of that window's other tabs, or, where none
+    does, the saved window itself, geometry and all - not whichever window
+    now sits at its position. `parked_keys` holds the (normalized cwd, kind)
+    of every record.
+    """
+    if previous is None or not parked_keys:
+        return fresh
+
+    def identity(t):
+        return norm(t.cwd), t.agent or agents.DEFAULT_KIND
+
+    present = {identity(t) for w in fresh.windows for t in w.tabs}
+    for old_window in previous.windows:
+        target = None
+        for slot, tab in enumerate(old_window.tabs):
+            key = identity(tab)
+            if key not in parked_keys or key in present:
+                continue
+            if target is None:
+                others = [t for t in old_window.tabs if identity(t) not in parked_keys]
+                target = matching_window(others, fresh.windows) if others else None
+                if target is None:
+                    target = Window(monitor=old_window.monitor, rect=list(old_window.rect),
+                                    state=old_window.state, dpi=old_window.dpi,
+                                    inset=list(old_window.inset), tabs=[])
+                    fresh.windows.append(target)
+            target.tabs.insert(min(slot, len(target.tabs)), replace(tab, parked=True))
+            present.add(key)
+    return fresh

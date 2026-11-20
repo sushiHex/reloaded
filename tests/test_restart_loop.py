@@ -16,7 +16,11 @@ import sys
 
 import pytest
 
+import json
+
 import reloaded.deploy as deploy_mod
+import reloaded.parked as parked_mod
+import reloaded.paths as paths_mod
 from reloaded.deploy import (
     RESTART_MARKER_TTL_SECONDS,
     launcher_command,
@@ -80,7 +84,7 @@ def run_launcher(monkeypatch, tmp_path):
 
     def _run(*, marker_body: str | None = None, marker_age_seconds: float = 0.0,
              through_wt_escaping: bool = False, load_profile: bool = False,
-             answers: str = "", after: str = ""):
+             answers: str = "", after: str = "", parked: bool = False):
         if tally.exists():
             tally.unlink()
         if marker_body is not None:
@@ -98,7 +102,7 @@ def run_launcher(monkeypatch, tmp_path):
             # what PowerShell actually receives.
             cmd = new_tab_args(CWD, launcher_command(CWD, 0, 0))[-1].replace("\\;", ";")
         else:
-            cmd = launcher_command(CWD, 0, 0)
+            cmd = launcher_command(CWD, 0, 0, parked=parked)
         if load_profile:
             _refuse_a_shadowed_claude(tmp_path)
         argv = [SHELL] + ([] if load_profile else ["-NoProfile"]) + ["-Command", cmd + after]
@@ -192,6 +196,110 @@ def test_an_agent_installed_before_the_session_started_is_no_update(run_launcher
     assert runs == 1, proc.stderr
     assert "was updated" not in proc.stdout
     assert "ended. Enter starts it again" in proc.stdout
+
+
+def _record():
+    path = paths_mod.parked_record(CWD, "claude", create=False)
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def test_park_records_the_tab_and_keeps_it_waiting(run_launcher):
+    """Typed at the ended prompt, `park` is not run: the shell records the
+    tab - its directory, kind, the command it takes back, and itself - and
+    asks again under a prompt that says it is parked. End of input leaves it
+    parked."""
+    runs, _m, proc = run_launcher(answers="park\n")
+    assert runs == 1, proc.stderr
+    assert "stub-repo is parked" in proc.stdout
+    record = _record()
+    assert record is not None, proc.stderr
+    assert record["cwd"] == CWD and record["agent"] == "claude"
+    assert record["command"].startswith("claude ")
+    assert record["shell_pid"] > 0 and record["shell_created"] > 0
+    records = parked_mod.load_all()
+    assert [r.key for r in records] == [(paths_mod.norm(CWD), "claude")]
+
+
+def test_enter_takes_a_parked_tab_back(run_launcher):
+    runs, _m, proc = run_launcher(answers="park\n\n")
+    assert runs == 2, proc.stderr
+    assert _record() is None
+
+
+def test_a_tab_opened_parked_starts_no_session_until_enter(run_launcher):
+    """A restore reopens a parked tab waiting, and its new shell records
+    itself: the one that parked it is gone."""
+    runs, _m, proc = run_launcher(parked=True)
+    assert runs == 0, proc.stderr
+    assert "stub-repo is parked" in proc.stdout
+    assert _record() is not None
+
+    runs, _m, proc = run_launcher(parked=True, answers="\n")
+    assert runs == 1, proc.stderr
+    assert _record() is None
+
+
+def test_a_parked_tab_ignores_anything_but_enter(run_launcher):
+    """Keystrokes meant for another window - a teardown's `/exit`, typing in
+    a window that took the focus - must not start the session and take the
+    conversation back."""
+    runs, _m, proc = run_launcher(answers="park\n/exit\nhello\n")
+    assert runs == 1, proc.stderr
+    assert _record() is not None
+    assert proc.stdout.count("stub-repo is parked") == 3
+
+
+def test_park_records_the_agent_command_not_a_typed_one(run_launcher):
+    """A command typed at the prompt ran last; the record - and Enter at the
+    parked prompt - take back the agent, as a restored tab would."""
+    runs, _m, proc = run_launcher(answers="'typed-ran'\npark\n\n")
+    assert runs == 2, proc.stderr
+    assert proc.stdout.splitlines().count("typed-ran") == 1, proc.stdout
+
+    run_launcher(answers="'typed-ran'\npark\n")
+    assert _record()["command"].startswith("claude ")
+
+
+def test_park_records_a_marker_s_exact_resume(run_launcher):
+    runs, _m, proc = run_launcher(marker_body="claude --resume abc-123", answers="park\n")
+    assert runs == 2, proc.stderr
+    assert _record()["command"] == "claude --resume abc-123"
+
+
+def test_a_park_that_cannot_be_recorded_leaves_the_tab_unparked(run_launcher):
+    """A tab that reads as parked with no record is one a restore starts."""
+    path = paths_mod.parked_record(CWD, "claude")
+    # A directory where the record is first written: the write throws.
+    path.with_name(path.name + ".tmp").mkdir()
+    runs, _m, proc = run_launcher(answers="park\n\n")
+    assert "could not park this tab" in proc.stdout
+    assert "stub-repo is parked" not in proc.stdout
+    assert runs == 2, proc.stderr
+
+
+def test_a_parked_tab_is_open_exactly_while_its_shell_runs(run_launcher, tmp_path):
+    """The record names its shell by pid and PowerShell's StartTime;
+    parked.is_open checks them against the kernel's process list. Measured
+    here rather than assumed: the two clocks have to agree."""
+    import time
+
+    from reloaded import win32
+
+    cmd = launcher_command(CWD, 0, 0, parked=True)
+    proc = subprocess.Popen([SHELL, "-NoProfile", "-Command", cmd], stdin=subprocess.PIPE,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                            cwd=str(tmp_path))
+    try:
+        deadline = time.time() + 30
+        while _record() is None and time.time() < deadline:
+            time.sleep(0.2)
+        [record] = parked_mod.load_all()
+        assert record.shell_pid == proc.pid
+        assert parked_mod.is_open(record, win32.process_table())
+    finally:
+        proc.stdin.close()
+        proc.wait(timeout=30)
+    assert not parked_mod.is_open(record, win32.process_table())
 
 
 def test_a_typed_command_runs_in_the_session_s_place(run_launcher, tmp_path):

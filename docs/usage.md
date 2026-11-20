@@ -87,9 +87,10 @@ reads; it captures, launches and writes nothing.
 | `live` | Every session discovered: `path`, `pid`, `agent`. A shared directory appears once per session (the text's `live sessions` line counts directories). Without `psutil`, or for a process whose directory cannot be read, a session is not discovered, so absence here is not proof. |
 | `shared` | Directories holding more than one session: `path`, `agents`. |
 | `shared_server` | Sessions on their agent's shared background server, which Reloaded's next launch of them moves to a server of their own (Codex without `--no-daemon`): `path`, `agent`. A session whose command line cannot be read is not listed. |
+| `parked` | Every [parked tab](#parking-a-tab): `path`, `agent`, and `open` (whether the shell that parked it is still running). |
 | `monitors` | `saved` and `current` monitor devices. |
 | `readiness`, `terminal` | `ok` and `detail`. `ok` is `false` exactly when the text prints a warning; an undeterminable Terminal version is `true`, with the detail saying so. |
-| `tabs` | Every saved tab in layout order: `window` (`w1`...), `title`, `path`, `agent`, and `state`: `running`, `launch`, or `missing` (no live session, and its directory is not there, so `up` skips it). |
+| `tabs` | Every saved tab in layout order: `window` (`w1`...), `title`, `path`, `agent`, and `state`: `running`, `launch`, `missing` (no live session, and its directory is not there, so `up` skips it), or `parked` (`up` reopens it waiting if its tab is closed, and skips it if open). |
 | `not_in_layout` | Live sessions no saved tab accounts for, one entry per session: `path`, `agent`. |
 | `would_launch` | How many tabs `up` would launch: those in state `launch`. |
 
@@ -99,6 +100,52 @@ and `layout.exists` is `false`.
 
 The exit code is the text command's: `1` when no layout is saved, otherwise `0`,
 including when readiness, the Terminal version, or drift would print a warning.
+
+## Parking a tab
+
+Codex's remote control, from the ChatGPT app on a phone, drives a conversation
+through Codex's shared background server. Every Codex tab Reloaded launches
+runs a server of its own (`--no-daemon`) that holds its conversation open, so
+the tab's session has to quit before the phone can continue it. Parking keeps
+the tab while it waits:
+
+1. Quit the session in its tab (`/quit`, or two Ctrl+C). The tab stays open.
+2. Type `park` at its prompt. The tab now reads `<repo> is parked`.
+3. Continue from the phone.
+4. Back at the desk, press Enter in the tab. It resumes the conversation, as
+   Enter at the ended prompt does.
+
+What `park` changes:
+
+- It writes a record under `~/.reloaded/parked/`, one per directory and agent
+  kind, written by the tab's own shell: the command Enter takes it back with
+  (the exact resume where the tab knew one), and the shell's pid and start
+  time.
+- Captures keep the tab in its place although no session runs there, and
+  write it as `parked` in the layout. A parked tab whose tab was closed keeps
+  the window and position it was saved with.
+- `up`, including the logon restore, reopens a closed parked tab at its parked
+  prompt without starting the session, so the conversation stays with the
+  phone. It skips one that is open. Neither counts as a session to start.
+- `status` shows its state as `parked`.
+
+At the parked prompt only a bare Enter does anything: it removes the record,
+then starts the session. Anything typed there is ignored, so keystrokes meant
+for another window cannot take the conversation back. End of input leaves the
+tab parked. `reloaded open <repo>` refuses a parked repository for the same
+reason. `reloaded unpark <repo>` removes the record without touching the tab,
+for a parked tab you closed and do not want back. Parking does not check
+whether the phone still has the conversation; taking it back while the phone
+is driving it puts two Codex servers on one conversation.
+
+Enter takes back the agent command the tab last ran: an exact resume that
+`restart --self` handed it, or the command it was launched with, never a
+command typed at its prompt. A Codex tab whose launch did not name its thread
+(`codex resume --last`) takes back the directory's latest conversation. A
+record belongs to one tab: of two saved tabs of one kind in one directory,
+the one saved parked. A tab parked and closed before any capture saved it is
+not in the layout, so a restore cannot reopen it. Tabs launched before parking
+existed have no `park` word, until Reloaded next launches them.
 
 ## Launch commands and resumption
 

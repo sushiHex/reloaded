@@ -45,6 +45,12 @@ class Tab:
     # launch resumes it by id (agents.resume_exactly): `--last`, the only
     # other choice, gives two tabs in one directory the same conversation.
     session_id: str = ""
+    # Parked when captured: its session was quit and handed off - to Codex's
+    # remote control, say - and its tab waits without starting it (see
+    # parked.py). What is parked now is the records, not this; capture sets it
+    # from them, and it tells the shrinkage check that this tab answers to no
+    # live session.
+    parked: bool = False
 
     def __post_init__(self):
         # A key present but null in the JSON defeats the dataclass default and
@@ -126,6 +132,7 @@ class Layout:
                             agent=t.get("agent", DEFAULT_KIND),
                             command=t.get("command", ""),
                             session_id=t.get("session_id", ""),
+                            parked=bool(t.get("parked", False)),
                         )
                         for t in w.get("tabs", [])
                     ],

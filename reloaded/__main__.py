@@ -16,6 +16,7 @@ from . import deploy as deploy_mod
 from . import discover as discover_mod
 from . import editor as editor_mod
 from . import layout as layout_mod
+from . import parked as parked_mod
 from . import pwsh
 from . import readiness as readiness_mod
 from . import refusal as refusal_mod
@@ -352,14 +353,24 @@ def _capture_shrinkage(fresh, path, live) -> str:
     # captured to be matched.
     unclaimed = discover_mod.running()
     captured = Counter()
+    # A parked tab answers to no live session (parked.py): counted, it would
+    # stand in for a live sibling of its directory and kind that this capture
+    # lost.
     for w in fresh.windows:
         for t in w.tabs:
+            if t.parked:
+                continue
             discover_mod.claim_running(unclaimed, live, t.cwd, t.agent)
             captured[(norm(t.cwd), t.agent or agents_mod.DEFAULT_KIND)] += 1
     lost_cwds = set()
+    # Saved parked and parked still: one taken back since is a session again,
+    # and a live sibling of its directory and kind was never parked.
+    held = parked_mod.by_key(parked_mod.load_all())
     for w in previous.windows:
         for t in w.tabs:
             key = (norm(t.cwd), t.agent or agents_mod.DEFAULT_KIND)
+            if t.parked and key in held:
+                continue
             if captured[key] > 0:
                 captured[key] -= 1
             elif discover_mod.claim_running(unclaimed, live, t.cwd, t.agent):
@@ -515,7 +526,8 @@ def _deploy_layout(lo, args) -> int:
         x, y, w, h = entry.rect
         say(f"window {entry.id}  ({x},{y} {w}x{h}, {entry.state})")
         for tab, delay in zip(entry.tabs, entry.delays):
-            say(f"    +{delay:>3}s  {tab.title}  [{tab.cwd}]")
+            say(f"    +{delay:>3}s  {tab.title}  [{tab.cwd}]"
+                + ("  (parked: opens waiting)" if tab.parked else ""))
         for tab in entry.skipped:
             say(f"      --   {tab.title}  (already running)")
         for tab in entry.missing:
@@ -566,7 +578,11 @@ def _deploy_layout(lo, args) -> int:
                 f"{r.rest_error}")
             failures += 1
     launched = sum(len(e.tabs) for e in plan) - unopened
-    say(f"Launched {launched} session(s) in {len(plan)} window(s).", blank=True)
+    # A parked tab opens waiting: a tab, not a session.
+    waiting = sum(t.parked for e in plan for t in e.tabs)
+    say(f"Launched {launched - waiting} session(s) in {len(plan)} window(s)"
+        + (f", and reopened {waiting} parked tab(s) waiting." if waiting else "."),
+        blank=True)
 
     elapsed = time.monotonic() - started_at
     silent = _never_started(plan, results, discover_mod.live_sessions(), elapsed)
@@ -616,7 +632,8 @@ def _never_started(plan, results, live, elapsed: float) -> list[str]:
     return [
         t.cwd
         for t, delay, spawned_at in _spawn_offsets(plan, results)
-        if spawned_at is not None
+        if not t.parked  # opened waiting, on purpose
+        and spawned_at is not None
         and spawned_at + delay + deploy_mod.SESSION_START_ALLOWANCE <= elapsed
         and norm(t.cwd) not in live
     ]
@@ -653,8 +670,9 @@ def _still_starting(plan, results, elapsed: float) -> list[str]:
     return [
         t.cwd
         for t, delay, spawned_at in _spawn_offsets(plan, results)
-        if spawned_at is None
-        or spawned_at + delay + deploy_mod.SESSION_START_ALLOWANCE > elapsed
+        if not t.parked
+        and (spawned_at is None
+             or spawned_at + delay + deploy_mod.SESSION_START_ALLOWANCE > elapsed)
     ]
 
 
@@ -1482,7 +1500,8 @@ class _Status:
     monitors: tuple = ((), ())
     readiness: tuple = (False, "")
     terminal: tuple = (False, "")
-    # Per window, per tab, in layout order: "running", "launch" or "missing".
+    # Per window, per tab, in layout order: "running", "launch", "missing" or
+    # "parked" (parked.py).
     states: list = field(default_factory=list)
     # (cwd, kind) of every live session no saved tab claimed, one per session.
     orphans: list = field(default_factory=list)
@@ -1539,10 +1558,14 @@ def _collect_status(args) -> _Status:
     # one is.
     unclaimed = s.census.running()
     live = s.census.live()
+    held = parked_mod.by_key(parked_mod.load_all())
     for w in lo.windows:
         states = []
         for t in w.tabs:
-            if discover_mod.claim_running(unclaimed, live, t.cwd, t.agent):
+            # What deploy.plan_deploy decides by: the record, open or not.
+            if (norm(t.cwd), t.agent or agents_mod.DEFAULT_KIND) in held:
+                states.append("parked")
+            elif discover_mod.claim_running(unclaimed, live, t.cwd, t.agent):
                 states.append("running")
             else:
                 # deploy.plan_deploy skips a tab whose directory is gone, so
@@ -1572,6 +1595,14 @@ def _on_shared_server(census) -> list:
     return out
 
 
+def _parked_json() -> list:
+    """Every parked tab (parked.py), and whether its tab is open now."""
+    records = parked_mod.load_all()
+    table = win32_mod.process_table() if records else {}
+    return [{"path": r.cwd, "agent": r.agent, "open": parked_mod.is_open(r, table)}
+            for r in records]
+
+
 def _status_json(s: _Status) -> dict:
     """The schema documented in docs/usage.md. Live paths are normalized
     (paths.norm); saved ones are as the layout records them."""
@@ -1586,6 +1617,7 @@ def _status_json(s: _Status) -> dict:
         "shared": [{"path": cwd, "agents": kinds}
                    for cwd, kinds in sorted(s.census.crowded().items())],
         "shared_server": [{"path": cwd, "agent": kind} for cwd, kind in s.shared_server],
+        "parked": _parked_json(),
     }
     if s.layout is None:
         return doc
@@ -1653,7 +1685,8 @@ def _print_status(s: _Status) -> None:
     wt_ok, wt_detail = s.terminal
     print(f"terminal      : {wt_detail}" if wt_ok else f"[warn] terminal: {wt_detail}")
 
-    marks = {"running": "running", "launch": "would launch", "missing": "missing"}
+    marks = {"running": "running", "launch": "would launch", "missing": "missing",
+             "parked": "parked"}
     for i, (w, states) in enumerate(zip(lo.windows, s.states)):
         print(f"\n  {layout_mod.window_id(i)}  {layout_mod.window_header(w)}")
         for t, state in zip(w.tabs, states):
@@ -1703,6 +1736,13 @@ def cmd_open(args) -> int:
     if norm(cwd) in live:
         print(f"Already running: {cwd} (pid {live[norm(cwd)]})")
         return 0
+    # Started here, it would take its conversation back from wherever it was
+    # handed off to.
+    kinds = sorted(r.agent for r in parked_mod.load_all() if r.key[0] == norm(cwd))
+    if kinds:
+        print(f"Parked: {cwd} ({', '.join(kinds)}). Press Enter in its tab to take it "
+              f"back, or `reloaded unpark {args.repo}` first.")
+        return 1
 
     sizes = _transcript_sizes(discover_mod.transcript_index(need_title=False))
     # Nothing is running to read the kind off, so the saved layout is the
@@ -1722,6 +1762,24 @@ def cmd_open(args) -> int:
 
     subprocess.Popen(argv, close_fds=True)
     print(f"Launched {cwd}")
+    return 0
+
+
+def cmd_unpark(args) -> int:
+    """Forget that a tab is parked, without starting anything.
+
+    For a tab parked and then closed, or a conversation that will not come
+    back here: the record otherwise keeps the tab in the layout, and every
+    restore reopens it waiting. A parked tab that is open still shows its
+    prompt; Enter there starts the session as before.
+    """
+    cwd = resolve_repo(args.repo, args.repos_root)
+    gone = parked_mod.remove(cwd, sorted(agents_mod.AGENTS))
+    if not gone:
+        print(f"Not parked: {cwd}")
+        return 1
+    print(f"Unparked {cwd} ({', '.join(gone)}). The next capture saves it as it is, "
+          "and a restore starts it.")
     return 0
 
 
@@ -1779,6 +1837,12 @@ def build_parser() -> argparse.ArgumentParser:
     open_.add_argument("--dry-run", action="store_true", help="print the command, spawn nothing")
 
     sub.add_parser("edit", help="open the interactive layout editor")
+
+    unpark = sub.add_parser(
+        "unpark",
+        help="forget that a repo's tab is parked (type `park` at an ended tab's "
+             "prompt to park it), without starting it")
+    unpark.add_argument("repo", help="repo name under --repos-root, or an absolute path")
 
     down = sub.add_parser(
         "down",
@@ -1865,6 +1929,7 @@ def _dispatch(args) -> int:
         "open": cmd_open,
         "down": cmd_down,
         "restart": cmd_restart,
+        "unpark": cmd_unpark,
         "install-tasks": cmd_install_tasks,
         "uninstall-tasks": cmd_uninstall_tasks,
     }.get(args.command, cmd_edit)(args)
