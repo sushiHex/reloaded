@@ -143,6 +143,21 @@ def shell_stop(pid: int) -> pathlib.Path:
     return restart_marker_dir() / f"shell-{pid}.stop"
 
 
+def parked_dir(create: bool = True) -> pathlib.Path:
+    """Where parked tabs' records live (parked.py). Created for a launcher,
+    whose shell writes into it; a reader has nothing to read without it."""
+    d = state_dir() / "parked"
+    if create:
+        d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def parked_record(cwd: str, kind: str, create: bool = True) -> pathlib.Path:
+    """The record of a parked tab: one per directory and agent kind, the
+    identity a saved tab has."""
+    return parked_dir(create) / f"{_digest(cwd)}-{kind}.json"
+
+
 def tab_title(cwd: str) -> str:
     """What reloaded calls a tab it launched.
 

@@ -92,6 +92,7 @@ thread it captured (`codex resume <id>`) rather than the directory's newest.
 | `reloaded restart --self` | Restart the agent session it is run from, in the same tab. |
 | `reloaded restart` | Capture the live arrangement, exit its sessions, and redeploy it. |
 | `reloaded down` | Gracefully exit recognized live sessions and close eligible empty windows. |
+| `reloaded unpark <repo>` | Forget that a repository's tab is [parked](#hand-a-session-off), without starting it. |
 | `reloaded install-tasks` | Enable logon restoration and capture every five minutes. |
 | `reloaded uninstall-tasks` | Remove both automation entries. |
 
@@ -126,6 +127,17 @@ Hand-started sessions are upgraded to Reloaded's launcher during a named
 restart, after which their tab behaves the same way. A tab keeps the launcher
 it started with until Reloaded next launches it. See [restart behavior](docs/usage.md#restarting-sessions)
 for timeouts, fallback tabs, and concurrent restart limits.
+
+### Hand a session off
+
+To continue a conversation somewhere else, such as from your phone through
+Codex's remote control, the terminal session has to quit first: the Codex tabs
+Reloaded launches keep their conversation open while they run. Quit it, then
+type `park` at the tab's prompt. The tab stays where it is, saved as parked:
+captures keep it, and a restore after a reboot reopens it waiting rather than
+starting the session and taking the conversation back. Press Enter in the tab
+to take the conversation back here. `reloaded status` shows parked tabs, and
+`reloaded unpark <repo>` forgets one you closed.
 
 ## For agents
 

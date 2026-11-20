@@ -46,7 +46,7 @@ Layered bottom-up; each layer only reads what Windows and the agent CLIs already
 - `relaunch.py` — `restart --self`: ends its own session by exact pid and has its tab's loop, or a detached helper typing into a hand-started shell, bring it back.
 - `__main__.py` — argparse dispatch; all `cmd_*` functions live here.
 
-State lives under `~/.reloaded/` (`layouts/`, `restart/`, `relaunch/`, `attempts/`, `refusals/`, `reloaded.log`). Never commit it.
+State lives under `~/.reloaded/` (`layouts/`, `restart/`, `relaunch/`, `attempts/`, `refusals/`, `parked/`, `reloaded.log`). Never commit it.
 
 ### Invariants that bite
 
