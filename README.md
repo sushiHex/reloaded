@@ -133,7 +133,7 @@ for timeouts, fallback tabs, and concurrent restart limits.
 To continue a conversation somewhere else, such as from your phone through
 Codex's remote control, the terminal session has to quit first: the Codex tabs
 Reloaded launches keep their conversation open while they run. Quit it, then
-type `park` at the tab's prompt. The tab stays where it is, saved as parked:
+press `P` and Enter at the tab's prompt. The tab stays where it is, saved as parked:
 captures keep it, and a restore after a reboot reopens it waiting rather than
 starting the session and taking the conversation back. Press Enter in the tab
 to take the conversation back here. `reloaded status` shows parked tabs, and

@@ -110,12 +110,12 @@ the tab's session has to quit before the phone can continue it. Parking keeps
 the tab while it waits:
 
 1. Quit the session in its tab (`/quit`, or two Ctrl+C). The tab stays open.
-2. Type `park` at its prompt. The tab now reads `<repo> is parked`.
+2. Press `P`, then Enter, at its prompt. The tab now reads `<repo> is parked`.
 3. Continue from the phone.
 4. Back at the desk, press Enter in the tab. It resumes the conversation, as
    Enter at the ended prompt does.
 
-What `park` changes:
+What parking changes:
 
 - It writes a record under `~/.reloaded/parked/`, one per directory and agent
   kind, written by the tab's own shell: the command Enter takes it back with
@@ -145,7 +145,7 @@ command typed at its prompt. A Codex tab whose launch did not name its thread
 record belongs to one tab: of two saved tabs of one kind in one directory,
 the one saved parked. A tab parked and closed before any capture saved it is
 not in the layout, so a restore cannot reopen it. Tabs launched before parking
-existed have no `park` word, until Reloaded next launches them.
+existed have no `P`, until Reloaded next launches them.
 
 ## Launch commands and resumption
 

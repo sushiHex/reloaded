@@ -143,7 +143,9 @@ def updated_test(binary: str) -> str:
             "if ($rlUp) { $rlDone=$rlT } } } }")
 
 
-PARK_WORD = "park"
+# The key, typed alone, that parks an ended tab. PowerShell's -eq ignores
+# case, so `p` and `P` both do.
+PARK_KEY = "P"
 
 
 def ended_prompt(name: str, binary: str, cwd: str = "", kind: str = "") -> str:
@@ -173,7 +175,7 @@ def ended_prompt(name: str, binary: str, cwd: str = "", kind: str = "") -> str:
     again without asking: the update said to restart, and Enter was all the
     prompt would have been given.
 
-    `park` (PARK_WORD) is not run: it records the tab as parked (parked.py,
+    `P` (PARK_KEY) is not run: it records the tab as parked (parked.py,
     park_write) and asks again, under a prompt that says so. Parked, only a
     bare Enter takes the tab back: its record is removed, and the agent
     command it was parked with starts (`$rlAgent`, else the tab's own) - not
@@ -184,9 +186,9 @@ def ended_prompt(name: str, binary: str, cwd: str = "", kind: str = "") -> str:
     leaves it parked. A tab opened parked (`$rlParked`, from launcher_command)
     starts here, without a session.
     """
-    say = (f"[reloaded] {name} ended. Enter starts it again; `{PARK_WORD}` keeps it "
-           "closed so its conversation can continue elsewhere, a typed command runs "
-           "in its place, and Ctrl+C leaves you at the shell.")
+    say = (f"[reloaded] {name} ended. Enter starts it again; [{PARK_KEY}] parks it so "
+           "its conversation can continue elsewhere; a typed command runs in its "
+           "place; Ctrl+C leaves you at the shell.")
     parked = (f"[reloaded] {name} is parked: its conversation is free to continue "
               "elsewhere, such as Codex's remote control. Enter takes it back here.")
     again = f"[reloaded] {binary} was updated; starting {name} again."
@@ -197,7 +199,7 @@ def ended_prompt(name: str, binary: str, cwd: str = "", kind: str = "") -> str:
            "if ($null -eq $rlAns) { $rlQuit=$true; $rlGo=$true } "
            f"elseif ($rlParked) {{ if ($rlAns -eq '') {{ {park_remove(cwd, kind)}; "
            "if (-not $rlParked) { $rlNext=$rlAgent; $rlGo=$true } } } "
-           f"elseif ($rlAns.Trim() -eq '{PARK_WORD}') {{ {park_write(cwd, kind)} }} "
+           f"elseif ($rlAns.Trim() -eq '{PARK_KEY}') {{ {park_write(cwd, kind)} }} "
            "else { if ($rlAns -ne '') { $rlNext=$rlAns } else { $rlNext=$rlRan }; "
            "$rlGo=$true } }; "
            "if ($rlQuit) { break }")

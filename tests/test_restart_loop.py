@@ -204,13 +204,14 @@ def _record():
 
 
 def test_park_records_the_tab_and_keeps_it_waiting(run_launcher):
-    """Typed at the ended prompt, `park` is not run: the shell records the
+    """Typed at the ended prompt, `P` is not run: the shell records the
     tab - its directory, kind, the command it takes back, and itself - and
     asks again under a prompt that says it is parked. End of input leaves it
     parked."""
-    runs, _m, proc = run_launcher(answers="park\n")
+    runs, _m, proc = run_launcher(answers="p\n")  # either case
     assert runs == 1, proc.stderr
     assert "stub-repo is parked" in proc.stdout
+    assert "[P] parks it" in proc.stdout
     record = _record()
     assert record is not None, proc.stderr
     assert record["cwd"] == CWD and record["agent"] == "claude"
@@ -221,7 +222,7 @@ def test_park_records_the_tab_and_keeps_it_waiting(run_launcher):
 
 
 def test_enter_takes_a_parked_tab_back(run_launcher):
-    runs, _m, proc = run_launcher(answers="park\n\n")
+    runs, _m, proc = run_launcher(answers="P\n\n")
     assert runs == 2, proc.stderr
     assert _record() is None
 
@@ -243,7 +244,7 @@ def test_a_parked_tab_ignores_anything_but_enter(run_launcher):
     """Keystrokes meant for another window - a teardown's `/exit`, typing in
     a window that took the focus - must not start the session and take the
     conversation back."""
-    runs, _m, proc = run_launcher(answers="park\n/exit\nhello\n")
+    runs, _m, proc = run_launcher(answers="P\n/exit\nhello\n")
     assert runs == 1, proc.stderr
     assert _record() is not None
     assert proc.stdout.count("stub-repo is parked") == 3
@@ -252,16 +253,16 @@ def test_a_parked_tab_ignores_anything_but_enter(run_launcher):
 def test_park_records_the_agent_command_not_a_typed_one(run_launcher):
     """A command typed at the prompt ran last; the record - and Enter at the
     parked prompt - take back the agent, as a restored tab would."""
-    runs, _m, proc = run_launcher(answers="'typed-ran'\npark\n\n")
+    runs, _m, proc = run_launcher(answers="'typed-ran'\nP\n\n")
     assert runs == 2, proc.stderr
     assert proc.stdout.splitlines().count("typed-ran") == 1, proc.stdout
 
-    run_launcher(answers="'typed-ran'\npark\n")
+    run_launcher(answers="'typed-ran'\nP\n")
     assert _record()["command"].startswith("claude ")
 
 
 def test_park_records_a_marker_s_exact_resume(run_launcher):
-    runs, _m, proc = run_launcher(marker_body="claude --resume abc-123", answers="park\n")
+    runs, _m, proc = run_launcher(marker_body="claude --resume abc-123", answers="P\n")
     assert runs == 2, proc.stderr
     assert _record()["command"] == "claude --resume abc-123"
 
@@ -271,7 +272,7 @@ def test_a_park_that_cannot_be_recorded_leaves_the_tab_unparked(run_launcher):
     path = paths_mod.parked_record(CWD, "claude")
     # A directory where the record is first written: the write throws.
     path.with_name(path.name + ".tmp").mkdir()
-    runs, _m, proc = run_launcher(answers="park\n\n")
+    runs, _m, proc = run_launcher(answers="P\n\n")
     assert "could not park this tab" in proc.stdout
     assert "stub-repo is parked" not in proc.stdout
     assert runs == 2, proc.stderr
